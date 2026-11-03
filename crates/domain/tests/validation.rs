@@ -249,3 +249,179 @@ fn problems_and_solutions_round_trip_through_json() {
     assert_eq!(parsed_solution, solution);
     assert_eq!(parsed_solution.validate(&parsed_problem), Ok(()));
 }
+
+/// One depot, two vehicles, one driver — the base for occupancy fixtures.
+fn two_vehicle_problem() -> Problem {
+    Problem {
+        name: "driver occupancy fixture".into(),
+        depots: vec![Depot {
+            id: DepotId(0),
+            name: "Depot".into(),
+            location: LatLon::new(-33.80, 151.20),
+        }],
+        stores: vec![],
+        vehicles: vec![
+            Vehicle {
+                id: VehicleId(0),
+                name: "V1".into(),
+                depot: DepotId(0),
+                capacity: Load::new(1, 0, 0),
+                max_duration: Minutes::from_minutes(1440),
+                avg_speed_kmh: 45.0,
+            },
+            Vehicle {
+                id: VehicleId(1),
+                name: "V2".into(),
+                depot: DepotId(0),
+                capacity: Load::new(1, 0, 0),
+                max_duration: Minutes::from_minutes(1440),
+                avg_speed_kmh: 45.0,
+            },
+        ],
+        drivers: vec![Driver {
+            id: DriverId(0),
+            name: "Single driver".into(),
+            shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(120))],
+        }],
+        cost: CostModel {
+            fixed_per_route_cents: 0,
+            per_km_cents: 0,
+            per_hour_cents: 0,
+            late_per_min_cents: 0,
+        },
+    }
+}
+
+/// A route that leaves depot 0 at `start` and returns at `end`.
+fn depot_hop(vehicle: VehicleId, start: i64, end: i64) -> RoutePlan {
+    RoutePlan {
+        vehicle,
+        drivers: vec![DriverId(0)],
+        steps: vec![
+            PlannedStop {
+                node: Node::Depot(DepotId(0)),
+                arrive: Minutes::from_minutes(start),
+                depart: Minutes::from_minutes(start),
+            },
+            PlannedStop {
+                node: Node::Depot(DepotId(0)),
+                arrive: Minutes::from_minutes(end),
+                depart: Minutes::from_minutes(end),
+            },
+        ],
+        distance_km: 0.0,
+        duration: Minutes::from_minutes(end - start),
+        cost_cents: 0,
+    }
+}
+
+fn occupancy_solution(routes: Vec<RoutePlan>) -> Solution {
+    Solution {
+        routes,
+        unassigned: vec![],
+        total_distance_km: 0.0,
+        total_duration: Minutes::ZERO,
+        total_cost_cents: 0,
+    }
+}
+
+#[test]
+fn overlapping_routes_on_one_driver_are_rejected() {
+    let problem = two_vehicle_problem();
+    let solution = occupancy_solution(vec![
+        depot_hop(VehicleId(0), 0, 60),
+        depot_hop(VehicleId(1), 30, 90),
+    ]);
+    assert_eq!(
+        violations_of(&problem, &solution),
+        vec![Violation::DriverDoubleBooked {
+            driver: DriverId(0),
+        }]
+    );
+}
+
+#[test]
+fn back_to_back_routes_on_one_driver_are_allowed() {
+    let problem = two_vehicle_problem();
+    let solution = occupancy_solution(vec![
+        depot_hop(VehicleId(0), 0, 60),
+        depot_hop(VehicleId(1), 60, 120),
+    ]);
+    assert_eq!(solution.validate(&problem), Ok(()));
+}
+
+/// One depot, one vehicle and one driver with the given shifts.
+fn handover_dwell_problem(shifts: Vec<Shift>) -> Problem {
+    Problem {
+        name: "handover dwell fixture".into(),
+        depots: vec![Depot {
+            id: DepotId(0),
+            name: "Depot".into(),
+            location: LatLon::new(-33.80, 151.20),
+        }],
+        stores: vec![],
+        vehicles: vec![Vehicle {
+            id: VehicleId(0),
+            name: "V1".into(),
+            depot: DepotId(0),
+            capacity: Load::new(1, 0, 0),
+            max_duration: Minutes::from_minutes(1440),
+            avg_speed_kmh: 45.0,
+        }],
+        drivers: vec![Driver {
+            id: DriverId(0),
+            name: "Relay driver".into(),
+            shifts,
+        }],
+        cost: CostModel {
+            fixed_per_route_cents: 0,
+            per_km_cents: 0,
+            per_hour_cents: 0,
+            late_per_min_cents: 0,
+        },
+    }
+}
+
+/// A route that dwells at depot 0 from minute 5 to minute 15.
+fn handover_dwell_solution() -> Solution {
+    occupancy_solution(vec![RoutePlan {
+        vehicle: VehicleId(0),
+        drivers: vec![DriverId(0)],
+        steps: vec![
+            PlannedStop {
+                node: Node::Depot(DepotId(0)),
+                arrive: Minutes::from_minutes(5),
+                depart: Minutes::from_minutes(5),
+            },
+            PlannedStop {
+                node: Node::Depot(DepotId(0)),
+                arrive: Minutes::from_minutes(5),
+                depart: Minutes::from_minutes(15),
+            },
+        ],
+        distance_km: 0.0,
+        duration: Minutes::from_minutes(10),
+        cost_cents: 0,
+    }])
+}
+
+#[test]
+fn a_one_minute_hole_in_shift_coverage_is_rejected() {
+    let problem = handover_dwell_problem(vec![
+        Shift::new(Minutes::ZERO, Minutes::from_minutes(10)),
+        Shift::new(Minutes::from_minutes(11), Minutes::from_minutes(20)),
+    ]);
+    assert_eq!(
+        violations_of(&problem, &handover_dwell_solution()),
+        vec![Violation::ShiftNotCovered { route: 0, step: 1 }]
+    );
+}
+
+#[test]
+fn touching_shifts_cover_a_handover_dwell() {
+    let problem = handover_dwell_problem(vec![
+        Shift::new(Minutes::ZERO, Minutes::from_minutes(10)),
+        Shift::new(Minutes::from_minutes(10), Minutes::from_minutes(20)),
+    ]);
+    assert_eq!(handover_dwell_solution().validate(&problem), Ok(()));
+}

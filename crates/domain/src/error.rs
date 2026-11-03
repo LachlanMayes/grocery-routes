@@ -26,6 +26,8 @@ pub enum Violation {
     VehicleUsedTwice { vehicle: VehicleId },
     #[error("route {route}: no driver assigned")]
     NoDriverAssigned { route: usize },
+    #[error("driver {driver} is scheduled on two routes with overlapping work spans")]
+    DriverDoubleBooked { driver: DriverId },
     #[error("route {route}: timestamps out of order at step {step}")]
     TimestampsOutOfOrder { route: usize, step: usize },
     #[error("route {route}: duration does not match the spanned time")]

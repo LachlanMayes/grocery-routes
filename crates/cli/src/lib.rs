@@ -2,4 +2,5 @@
 //!
 //! The binary lives in `main.rs`; everything testable lives here.
 
+pub mod commands;
 pub mod export;

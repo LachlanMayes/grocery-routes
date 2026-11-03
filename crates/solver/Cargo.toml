@@ -13,3 +13,7 @@ domain = { path = "../domain" }
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "solve_bench"
+harness = false

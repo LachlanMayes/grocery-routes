@@ -131,16 +131,18 @@ impl Shift {
     }
 }
 
-/// True when every minute of `[start, end]` is covered by at least one shift.
+/// True when every minute of `[start, end)` is covered by at least one shift.
 ///
 /// Used for depot dwells (loading, driver hand-overs) that may legally span
-/// two shifts. Returns `false` for an empty shift list.
+/// two shifts. Shifts are half-open `[start, end)`, so minute `m` is covered
+/// when `shift.start <= m < shift.end`. Returns `false` for an empty shift
+/// list.
 fn union_covers(shifts: &[Shift], start: Minutes, end: Minutes) -> bool {
     !shifts.is_empty()
-        && (start.minutes()..=end.minutes()).all(|minute| {
+        && (start.minutes()..end.minutes()).all(|minute| {
             shifts
                 .iter()
-                .any(|shift| shift.start.minutes() <= minute && minute <= shift.end.minutes())
+                .any(|shift| shift.start.minutes() <= minute && minute < shift.end.minutes())
         })
 }
 
@@ -254,7 +256,11 @@ impl Solution {
     ///    drivers.
     /// 6. Store service sits inside a single shift; depot dwells may span
     ///    shifts (driver hand-overs at relay depots).
-    /// 7. Every store is served exactly once or listed as unassigned.
+    /// 7. No driver is scheduled on two routes with overlapping work spans.
+    ///    A driver listed on a route is booked for the route's whole span
+    ///    (first departure to last arrival); spans may touch end-to-start but
+    ///    must not overlap. Relay-precise attribution is M5 work.
+    /// 8. Every store is served exactly once or listed as unassigned.
     ///
     /// Aggregate totals (`total_*`) are informational in M0 and are not
     /// re-derived here.
@@ -262,6 +268,8 @@ impl Solution {
         let mut violations = Vec::new();
         let mut served: Vec<u32> = vec![0; problem.stores.len()];
         let mut vehicle_used: Vec<bool> = vec![false; problem.vehicles.len()];
+        let mut driver_spans: Vec<Vec<(Minutes, Minutes)>> =
+            vec![Vec::new(); problem.drivers.len()];
 
         for (route_index, route) in self.routes.iter().enumerate() {
             let Some(vehicle) = problem.vehicle(route.vehicle) else {
@@ -315,6 +323,16 @@ impl Solution {
                     duration: route.duration,
                     limit: vehicle.max_duration,
                 });
+            }
+
+            // Book every listed driver for this route's span so overlaps are
+            // caught after all routes have been checked.
+            let mut listed: Vec<DriverId> = Vec::new();
+            for &driver in &route.drivers {
+                if problem.driver(driver).is_some() && !listed.contains(&driver) {
+                    listed.push(driver);
+                    driver_spans[driver.0 as usize].push((first.depart, last.depart));
+                }
             }
 
             let mut previous_depart: Option<Minutes> = None;
@@ -398,6 +416,18 @@ impl Solution {
                         step: leg_index,
                     });
                 }
+            }
+        }
+
+        for (index, spans) in driver_spans.iter_mut().enumerate() {
+            spans.sort_unstable();
+            let overlapping = spans
+                .windows(2)
+                .any(|pair| pair[1].0 < pair[0].1 && pair[0].0 < pair[1].1);
+            if overlapping {
+                violations.push(Violation::DriverDoubleBooked {
+                    driver: DriverId(index as u32),
+                });
             }
         }
 
