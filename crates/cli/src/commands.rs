@@ -229,23 +229,6 @@ fn sum_load(loads: impl Iterator<Item = Load>) -> Load {
     loads.fold(Load::ZERO, |total, load| total + load)
 }
 
-/// Reads and parses a problem JSON document.
-fn read_problem_json(path: &Path) -> anyhow::Result<Problem> {
-    let text = read_text(path)?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
-/// Reads and parses a solution JSON document.
-fn read_solution_json(path: &Path) -> anyhow::Result<Solution> {
-    let text = read_text(path)?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-}
-
-/// Reads a file as UTF-8 text with the path in the error message.
-fn read_text(path: &Path) -> anyhow::Result<String> {
-    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
-}
-
 /// Writes `problem` as pretty JSON with a trailing newline.
 fn write_problem_json(path: &Path, problem: &Problem) -> anyhow::Result<()> {
     let mut json = serde_json::to_string_pretty(problem).context("serializing problem JSON")?;
@@ -260,14 +243,66 @@ fn write_solution_json(path: &Path, solution: &Solution) -> anyhow::Result<()> {
     write_text(path, &json)
 }
 
+/// Maximum size of an input JSON file accepted by the CLI (100 MiB).
+/// M0 problem files are ~100 KiB; this cap is far above legitimate use.
+const MAX_JSON_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Reads and parses a problem JSON document, enforcing a size cap and
+/// using a bounded deserializer to avoid OOM/stack DoS from malicious input.
+fn read_problem_json(path: &Path) -> anyhow::Result<Problem> {
+    check_json_size(path)?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = std::io::BufReader::with_capacity(8 * 1024, file);
+    serde_json::from_reader(reader).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Reads and parses a solution JSON document, enforcing a size cap and
+/// using a bounded deserializer to avoid OOM/stack DoS from malicious input.
+fn read_solution_json(path: &Path) -> anyhow::Result<Solution> {
+    check_json_size(path)?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let reader = std::io::BufReader::with_capacity(8 * 1024, file);
+    serde_json::from_reader(reader).with_context(|| format!("parsing {}", path.display()))
+}
+
+/// Validates that `path` is a regular file not larger than `MAX_JSON_BYTES`.
+fn check_json_size(path: &Path) -> anyhow::Result<()> {
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    if !meta.is_file() {
+        anyhow::bail!("{} is not a regular file", path.display());
+    }
+    if meta.len() > MAX_JSON_BYTES {
+        anyhow::bail!(
+            "{} is {} bytes; maximum accepted size is {} bytes",
+            path.display(),
+            meta.len(),
+            MAX_JSON_BYTES
+        );
+    }
+    Ok(())
+}
+
 /// Writes a text file, creating the parent directory when needed.
+/// On Unix, created directories are owner-only (0o700) to avoid leaking
+/// generated route plans to other local users in shared environments.
 fn write_text(path: &Path, contents: &str) -> anyhow::Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating directory {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
     }
     std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
