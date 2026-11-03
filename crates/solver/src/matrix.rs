@@ -90,6 +90,40 @@ impl DistanceMatrix {
     }
 }
 
+/// Euclidean distance between two points (for Solomon/Euclidean instances).
+pub fn euclidean_km(a: LatLon, b: LatLon) -> f64 {
+    let dx = a.lat - b.lat;
+    let dy = a.lon - b.lon;
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Builds a Euclidean distance matrix for `problem` (for Solomon calibration).
+pub fn euclidean_matrix(problem: &Problem) -> DistanceMatrix {
+    let depot_count = problem.depots.len();
+    let node_count = depot_count + problem.stores.len();
+    let locations: Vec<LatLon> = problem
+        .depots
+        .iter()
+        .map(|depot| depot.location)
+        .chain(problem.stores.iter().map(|store| store.location))
+        .collect();
+
+    let mut distances = vec![0.0; node_count * node_count];
+    for (from_index, &from) in locations.iter().enumerate() {
+        for (to_index, &to) in locations.iter().enumerate().skip(from_index + 1) {
+            let km = euclidean_km(from, to);
+            distances[from_index * node_count + to_index] = km;
+            distances[to_index * node_count + from_index] = km;
+        }
+    }
+
+    DistanceMatrix {
+        depot_count,
+        node_count,
+        distances,
+    }
+}
+
 /// Whole minutes to travel `km` at `avg_speed_kmh`, rounded to the nearest
 /// minute.
 ///

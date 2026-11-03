@@ -530,10 +530,16 @@ fn cross_exchange(
 }
 
 fn build_solution(problem: &Problem, routes: Vec<ActiveRoute>) -> Solution {
+    let mut served_stores = std::collections::HashSet::new();
     let routes: Vec<RoutePlan> = routes
         .into_iter()
         .map(|route| {
             let vehicle = &problem.vehicles[route.vehicle_index];
+            for step in &route.scheduled.steps {
+                if let Node::Store(id) = step.node {
+                    served_stores.insert(id);
+                }
+            }
             RoutePlan {
                 vehicle: vehicle.id,
                 drivers: vec![route.scheduled.driver],
@@ -549,9 +555,17 @@ fn build_solution(problem: &Problem, routes: Vec<ActiveRoute>) -> Solution {
     let total_duration = routes.iter().map(|r| r.duration.minutes()).sum();
     let total_cost_cents = routes.iter().map(|r| r.cost_cents).sum();
 
+    let mut unassigned: Vec<StoreId> = problem
+        .stores
+        .iter()
+        .filter(|s| !served_stores.contains(&s.id))
+        .map(|s| s.id)
+        .collect();
+    unassigned.sort_unstable();
+
     Solution {
         routes,
-        unassigned: vec![],
+        unassigned,
         total_distance_km,
         total_duration: Minutes::from_minutes(total_duration),
         total_cost_cents,

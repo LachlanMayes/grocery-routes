@@ -28,7 +28,9 @@ mod greedy;
 mod matrix;
 pub mod parser; // Solomon/VRPLib parser (vendored for M1)
 
-pub use matrix::{DistanceMatrix, FALLBACK_SPEED_KMH, travel_minutes};
+pub use matrix::{
+    DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
+};
 pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
 
 use domain::{Problem, Solution};
@@ -41,7 +43,8 @@ use domain::{Problem, Solution};
 /// solver twice on the same problem returns the same plan.
 pub fn solve(problem: &Problem) -> Solution {
     let solution = greedy::plan(problem);
-    debug_assert!(
+    // Runtime validation (not debug_assert!): must hold in release builds too.
+    assert!(
         solution.validate(problem).is_ok(),
         "solver produced an invalid solution"
     );
@@ -51,6 +54,22 @@ pub fn solve(problem: &Problem) -> Solution {
 /// Runs the M0 greedy insertion solver (for comparison/benchmarking).
 pub fn solve_greedy(problem: &Problem) -> Solution {
     let solution = greedy::plan(problem);
+    debug_assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    solution
+}
+
+/// Runs the greedy solver with a Euclidean distance matrix (for Solomon calibration).
+pub fn solve_greedy_euclidean(problem: &Problem) -> Solution {
+    let solution = greedy::plan_with_matrix(problem, matrix::euclidean_matrix(problem));
+    if let Err(violations) = solution.validate(problem) {
+        eprintln!("Calibration validation failed:");
+        for v in &violations {
+            eprintln!("  - {v}");
+        }
+    }
     debug_assert!(
         solution.validate(problem).is_ok(),
         "solver produced an invalid solution"

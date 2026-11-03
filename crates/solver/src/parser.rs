@@ -53,6 +53,10 @@ pub struct SolomonCustomer {
 }
 
 /// Parses a Solomon/VRPLib instance file.
+///
+/// The parser is tolerant of extra blank lines, comments (lines starting with `#` or `//`),
+/// case-insensitive section headers, and variable whitespace. It validates that
+/// all required sections and fields are present.
 pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
     let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let reader = BufReader::new(file);
@@ -60,7 +64,9 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
     let lines = reader
         .lines()
         .map_while(Result::ok)
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| {
+            !l.trim().is_empty() && !l.trim().starts_with('#') && !l.trim().starts_with("//")
+        })
         .collect::<Vec<_>>();
 
     if lines.is_empty() {
@@ -70,24 +76,30 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
     let name = lines[0].trim().to_string();
     let mut idx = 1;
 
-    // Skip to VEHICLE section
-    while idx < lines.len() && !lines[idx].trim().eq_ignore_ascii_case("VEHICLE") {
-        idx += 1;
+    // Helper: find next section header (case-insensitive)
+    fn find_section(lines: &[String], idx: &mut usize, target: &str) -> anyhow::Result<()> {
+        while *idx < lines.len() && !lines[*idx].trim().eq_ignore_ascii_case(target) {
+            *idx += 1;
+        }
+        if *idx >= lines.len() {
+            anyhow::bail!("missing {} section", target);
+        }
+        *idx += 1; // skip header
+        Ok(())
     }
-    if idx >= lines.len() {
-        anyhow::bail!("missing VEHICLE section");
-    }
-    idx += 1; // skip "VEHICLE"
+
+    // VEHICLE section
+    find_section(&lines, &mut idx, "VEHICLE")?;
+    // Find NUMBER line
     while idx < lines.len() && !lines[idx].trim().starts_with("NUMBER") {
         idx += 1;
     }
     if idx >= lines.len() {
-        anyhow::bail!("missing NUMBER/CAPACITY line");
+        anyhow::bail!("missing NUMBER/CAPACITY line in VEHICLE section");
     }
-    // Parse NUMBER and CAPACITY (they're on the next line or same line)
-    idx += 1;
+    idx += 1; // data line
     if idx >= lines.len() {
-        anyhow::bail!("missing vehicle data line");
+        anyhow::bail!("missing vehicle data line after NUMBER header");
     }
     let parts: Vec<&str> = lines[idx].split_whitespace().collect();
     if parts.len() < 2 {
@@ -98,16 +110,10 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
         .parse()
         .with_context(|| "parsing vehicle capacity")?;
 
-    // Skip to CUSTOMER section
-    while idx < lines.len() && !lines[idx].trim().eq_ignore_ascii_case("CUSTOMER") {
-        idx += 1;
-    }
-    if idx >= lines.len() {
-        anyhow::bail!("missing CUSTOMER section");
-    }
-    idx += 1; // skip "CUSTOMER"
-    // Skip header line
-    while idx < lines.len() && lines[idx].trim().starts_with("CUST") {
+    // CUSTOMER section
+    find_section(&lines, &mut idx, "CUSTOMER")?;
+    // Skip header line(s) - any line starting with CUST (case-insensitive)
+    while idx < lines.len() && lines[idx].trim().to_uppercase().starts_with("CUST") {
         idx += 1;
     }
 
@@ -118,34 +124,45 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
             idx += 1;
             continue;
         }
+        // Stop if we hit another section header
+        if line.eq_ignore_ascii_case("VEHICLE")
+            || line.eq_ignore_ascii_case("CUSTOMER")
+            || line.eq_ignore_ascii_case("DEPOT")
+        {
+            break;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 7 {
-            anyhow::bail!("customer line has <7 fields: {}", line);
+            anyhow::bail!("customer line {} has <7 fields: {}", idx + 1, line);
         }
         customers.push(SolomonCustomer {
             id: parts[0]
                 .parse()
-                .with_context(|| format!("parsing id: {}", parts[0]))?,
+                .with_context(|| format!("parsing id at line {}: {}", idx + 1, parts[0]))?,
             x: parts[1]
                 .parse()
-                .with_context(|| format!("parsing x: {}", parts[1]))?,
+                .with_context(|| format!("parsing x at line {}: {}", idx + 1, parts[1]))?,
             y: parts[2]
                 .parse()
-                .with_context(|| format!("parsing y: {}", parts[2]))?,
+                .with_context(|| format!("parsing y at line {}: {}", idx + 1, parts[2]))?,
             demand: parts[3]
                 .parse()
-                .with_context(|| format!("parsing demand: {}", parts[3]))?,
+                .with_context(|| format!("parsing demand at line {}: {}", idx + 1, parts[3]))?,
             ready: parts[4]
                 .parse()
-                .with_context(|| format!("parsing ready: {}", parts[4]))?,
+                .with_context(|| format!("parsing ready at line {}: {}", idx + 1, parts[4]))?,
             due: parts[5]
                 .parse()
-                .with_context(|| format!("parsing due: {}", parts[5]))?,
+                .with_context(|| format!("parsing due at line {}: {}", idx + 1, parts[5]))?,
             service: parts[6]
                 .parse()
-                .with_context(|| format!("parsing service: {}", parts[6]))?,
+                .with_context(|| format!("parsing service at line {}: {}", idx + 1, parts[6]))?,
         });
         idx += 1;
+    }
+
+    if customers.is_empty() {
+        anyhow::bail!("no customers parsed");
     }
 
     if customers.is_empty() {
@@ -163,17 +180,38 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
     })
 }
 
+/// Euclidean distance between two Solomon coordinates.
+fn euclidean_distance(a: &SolomonCustomer, b: &SolomonCustomer) -> f64 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
 /// Converts a `SolomonInstance` into a `domain::Problem`.
 ///
 /// Mapping:
 /// - Single depot at the depot coordinates.
 /// - One vehicle per vehicle_count, all starting at the depot.
 /// - Capacity per vehicle is the Solomon capacity (all ambient).
-/// - One driver per vehicle with a shift covering the whole horizon (0..=max_due).
+/// - One driver per vehicle with a shift covering the whole horizon plus
+///   the worst-case return leg from the farthest customer to depot.
 /// - Time windows from READY TIME .. DUE DATE, service time from SERVICE TIME.
 /// - Travel times are Euclidean distance / speed (Solomon uses Euclidean coordinates).
 pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
     let max_due = inst.customers.iter().map(|c| c.due).max().unwrap_or(1440);
+
+    // Compute worst-case return leg from any customer to depot (in minutes at given speed).
+    let depot_cust = &inst.customers[0];
+    let max_return_km = inst
+        .customers
+        .iter()
+        .skip(1) // skip depot itself
+        .map(|c| euclidean_distance(depot_cust, c))
+        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .unwrap_or(0.0);
+    let max_return_min = (max_return_km / speed_kmh * 60.0).ceil() as i64;
+
+    let horizon_end = max_due + max_return_min + 10; // small buffer for service time
 
     let depot_id = DepotId(0);
     let depot = Depot {
@@ -188,7 +226,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
             name: format!("Vehicle {:03}", i + 1),
             depot: depot_id,
             capacity: Load::new(inst.vehicle_capacity, 0, 0),
-            max_duration: Minutes::from_minutes(max_due + 100),
+            max_duration: Minutes::from_minutes(horizon_end),
             avg_speed_kmh: speed_kmh,
         })
         .collect();
@@ -199,16 +237,18 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
             name: format!("Driver {:03}", i + 1),
             shifts: vec![Shift::new(
                 Minutes::ZERO,
-                Minutes::from_minutes(max_due + 100),
+                Minutes::from_minutes(horizon_end),
             )],
         })
         .collect();
 
     let mut stores = Vec::new();
     // Solomon customers are 0-indexed with 0 = depot; skip the depot
-    for cust in inst.customers.iter().skip(1) {
+    // Remap customer IDs (1..=n) to contiguous 0-based store indices.
+    let customers: Vec<_> = inst.customers.iter().skip(1).collect();
+    for (store_index, cust) in customers.iter().enumerate() {
         stores.push(Store {
-            id: StoreId(cust.id as u32),
+            id: StoreId(store_index as u32),
             chain: Chain::Coles, // placeholder
             name: format!("Customer {:03}", cust.id),
             location: LatLon::new(cust.x, cust.y),

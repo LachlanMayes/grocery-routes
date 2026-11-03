@@ -74,7 +74,7 @@ fn reference_scenario_is_structurally_sound() {
         );
     }
 
-    let total_demand: u32 = problem
+    let total_demand: u64 = problem
         .stores
         .iter()
         .map(|store| store.demand.total())

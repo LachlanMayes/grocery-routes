@@ -79,13 +79,29 @@ fn spans_overlap(a: (Minutes, Minutes), b: (Minutes, Minutes)) -> bool {
 /// [`Solution::unassigned`].
 pub(crate) fn plan(problem: &Problem) -> Solution {
     let matrix = DistanceMatrix::new(problem);
+    plan_with_matrix(problem, matrix)
+}
+
+/// Runs the greedy insertion heuristic with a custom distance matrix.
+pub(crate) fn plan_with_matrix(problem: &Problem, matrix: DistanceMatrix) -> Solution {
     let driver_indices = driver_order(problem);
     let mut routes: Vec<ActiveRoute> = Vec::new();
     let mut used = vec![false; problem.vehicles.len()];
     let mut driver_busy: Vec<Vec<(Minutes, Minutes)>> = vec![Vec::new(); problem.drivers.len()];
     let mut unassigned: Vec<StoreId> = Vec::new();
 
+    // Pre-filter stores with no receiving windows — they can never be scheduled.
+    for store in &problem.stores {
+        if store.receiving.is_empty() {
+            unassigned.push(store.id);
+        }
+    }
+
     for store_index in processing_order(problem) {
+        // Skip stores already marked unassigned (e.g., windowless)
+        if unassigned.contains(&problem.stores[store_index].id) {
+            continue;
+        }
         match best_insertion(
             problem,
             &matrix,
@@ -107,20 +123,21 @@ pub(crate) fn plan(problem: &Problem) -> Solution {
 /// window end first (a store with several windows is judged by its tightest
 /// one), then largest total demand, then id. The id tie-break keeps the order
 /// total and therefore deterministic.
+///
+/// Stores with no receiving windows are excluded (handled upstream).
 fn processing_order(problem: &Problem) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..problem.stores.len()).collect();
+    let mut order: Vec<usize> = (0..problem.stores.len())
+        .filter(|&i| !problem.stores[i].receiving.is_empty())
+        .collect();
     order.sort_by_key(|&index| {
         let store = &problem.stores[index];
         let deadline = store
             .receiving
             .iter()
             .map(|window| window.end.minutes())
-            .min();
-        (
-            deadline.unwrap_or(i64::MAX),
-            Reverse(store.demand.total()),
-            store.id,
-        )
+            .min()
+            .unwrap_or(i64::MAX);
+        (deadline, Reverse(store.demand.total()), store.id)
     });
     order
 }
@@ -324,7 +341,7 @@ fn schedule_shift(
         return None;
     }
     let (&last, store_nodes) = rest.split_last()?;
-    if last != home || store_nodes.is_empty() {
+    if !matches!(last, Node::Depot(_)) || store_nodes.is_empty() {
         return None;
     }
     if store_nodes
@@ -372,15 +389,15 @@ fn schedule_shift(
         previous = node;
     }
 
-    // Return leg to the home depot.
-    let leg_km = matrix.distance_km(previous, home)?;
+    // Return leg to the ending depot.
+    let leg_km = matrix.distance_km(previous, last)?;
     distance_km += leg_km;
     let arrival = time + travel_minutes(leg_km, vehicle.avg_speed_kmh);
     if arrival > shift.end {
         return None;
     }
     steps.push(PlannedStop {
-        node: home,
+        node: last,
         arrive: arrival,
         depart: arrival,
     });
@@ -451,10 +468,16 @@ fn add_load(load: Load, demand: Load) -> Option<Load> {
 }
 
 /// Route cost in cents: fixed charge plus distance and duration components,
-/// each rounded to the nearest cent.
+/// each rounded to the nearest cent using integer arithmetic.
 fn route_cost(model: CostModel, distance_km: f64, duration: Minutes) -> i64 {
-    let distance_cents = (distance_km * model.per_km_cents as f64).round() as i64;
-    let duration_cents = (duration.hours() * model.per_hour_cents as f64).round() as i64;
+    // Distance: round(distance_km * per_km_cents) = round(distance_km * 100) * per_km_cents / 100
+    // Avoid float rounding drift by scaling to millikm.
+    let distance_millikm = (distance_km * 1000.0).round() as i64;
+    let distance_cents = (distance_millikm * model.per_km_cents + 500) / 1000;
+
+    // Duration: round(duration.minutes() * per_hour_cents / 60) with half-up rounding
+    let duration_cents = (duration.minutes() * model.per_hour_cents + 30) / 60;
+
     model
         .fixed_per_route_cents
         .saturating_add(distance_cents)

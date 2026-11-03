@@ -266,8 +266,12 @@ fn read_solution_json(path: &Path) -> anyhow::Result<Solution> {
 }
 
 /// Validates that `path` is a regular file not larger than `MAX_JSON_BYTES`.
+/// Opens the file first, then checks metadata on the handle to avoid TOCTOU.
 fn check_json_size(path: &Path) -> anyhow::Result<()> {
-    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let meta = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?;
     if !meta.is_file() {
         anyhow::bail!("{} is not a regular file", path.display());
     }

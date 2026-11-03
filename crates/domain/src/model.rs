@@ -58,8 +58,11 @@ impl Load {
     }
 
     /// Total handling units across all compartments.
-    pub const fn total(self) -> u32 {
-        self.ambient + self.chilled + self.frozen
+    /// Uses saturating arithmetic to avoid overflow (returns u64 for headroom).
+    pub fn total(self) -> u64 {
+        (self.ambient as u64)
+            .saturating_add(self.chilled as u64)
+            .saturating_add(self.frozen as u64)
     }
 
     /// True when every compartment fits inside `capacity`.
@@ -134,16 +137,38 @@ impl Shift {
 /// True when every minute of `[start, end)` is covered by at least one shift.
 ///
 /// Used for depot dwells (loading, driver hand-overs) that may legally span
-/// two shifts. Shifts are half-open `[start, end)`, so minute `m` is covered
-/// when `shift.start <= m < shift.end`. Returns `false` for an empty shift
-/// list.
+/// two shifts. Shifts are half-open `[start, end)`. Returns `false` for an
+/// empty shift list.
 fn union_covers(shifts: &[Shift], start: Minutes, end: Minutes) -> bool {
-    !shifts.is_empty()
-        && (start.minutes()..end.minutes()).all(|minute| {
-            shifts
-                .iter()
-                .any(|shift| shift.start.minutes() <= minute && minute < shift.end.minutes())
-        })
+    if shifts.is_empty() {
+        return false;
+    }
+    // Build merged intervals from shifts (half-open [start, end))
+    let mut intervals: Vec<(i64, i64)> = shifts
+        .iter()
+        .map(|s| (s.start.minutes(), s.end.minutes()))
+        .collect();
+    intervals.sort_unstable_by_key(|&(s, _)| s);
+    // Merge overlapping/adjacent intervals
+    let mut merged: Vec<(i64, i64)> = Vec::new();
+    for (s, e) in intervals {
+        if let Some(last) = merged.last_mut()
+            && s <= last.1
+        {
+            // Overlaps or touches — merge
+            last.1 = last.1.max(e);
+            continue;
+        }
+        merged.push((s, e));
+    }
+    // Check if [start, end) is fully covered by merged intervals
+    let (qs, qe) = (start.minutes(), end.minutes());
+    for (s, e) in merged {
+        if s <= qs && qe <= e {
+            return true;
+        }
+    }
+    false
 }
 
 /// A distribution centre.
