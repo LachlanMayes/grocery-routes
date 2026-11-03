@@ -734,9 +734,11 @@ dependencies = [
 name = "solver"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "criterion",
  "domain",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]

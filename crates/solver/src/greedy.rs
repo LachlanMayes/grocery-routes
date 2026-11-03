@@ -34,22 +34,22 @@ use crate::matrix::{DistanceMatrix, travel_minutes};
 /// A route sequence scheduled onto one (driver, shift) pair, with the derived
 /// metrics the solution model expects.
 #[derive(Debug)]
-struct Scheduled {
-    driver: DriverId,
+pub struct Scheduled {
+    pub driver: DriverId,
     /// The driver's work span for this route: first departure to last arrival.
-    span: (Minutes, Minutes),
-    steps: Vec<PlannedStop>,
-    distance_km: f64,
-    duration: Minutes,
-    cost_cents: i64,
+    pub span: (Minutes, Minutes),
+    pub steps: Vec<PlannedStop>,
+    pub distance_km: f64,
+    pub duration: Minutes,
+    pub cost_cents: i64,
 }
 
 /// A committed route: the vehicle's position in `Problem::vehicles` and its
 /// current schedule.
 #[derive(Debug)]
-struct ActiveRoute {
-    vehicle_index: usize,
-    scheduled: Scheduled,
+pub struct ActiveRoute {
+    pub vehicle_index: usize,
+    pub scheduled: Scheduled,
 }
 
 /// One feasible way of placing a store, with the tie-break key
@@ -272,7 +272,7 @@ fn commit(
 /// Tries each driver, in id order, and each of that driver's shifts, in
 /// declaration order, and returns the first schedule that is feasible and
 /// does not overlap an existing booking of the same driver.
-fn schedule_route(
+pub fn schedule_route(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
@@ -398,6 +398,30 @@ fn schedule_shift(
         duration,
         cost_cents: route_cost(problem.cost, distance_km, duration),
     })
+}
+
+/// Simplified scheduling for construction heuristics (no occupancy checks).
+/// Tries each driver, in id order, and each of that driver's shifts, in
+/// declaration order, and returns the first feasible schedule.
+#[allow(dead_code)]
+pub fn schedule_route_simple(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    driver_indices: &[usize],
+    vehicle: &Vehicle,
+    sequence: &[Node],
+) -> Option<Scheduled> {
+    for &driver_index in driver_indices {
+        let driver = problem.drivers.get(driver_index)?;
+        for &shift in &driver.shifts {
+            if let Some(scheduled) =
+                schedule_shift(problem, matrix, vehicle, driver.id, shift, sequence)
+            {
+                return Some(scheduled);
+            }
+        }
+    }
+    None
 }
 
 /// The earliest minute a store's service can start after arriving at

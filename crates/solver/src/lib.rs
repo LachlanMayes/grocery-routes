@@ -26,8 +26,10 @@
 
 mod greedy;
 mod matrix;
+pub mod parser; // Solomon/VRPLib parser (vendored for M1)
 
 pub use matrix::{DistanceMatrix, FALLBACK_SPEED_KMH, travel_minutes};
+pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
 
 use domain::{Problem, Solution};
 
@@ -38,6 +40,16 @@ use domain::{Problem, Solution};
 /// constraint are returned in [`domain::Solution::unassigned`]. Running the
 /// solver twice on the same problem returns the same plan.
 pub fn solve(problem: &Problem) -> Solution {
+    let solution = greedy::plan(problem);
+    debug_assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    solution
+}
+
+/// Runs the M0 greedy insertion solver (for comparison/benchmarking).
+pub fn solve_greedy(problem: &Problem) -> Solution {
     let solution = greedy::plan(problem);
     debug_assert!(
         solution.validate(problem).is_ok(),

@@ -9,10 +9,13 @@ workspace = true
 
 [dependencies]
 domain = { path = "../domain" }
+anyhow.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+anyhow.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "solve_bench"

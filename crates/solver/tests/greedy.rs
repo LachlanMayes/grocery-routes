@@ -4,7 +4,7 @@ use domain::{
     Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
     Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
-use solver::solve;
+use solver::{solve, solve_greedy};
 
 /// One depot, three stores and two vehicles on one driver shift.
 fn small_problem() -> Problem {
@@ -224,6 +224,53 @@ fn multi_day_horizon_store_is_served_on_day_two() {
     let last = route.steps.last().expect("return leg");
     assert!(route.distance_km > 1300.0, "got {}", route.distance_km);
     assert!(last.depart <= problem.drivers[0].shifts[0].end);
+}
+
+/// C101 calibration test — the standard Solomon benchmark.
+/// Best known: 10 routes, 828.94 distance (with Euclidean).
+/// Our greedy solver on Euclidean coordinates should get within reasonable range.
+#[test]
+fn c101_calibration_greedy() {
+    use solver::parser::{parse_solomon_file, solomon_to_problem};
+
+    // For the calibration gate we parse the full file if present,
+    // otherwise we skip the test.
+    let path = std::path::Path::new("data/solomon/C101.txt");
+    if !path.exists() {
+        eprintln!("Skipping C101 calibration: data/solomon/C101.txt not found");
+        return;
+    }
+
+    let inst = parse_solomon_file(path).unwrap();
+    let problem = solomon_to_problem(inst, 1.0);
+
+    let solution = solve_greedy(&problem);
+
+    // Validate
+    assert_eq!(solution.validate(&problem), Ok(()));
+    assert!(
+        solution.unassigned.is_empty(),
+        "unassigned: {:?}",
+        solution.unassigned
+    );
+
+    // Record the baseline for the M1 gate
+    let routes_used = solution.routes.len();
+    let total_dist = solution.total_distance_km;
+    let served = problem.stores.len() - solution.unassigned.len();
+
+    eprintln!(
+        "C101 calibration: routes={}, distance={:.2}, served={}/{}",
+        routes_used,
+        total_dist,
+        served,
+        problem.stores.len()
+    );
+
+    // The exact targets will be set after this run; for now just ensure it runs.
+    assert!(routes_used > 0);
+    assert!(total_dist > 0.0);
+    assert_eq!(served, problem.stores.len());
 }
 
 /// One depot, one vehicle with `capacity` and one driver on a 10-hour shift;
