@@ -33,7 +33,7 @@ use crate::matrix::{DistanceMatrix, travel_minutes};
 
 /// A route sequence scheduled onto one (driver, shift) pair, with the derived
 /// metrics the solution model expects.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Scheduled {
     pub driver: DriverId,
     /// The driver's work span for this route: first departure to last arrival.
@@ -65,11 +65,11 @@ struct Insertion {
 }
 
 /// Empty booking list, used when a driver has no bookings yet.
-const NO_SPANS: &[(Minutes, Minutes)] = &[];
+pub(crate) const NO_SPANS: &[(Minutes, Minutes)] = &[];
 
 /// True when two work spans overlap. Spans may touch (one ends exactly when
 /// the next starts) but must not otherwise share any instant.
-fn spans_overlap(a: (Minutes, Minutes), b: (Minutes, Minutes)) -> bool {
+pub(crate) fn spans_overlap(a: (Minutes, Minutes), b: (Minutes, Minutes)) -> bool {
     a.0 < b.1 && b.0 < a.1
 }
 
@@ -328,7 +328,7 @@ pub fn schedule_route(
 /// [`Solution::validate`] documents). The route is feasible only when the
 /// whole run fits the single shift, every cumulative load fits the vehicle
 /// and the spanned time respects `max_duration`.
-fn schedule_shift(
+pub(crate) fn schedule_shift(
     problem: &Problem,
     matrix: &DistanceMatrix,
     vehicle: &Vehicle,

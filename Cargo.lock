@@ -738,6 +738,7 @@ dependencies = [
  "criterion",
  "domain",
  "proptest",
+ "rand 0.9.5",
  "tempfile",
 ]
 

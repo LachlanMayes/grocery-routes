@@ -25,9 +25,11 @@
 //! same problem always yields the same plan.
 
 mod greedy;
+mod local_search;
 mod matrix;
 pub mod parser; // Solomon/VRPLib parser (vendored for M1)
 
+pub use local_search::{LSConfig, improve};
 pub use matrix::{
     DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
 };
@@ -35,12 +37,12 @@ pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
 
 use domain::{Problem, Solution};
 
-/// Solves `problem` and returns a validated plan.
+/// Solves `problem` and returns a validated plan using greedy insertion (M0/M1).
 ///
 /// The returned solution is guaranteed to satisfy
 /// [`domain::Solution::validate`]; stores that cannot be served within every
 /// constraint are returned in [`domain::Solution::unassigned`]. Running the
-/// solver twice on the same problem returns the same plan.
+/// solver twice on the same problem returns the same plan (deterministic).
 pub fn solve(problem: &Problem) -> Solution {
     let solution = greedy::plan(problem);
     // Runtime validation (not debug_assert!): must hold in release builds too.

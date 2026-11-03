@@ -20,7 +20,7 @@ const MINUTES_PER_HOUR: f64 = 60.0;
 ///
 /// Building the matrix costs one haversine call per unordered pair and
 /// `O(n²)` memory, which is cheap at M0 problem sizes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DistanceMatrix {
     depot_count: usize,
     node_count: usize,
