@@ -8,7 +8,7 @@
 //! - **Live Events**: SSE stream of solve completions
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::api_client::{ApiClient, Kpis, SolveRequest, SolveResponse};
 use eframe::egui;
@@ -69,7 +69,7 @@ pub struct ConsoleApp {
     msg_tx: mpsc::Sender<Msg>,
 
     // Last SSE poll time
-    last_event_poll: std::time::Instant,
+    last_event_poll: Instant,
 }
 
 /// A solved event for display in the events tab.
@@ -107,7 +107,7 @@ impl Default for ConsoleApp {
             max_events: 50,
             msg_rx: rx,
             msg_tx: tx,
-            last_event_poll: std::time::Instant::now(),
+            last_event_poll: Instant::now(),
         }
     }
 }
@@ -121,31 +121,22 @@ impl eframe::App for ConsoleApp {
 
         // Poll SSE for live events (every 2 seconds)
         if self.last_event_poll.elapsed() > Duration::from_secs(2) {
-            self.last_event_poll = std::time::Instant::now();
+            self.last_event_poll = Instant::now();
             let tx = self.msg_tx.clone();
             let client = self.client.clone();
             tokio::task::spawn(async move {
-                match client.events_stream().await {
-                    Ok(resp) => {
-                        match resp.text().await {
-                            Ok(text) => {
-                                for line in text.lines() {
-                                    if line.starts_with("data: ") {
-                                        let data = &line[6..];
-                                        if let Ok(event) =
-                                            serde_json::from_str::<crate::api_client::SolveEvent>(
-                                                data,
-                                            )
-                                        {
-                                            let _ = tx.send(Msg::SolveEvent(event));
-                                        }
-                                    }
+                if let Ok(resp) = client.events_stream().await {
+                    if let Ok(text) = resp.text().await {
+                        for line in text.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if let Ok(event) =
+                                    serde_json::from_str::<crate::api_client::SolveEvent>(data)
+                                {
+                                    let _ = tx.send(Msg::SolveEvent(event));
                                 }
                             }
-                            Err(_) => {} // Server not running yet, silently skip
                         }
                     }
-                    Err(_) => {} // Server not running yet, silently skip
                 }
             });
         }
@@ -235,7 +226,7 @@ impl ConsoleApp {
 
         ui.add_space(8.0);
         egui::ScrollArea::vertical()
-            .id_source("import_scroll")
+            .id_salt("import_scroll")
             .max_height(300.0)
             .show(ui, |ui| {
                 ui.text_edit_multiline(&mut self.import_json);
