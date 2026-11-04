@@ -192,3 +192,276 @@ fn haversine_km(a: LatLon, b: LatLon) -> f64 {
         + phi1.cos() * phi2.cos() * (delta_lambda / 2.0).sin().powi(2);
     2.0 * EARTH_RADIUS_KM * h.sqrt().atan2((1.0 - h).sqrt())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::{
+        Chain, CostModel, Depot, DepotId, Driver, DriverId, Load, Minutes, Problem, Shift, Store,
+        StoreId, TimeWindow, Vehicle, VehicleId,
+    };
+
+    fn test_problem_with_nodes(locations: Vec<LatLon>) -> Problem {
+        Problem {
+            name: "test".into(),
+            depots: locations
+                .iter()
+                .enumerate()
+                .map(|(i, &loc)| Depot {
+                    id: DepotId(i as u32),
+                    name: format!("Depot {i}"),
+                    location: loc,
+                })
+                .take(1)
+                .collect(),
+            stores: locations
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(i, &loc)| Store {
+                    id: StoreId(i as u32),
+                    chain: Chain::Coles,
+                    name: format!("Store {i}"),
+                    location: loc,
+                    demand: Load::ZERO,
+                    service: Minutes::ZERO,
+                    receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(1440))],
+                })
+                .collect(),
+            vehicles: vec![Vehicle {
+                id: VehicleId(0),
+                name: "Truck".into(),
+                depot: DepotId(0),
+                capacity: Load::new(8, 8, 4),
+                max_duration: Minutes::from_minutes(600),
+                avg_speed_kmh: 60.0,
+            }],
+            drivers: vec![Driver {
+                id: DriverId(0),
+                name: "Sam".into(),
+                shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            }],
+            cost: CostModel {
+                fixed_per_route_cents: 0,
+                per_km_cents: 0,
+                per_hour_cents: 0,
+                late_per_min_cents: 0,
+            },
+        }
+    }
+
+    fn build_line_graph() -> Graph {
+        // Two nodes ~10 km apart at known Sydney coordinates
+        let mut g = Graph::new();
+        g.add_node(NodeId(0), LatLon::new(-33.87, 151.21)); // node 0
+        g.add_node(NodeId(1), LatLon::new(-33.87, 151.30)); // node 1 ~10 km east
+        // Add edges in both directions (build_line_graph doesn't go through
+        // add_way_to_graph, so we add both directions manually).
+        for (from, to) in [(NodeId(0), NodeId(1)), (NodeId(1), NodeId(0))] {
+            g.add_edge(
+                from,
+                to,
+                10.0,
+                10,
+                Some("primary".to_string()),
+                None,
+                None,
+                false,
+                false,
+            );
+        }
+        g
+    }
+
+    #[test]
+    fn matrix_for_direct_edge_matches() {
+        let graph = build_line_graph();
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(graph);
+
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21), // depot at node 0
+            LatLon::new(-33.87, 151.30), // store at node 1
+        ]);
+
+        let profile = TruckProfile::default();
+        let matrix = cache
+            .matrix_for(&problem, profile)
+            .expect("matrix_for should succeed")
+            .expect("graph should be loaded");
+
+        // Diagonal: depot->depot is zero
+        assert_eq!(
+            matrix[0][0],
+            Some(MatrixEntry {
+                distance_km: 0.0,
+                duration_minutes: 0
+            })
+        );
+        // depot->store should match the graph edge (~10 km)
+        let entry = matrix[0][1].expect("depot to store should have a path");
+        assert!((entry.distance_km - 10.0).abs() < 0.1);
+        assert_eq!(entry.duration_minutes, 10);
+        // store->depot should be symmetric
+        let entry = matrix[1][0].expect("store to depot should have a path");
+        assert!((entry.distance_km - 10.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn matrix_for_unreachable_pair_returns_none() {
+        let mut g = Graph::new();
+        // Two disconnected nodes
+        g.add_node(NodeId(0), LatLon::new(-33.87, 151.21));
+        g.add_node(NodeId(1), LatLon::new(-33.87, 151.30));
+        // No edges added
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(g);
+
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21), // depot at node 0
+            LatLon::new(-33.87, 151.30), // store at node 1
+        ]);
+
+        let profile = TruckProfile::default();
+        let matrix = cache
+            .matrix_for(&problem, profile)
+            .expect("matrix_for should succeed")
+            .expect("graph should be loaded");
+
+        // depot->store should be None (no path)
+        assert_eq!(matrix[0][1], None);
+        assert_eq!(matrix[1][0], None);
+        // Diagonal should still be zero
+        assert_eq!(
+            matrix[0][0],
+            Some(MatrixEntry {
+                distance_km: 0.0,
+                duration_minutes: 0
+            })
+        );
+    }
+
+    #[test]
+    fn matrix_for_cache_hit_returns_same_results() {
+        let graph = build_line_graph();
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(graph);
+
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21),
+            LatLon::new(-33.87, 151.30),
+        ]);
+        let profile = TruckProfile::default();
+
+        let first = cache
+            .matrix_for(&problem, profile)
+            .expect("first call should succeed")
+            .expect("graph loaded");
+        let second = cache
+            .matrix_for(&problem, profile)
+            .expect("second call should succeed")
+            .expect("graph loaded");
+
+        assert_eq!(first, second, "cache hit should return identical matrix");
+        assert_eq!(cache.cached_count(), 1, "only one matrix should be cached");
+    }
+
+    #[test]
+    fn matrix_for_diagonal_is_zero() {
+        let graph = build_line_graph();
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(graph);
+
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21),
+            LatLon::new(-33.87, 151.30),
+        ]);
+
+        let profile = TruckProfile::default();
+        let matrix = cache
+            .matrix_for(&problem, profile)
+            .expect("matrix_for should succeed")
+            .expect("graph loaded");
+
+        let zero = MatrixEntry {
+            distance_km: 0.0,
+            duration_minutes: 0,
+        };
+        assert_eq!(matrix[0][0], Some(zero), "diagonal entry 0 should be zero");
+        assert_eq!(matrix[1][1], Some(zero), "diagonal entry 1 should be zero");
+    }
+
+    #[test]
+    fn matrix_for_truck_profile_blocks_edges() {
+        // Graph: 0 -> 1 -> 2, but edge 1->2 is tagged hgv=no
+        let mut g = Graph::new();
+        g.add_node(NodeId(0), LatLon::new(-33.87, 151.21));
+        g.add_node(NodeId(1), LatLon::new(-33.87, 151.30));
+        g.add_node(NodeId(2), LatLon::new(-33.87, 151.39));
+        g.add_edge(
+            NodeId(0),
+            NodeId(1),
+            10.0,
+            10,
+            Some("primary".to_string()),
+            None,
+            None,
+            false,
+            false,
+        );
+        g.add_edge(
+            NodeId(1),
+            NodeId(2),
+            10.0,
+            10,
+            Some("hgv=no".to_string()),
+            None,
+            None,
+            false,
+            true,
+        );
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(g);
+
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21), // node 0
+            LatLon::new(-33.87, 151.39), // node 2
+        ]);
+
+        // Car profile: can traverse hgv=no, path exists 0->1->2
+        let car = TruckProfile::default();
+        let car_matrix = cache
+            .matrix_for(&problem, car)
+            .expect("car matrix should succeed")
+            .expect("graph loaded");
+        assert!(
+            car_matrix[0][1].is_some(),
+            "car should find path depot->store"
+        );
+
+        // HGV profile: blocked by hgv=no edge, no path
+        let hgv = TruckProfile {
+            hgv: true,
+            ..Default::default()
+        };
+        let hgv_matrix = cache
+            .matrix_for(&problem, hgv)
+            .expect("hgv matrix should succeed")
+            .expect("graph loaded");
+        assert_eq!(
+            hgv_matrix[0][1], None,
+            "HGV should find no path when edge is hgv=no"
+        );
+    }
+
+    #[test]
+    fn matrix_for_no_graph_returns_error() {
+        let mut cache = CachedMatrix::new(); // no graph loaded
+        let problem = test_problem_with_nodes(vec![LatLon::new(-33.87, 151.21)]);
+        let result = cache.matrix_for(&problem, TruckProfile::default());
+        assert!(
+            result.is_err(),
+            "matrix_for without graph should return an error"
+        );
+    }
+}
