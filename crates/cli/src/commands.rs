@@ -80,6 +80,15 @@ pub struct SolveArgs {
     /// the solver uses real road travel times instead of haversine/speed.
     #[arg(long)]
     pub osm: Option<PathBuf>,
+    /// Maximum vehicle weight in tonnes (truck constraint filter).
+    #[arg(long)]
+    pub maxweight: Option<f64>,
+    /// Maximum vehicle height in metres (truck constraint filter).
+    #[arg(long)]
+    pub maxheight: Option<f64>,
+    /// Classify vehicle as a heavy goods vehicle (truck constraint filter).
+    #[arg(long)]
+    pub hgv: bool,
 }
 
 /// Arguments of `export`.
@@ -161,7 +170,11 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         // M3: road-network distances/durations from OSM PBF.
         let mut cached = routing::CachedMatrix::new();
         cached.load_pbf(osm_path)?;
-        let profile = routing::TruckProfile::default();
+        let profile = routing::TruckProfile {
+            maxweight_tonnes: args.maxweight,
+            maxheight_m: args.maxheight,
+            hgv: args.hgv,
+        };
         if args.ls {
             solver::solve_with_lns_routing(
                 &problem,
