@@ -87,7 +87,6 @@ mod tests {
     use crate::graph::EdgeId;
     use crate::graph::GraphEdge;
     use crate::graph::NodeId;
-    use domain::LatLon;
 
     fn test_edge() -> GraphEdge {
         GraphEdge {

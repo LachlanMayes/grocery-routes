@@ -25,6 +25,12 @@ pub fn ingest_pbf(path: &Path) -> anyhow::Result<Graph> {
     // Re-open for the ways pass (ElementReader is single-pass).
     let mut graph = Graph::new();
     for (id, (lat, lon)) in &nodes {
+        if *id < 0 {
+            return Err(anyhow::anyhow!(
+                "negative OSM node id {} cannot be represented as NodeId (u64)",
+                id
+            ));
+        }
         graph.add_node(NodeId(*id as u64), LatLon::new(*lat, *lon));
     }
 

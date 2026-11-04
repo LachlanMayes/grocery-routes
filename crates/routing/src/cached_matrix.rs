@@ -42,7 +42,7 @@ pub struct MatrixKey {
 pub struct CachedMatrix {
     graph: Option<Graph>,
     pbf_path: Option<std::path::PathBuf>,
-    matrices: HashMap<MatrixKey, Vec<MatrixEntry>>,
+    matrices: HashMap<MatrixKey, Vec<Option<MatrixEntry>>>,
     node_count: usize,
 }
 
@@ -103,7 +103,7 @@ impl CachedMatrix {
         let node_ids: Vec<NodeId> = node_locations
             .iter()
             .map(|loc| nearest_graph_node(graph, *loc))
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
 
         let key = MatrixKey {
             node_ids: node_ids.clone(),
@@ -122,21 +122,25 @@ impl CachedMatrix {
                 distance_km: 0.0,
                 duration_minutes: 0,
             });
-            for j in (i + 1)..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                // Run Dijkstra separately for each direction — one-way roads
+                // mean i->j and j->i can have different distances or one may
+                // be unreachable. Do not assume symmetry.
                 let result = Router::shortest_path(graph, node_ids[i], node_ids[j], profile);
-                let entry = result.map(|r| MatrixEntry {
+                matrix[i][j] = result.map(|r| MatrixEntry {
                     distance_km: r.distance_km,
                     duration_minutes: r.duration_minutes,
                 });
-                matrix[i][j] = entry;
-                // Roads are generally bidirectional; cache both directions.
-                matrix[j][i] = entry;
             }
         }
 
-        // Flatten for caching.
-        let flat: Vec<MatrixEntry> = matrix.iter().flatten().filter_map(|e| *e).collect();
-        self.matrices.insert(key, flat);
+        // Flatten preserving None positions (unreachable pairs) so the cache
+        // round-trips correctly even when the graph is not fully connected.
+        let flat: Vec<Option<MatrixEntry>> = matrix.iter().flatten().copied().collect();
+        self.matrices.insert(key, flat.clone());
 
         Ok(Some(matrix))
     }
@@ -148,13 +152,13 @@ impl CachedMatrix {
 }
 
 /// Converts a flat cache entry list back into a 2D matrix.
-fn entries_to_matrix(flat: &[MatrixEntry], n: usize) -> Vec<Vec<Option<MatrixEntry>>> {
+fn entries_to_matrix(flat: &[Option<MatrixEntry>], n: usize) -> Vec<Vec<Option<MatrixEntry>>> {
     let mut matrix: Vec<Vec<Option<MatrixEntry>>> = vec![vec![None; n]; n];
     let mut idx = 0;
     for i in 0..n {
         for j in 0..n {
             if idx < flat.len() {
-                matrix[i][j] = Some(flat[idx]);
+                matrix[i][j] = flat[idx];
             }
             idx += 1;
         }
@@ -163,7 +167,7 @@ fn entries_to_matrix(flat: &[MatrixEntry], n: usize) -> Vec<Vec<Option<MatrixEnt
 }
 
 /// Finds the nearest graph node to `location` using haversine distance.
-fn nearest_graph_node(graph: &Graph, location: LatLon) -> NodeId {
+fn nearest_graph_node(graph: &Graph, location: LatLon) -> anyhow::Result<NodeId> {
     let mut best: Option<(NodeId, f64)> = None;
     for (id, node) in graph.nodes() {
         let d = haversine_km(location, node.location);
@@ -174,7 +178,7 @@ fn nearest_graph_node(graph: &Graph, location: LatLon) -> NodeId {
         }
     }
     best.map(|(id, _)| id)
-        .expect("graph must have at least one node")
+        .ok_or_else(|| anyhow::anyhow!("graph must have at least one node"))
 }
 
 /// Great-circle distance in kilometres.
