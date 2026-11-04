@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cli", "crates/api", "crates/domain", "crates/routing", "crates/sim", "crates/solver"]
+members = ["crates/cli", "crates/api", "crates/domain", "crates/routing", "crates/sim", "crates/solver", "apps/console"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,10 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
+egui = "0.31"
+eframe = "0.31"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+chrono = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
