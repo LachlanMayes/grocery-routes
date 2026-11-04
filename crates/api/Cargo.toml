@@ -1,0 +1,24 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+domain = { path = "../domain" }
+solver = { path = "../solver" }
+routing = { path = "../routing" }
+
+[dev-dependencies]
+tempfile.workspace = true
