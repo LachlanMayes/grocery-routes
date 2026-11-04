@@ -9,7 +9,7 @@
 //! `None` and are treated as infeasible by the solver.
 
 use domain::{LatLon, Minutes, Node, Problem, haversine_km};
-use routing::{CachedMatrix, MatrixEntry, TruckProfile};
+use routing::MatrixEntry;
 
 /// Planning speed used when a vehicle's `avg_speed_kmh` cannot produce a
 /// positive speed (zero, negative or NaN).
