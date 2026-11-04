@@ -531,7 +531,7 @@ impl Solution {
                 let window_end = window_start + Minutes::from_minutes(day_minutes);
                 let work_in_window: i64 = spans
                     .iter()
-                    .filter(|(s, e)| *s >= window_start && *s < window_end)
+                    .filter(|(s, _e)| *s >= window_start && *s < window_end)
                     .map(|(s, e)| e.minutes() - s.minutes())
                     .sum();
                 if work_in_window > max_work_24h {
@@ -551,7 +551,7 @@ impl Solution {
                 let window_end = window_start + Minutes::from_minutes(week_minutes);
                 let work_in_window: i64 = spans
                     .iter()
-                    .filter(|(s, e)| *s >= window_start && *s < window_end)
+                    .filter(|(s, _e)| *s >= window_start && *s < window_end)
                     .map(|(s, e)| e.minutes() - s.minutes())
                     .sum();
                 if work_in_window > max_work_7d {
