@@ -73,6 +73,9 @@ pub struct SolveArgs {
     /// File the solution JSON is written to.
     #[arg(long)]
     pub out: PathBuf,
+    /// Enable Large Neighborhood Search (LNS/ALNS) metaheuristic (M2).
+    #[arg(long)]
+    pub ls: bool,
 }
 
 /// Arguments of `export`.
@@ -149,7 +152,11 @@ const MAX_SOLVE_NODES: usize = 5_000;
 pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     let problem = read_problem_json(&args.problem)?;
     ensure_solvable_size(&problem)?;
-    let solution = solver::solve(&problem);
+    let solution = if args.ls {
+        solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
+    } else {
+        solver::solve(&problem)
+    };
     check_solution(&problem, &solution)?;
     write_solution_json(&args.out, &solution)?;
 
@@ -160,11 +167,12 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         .filter(|step| matches!(step.node, Node::Store(_)))
         .count();
     println!(
-        "solved '{}': {} routes used, {} of {} stores served",
+        "solved '{}': {} routes used, {} of {} stores served{}",
         problem.name,
         solution.routes.len(),
         served,
-        problem.stores.len()
+        problem.stores.len(),
+        if args.ls { " (with LNS)" } else { "" }
     );
     match solution.unassigned.as_slice() {
         [] => println!("  unassigned: none"),

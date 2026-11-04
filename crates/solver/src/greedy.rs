@@ -417,23 +417,34 @@ pub(crate) fn schedule_shift(
     })
 }
 
-/// Simplified scheduling for construction heuristics (no occupancy checks).
+/// Simplified scheduling for construction heuristics (with optional occupancy checks).
 /// Tries each driver, in id order, and each of that driver's shifts, in
-/// declaration order, and returns the first feasible schedule.
-#[allow(dead_code)]
+/// declaration order, and returns the first feasible schedule that does not
+/// overlap an existing booking of the same driver (except for `exempt`).
 pub fn schedule_route_simple(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
     vehicle: &Vehicle,
     sequence: &[Node],
+    driver_busy: &[Vec<(Minutes, Minutes)>],
+    exempt: Option<(usize, (Minutes, Minutes))>,
 ) -> Option<Scheduled> {
     for &driver_index in driver_indices {
         let driver = problem.drivers.get(driver_index)?;
+        let busy = driver_busy
+            .get(driver.id.0 as usize)
+            .map_or(NO_SPANS, Vec::as_slice);
         for &shift in &driver.shifts {
-            if let Some(scheduled) =
+            let Some(scheduled) =
                 schedule_shift(problem, matrix, vehicle, driver.id, shift, sequence)
-            {
+            else {
+                continue;
+            };
+            let blocked = busy.iter().any(|&span| {
+                spans_overlap(span, scheduled.span) && Some((driver.id.0 as usize, span)) != exempt
+            });
+            if !blocked {
                 return Some(scheduled);
             }
         }

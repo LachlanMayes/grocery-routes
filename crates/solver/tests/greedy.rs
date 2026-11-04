@@ -4,7 +4,7 @@ use domain::{
     Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
     Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
-use solver::{parse_solomon_file, solomon_to_problem, solve, solve_greedy_euclidean};
+use solver::{solve, solve_greedy_euclidean};
 
 /// One depot, three stores and two vehicles on one driver shift.
 fn small_problem() -> Problem {
@@ -242,7 +242,9 @@ fn c101_calibration_greedy() {
     }
 
     let inst = parse_solomon_file(path).unwrap();
-    let problem = solomon_to_problem(inst, 1.0);
+    // C101 treats each distance unit as 1 minute; at 60 km/h, 1 unit of travel
+    // time = 1 minute of driving (60 km/h = 1 km/min).
+    let problem = solomon_to_problem(inst, 60.0);
 
     let solution = solve_greedy_euclidean(&problem);
 
@@ -266,12 +268,143 @@ fn c101_calibration_greedy() {
         problem.stores.len()
     );
 
-    // Baseline targets (from literature: C101 best known = 10 routes, 828.94 km).
-    // Greedy is expected to be far worse; set loose bounds for now.
-    assert!(routes_used <= 15, "too many routes: {}", routes_used);
-    assert!(total_dist <= 1200.0, "distance too high: {}", total_dist);
-    // At least some stores should be served
-    assert!(served >= 5, "too few stores served: {}", served);
+    // C101 best known: 10 routes, 828.94 km, 100 served.
+    // M2 gate: ≤5% gap → distance ≤ 870.39, all stores served.
+    // Routes are free (fixed_per_route_cents = 0) so distance is the objective.
+    assert_eq!(served, 100, "must serve all 100 stores: {}", served);
+    assert!(
+        total_dist <= 870.39,
+        "distance {:.2} exceeds 5% gap to best-known 828.94 (limit 870.39)",
+        total_dist
+    );
+}
+
+/// C101 calibration with local search (M2).
+/// Tests whether local search improves the greedy baseline.
+#[test]
+fn c101_calibration_local_search() {
+    use solver::{
+        LSConfig, euclidean_matrix, parse_solomon_file, solomon_to_problem, solve_with_local_search,
+    };
+
+    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    if !path.exists() {
+        eprintln!("Skipping C101 local search calibration: data/solomon/C101.txt not found");
+        return;
+    }
+
+    let inst = parse_solomon_file(path).unwrap();
+    // C101 treats each distance unit as 1 minute; at 60 km/h, 1 unit of travel
+    // time = 1 minute of driving (60 km/h = 1 km/min).
+    let problem = solomon_to_problem(inst, 60.0);
+
+    let config = LSConfig {
+        max_no_improve: 500,
+        seed: 42,
+        restarts: 2,
+        time_limit_ms: 10_000,
+    };
+    // C101 uses Euclidean coordinates, not lat/lon
+    let matrix = euclidean_matrix(&problem);
+    let solution = solve_with_local_search(&problem, config, matrix);
+
+    // Validate
+    assert_eq!(
+        solution.validate(&problem),
+        Ok(()),
+        "solution must be valid"
+    );
+
+    let routes_used = solution.routes.len();
+    let total_dist = solution.total_distance_km;
+    let served = problem.stores.len() - solution.unassigned.len();
+
+    eprintln!(
+        "C101 local search: routes={}, distance={:.2}, served={}/{}",
+        routes_used,
+        total_dist,
+        served,
+        problem.stores.len()
+    );
+
+    // C101 best known: 10 routes, 828.94 km, 100 served.
+    // M2 gate: ≤5% gap → distance ≤ 870.39, all stores served.
+    assert_eq!(served, 100, "must serve all 100 stores: {}", served);
+    assert!(
+        total_dist <= 870.39,
+        "distance {:.2} exceeds 5% gap to best-known 828.94 (limit 870.39)",
+        total_dist
+    );
+
+    // TODO: tighten route count once fleet cost is non-zero (best-known=10 routes)
+}
+
+/// C101 calibration with LNS/ALNS (M2).
+/// Tests whether LNS improves the greedy baseline.
+#[test]
+fn c101_calibration_lns() {
+    use solver::{
+        LNSConfig, euclidean_matrix, parse_solomon_file, solomon_to_problem, solve_with_lns,
+    };
+
+    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    if !path.exists() {
+        eprintln!("Skipping C101 LNS calibration: data/solomon/C101.txt not found");
+        return;
+    }
+
+    let inst = parse_solomon_file(path).unwrap();
+    // C101 treats each distance unit as 1 minute; at 60 km/h, 1 unit of travel
+    // time = 1 minute of driving (60 km/h = 1 km/min). Using 60.0 keeps
+    // Solomon's unit-distance ≈ unit-time mapping so the ready/due windows
+    // (e.g. 912–967) line up with travel distances (~19 units).
+    let problem = solomon_to_problem(inst, 60.0);
+
+    let config = LNSConfig {
+        max_no_improve: 1000,
+        ruin_size_range: (6, 14),
+        seed: 42,
+        time_limit_ms: 30_000,
+        initial_temperature: 1500.0,
+        cooling_rate: 0.9995,
+        min_temperature: 0.1,
+        adaptive: true,
+        reaction_factor: 0.1,
+    };
+    // C101 uses Euclidean coordinates, not lat/lon
+    let matrix = euclidean_matrix(&problem);
+    let solution = solve_with_lns(&problem, config, matrix);
+
+    // Validate
+    assert_eq!(
+        solution.validate(&problem),
+        Ok(()),
+        "solution must be valid"
+    );
+
+    let routes_used = solution.routes.len();
+    let total_dist = solution.total_distance_km;
+    let served = problem.stores.len() - solution.unassigned.len();
+
+    eprintln!(
+        "C101 LNS: routes={}, distance={:.2}, served={}/{}",
+        routes_used,
+        total_dist,
+        served,
+        problem.stores.len()
+    );
+
+    // C101 best known: 10 routes, 828.94 km, 100 served.
+    // M2 gate: ≤5% gap → distance ≤ 870.39, all stores served.
+    // LNS starts from the greedy solution, so it must be ≥ greedy quality.
+    assert_eq!(served, 100, "must serve all 100 stores: {}", served);
+    assert!(
+        total_dist <= 870.39,
+        "distance {:.2} exceeds 5% gap to best-known 828.94 (limit 870.39)",
+        total_dist
+    );
+
+    // TODO: tighten route count once fleet cost is non-zero (best-known=10 routes)
 }
 
 /// One depot, one vehicle with `capacity` and one driver on a 10-hour shift;

@@ -165,10 +165,6 @@ pub fn parse_solomon_file(path: &Path) -> anyhow::Result<SolomonInstance> {
         anyhow::bail!("no customers parsed");
     }
 
-    if customers.is_empty() {
-        anyhow::bail!("no customers parsed");
-    }
-
     let depot = LatLon::new(customers[0].x, customers[0].y);
 
     Ok(SolomonInstance {

@@ -9,19 +9,14 @@
 //! All moves respect driver occupancy, capacity, time windows, and shift limits
 //! by reusing the scheduling logic from the greedy heuristic.
 
-use std::cmp::Reverse;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use domain::{
-    CostModel, DriverId, Load, Minutes, Node, PlannedStop, Problem, RoutePlan, Shift, Solution,
-    Store, StoreId, Vehicle, VehicleId,
+    DriverId, Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId, Vehicle,
 };
 
-use super::greedy::{ActiveRoute, Scheduled, plan, schedule_route, schedule_shift, spans_overlap};
+use super::greedy::{Scheduled, plan, plan_with_matrix, schedule_shift, spans_overlap};
 use crate::matrix::DistanceMatrix;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
-use std::collections::HashSet;
 
 /// A route in the local search, with its schedule and metadata.
 #[derive(Debug, Clone)]
@@ -39,21 +34,6 @@ struct LSSolution {
     /// Driver busy spans: for each driver, list of (start, end) spans they are busy.
     /// Used to enforce driver occupancy constraint during moves.
     driver_busy: Vec<Vec<(Minutes, Minutes)>>,
-}
-
-/// Result of evaluating a move.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MoveDelta {
-    delta_cost: i64,
-    move_type: MoveType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MoveType {
-    TwoOpt,
-    Relocate,
-    Exchange,
-    CrossExchange,
 }
 
 /// Configuration for local search.
@@ -154,9 +134,8 @@ pub fn improve(
         for v in &violations {
             eprintln!("  - {v}");
         }
-        // Fall back to greedy solution
-        let matrix = DistanceMatrix::new(problem);
-        plan(problem)
+        // Fall back to greedy solution using the same matrix
+        plan_with_matrix(problem, matrix.clone())
     } else {
         solution
     }
@@ -181,7 +160,11 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
                 .position(|v| v.id == route.vehicle)
                 .unwrap();
             total_cost += route.cost_cents;
-            let driver = route.drivers[0];
+            let driver = route
+                .drivers
+                .first()
+                .copied()
+                .expect("route must have at least one driver");
             let span = (route.steps[0].depart, route.steps.last().unwrap().arrive);
             driver_busy[driver.0 as usize].push(span);
             LSRoute {
@@ -279,7 +262,7 @@ fn perturb_solution(
     }
 
     // Randomly select up to 3 stores to relocate
-    let num_perturb = (solution.routes.len().min(3)).max(1);
+    let num_perturb = solution.routes.len().min(3).max(1);
     let mut all_stores: Vec<(usize, usize, StoreId)> = Vec::new(); // (route_idx, pos_in_route, store_id)
 
     for (r_idx, route) in solution.routes.iter().enumerate() {
@@ -400,6 +383,38 @@ fn try_relocate_direct(
         - solution.routes[dst_idx].scheduled.cost_cents;
 
     if delta < 0 {
+        // Update driver_busy: remove old spans, add new spans for both drivers
+        let src_driver_idx = src_driver.0 as usize;
+        let dst_driver_idx = dst_driver.0 as usize;
+
+        // Remove old span from source driver
+        if let Some(spans) = solution.driver_busy.get_mut(src_driver_idx) {
+            if let Some(pos) = spans
+                .iter()
+                .position(|&span| span == src_route.scheduled.span)
+            {
+                spans.remove(pos);
+            }
+        }
+        // Add new span for source driver
+        if let Some(spans) = solution.driver_busy.get_mut(src_driver_idx) {
+            spans.push(src_scheduled.span);
+        }
+
+        // Remove old span from destination driver
+        if let Some(spans) = solution.driver_busy.get_mut(dst_driver_idx) {
+            if let Some(pos) = spans
+                .iter()
+                .position(|&span| span == dst_route.scheduled.span)
+            {
+                spans.remove(pos);
+            }
+        }
+        // Add new span for destination driver
+        if let Some(spans) = solution.driver_busy.get_mut(dst_driver_idx) {
+            spans.push(dst_scheduled.span);
+        }
+
         solution.routes[src_idx].scheduled = src_scheduled;
         solution.routes[dst_idx].scheduled = dst_scheduled;
         solution.total_cost_cents += delta;

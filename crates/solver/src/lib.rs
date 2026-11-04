@@ -25,10 +25,13 @@
 //! same problem always yields the same plan.
 
 pub mod greedy;
+pub mod lns;
 pub mod local_search;
 mod matrix;
-pub mod parser; // Solomon/VRPLib parser (vendored for M1)
+pub mod parser;
+mod savings; // Solomon/VRPLib parser (vendored for M1)
 
+pub use lns::{LNSConfig, solve_lns};
 pub use local_search::{LSConfig, improve};
 pub use matrix::{
     DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
@@ -77,4 +80,53 @@ pub fn solve_greedy_euclidean(problem: &Problem) -> Solution {
         "solver produced an invalid solution"
     );
     solution
+}
+
+/// Solves `problem` using greedy + local search (M2).
+///
+/// Runs the greedy insertion heuristic first, then applies local search
+/// improvements (2-opt, relocate, exchange, cross-exchange) with multi-start.
+/// Uses the provided distance matrix (e.g., haversine or Euclidean).
+/// The returned solution is guaranteed to satisfy
+/// [`domain::Solution::validate`].
+pub fn solve_with_local_search(
+    problem: &Problem,
+    config: LSConfig,
+    matrix: DistanceMatrix,
+) -> Solution {
+    let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
+    let solution = local_search::improve(problem, &matrix, greedy_solution, config);
+    assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    solution
+}
+
+/// Convenience wrapper that builds a haversine distance matrix.
+pub fn solve_with_local_search_haversine(problem: &Problem, config: LSConfig) -> Solution {
+    let matrix = DistanceMatrix::new(problem);
+    solve_with_local_search(problem, config, matrix)
+}
+
+/// Solves `problem` using greedy + LNS/ALNS (M2).
+///
+/// Runs the greedy insertion heuristic first, then applies Large Neighborhood Search
+/// with adaptive operator selection to escape local optima. Uses the provided
+/// distance matrix. The returned solution is guaranteed to satisfy
+/// [`domain::Solution::validate`].
+pub fn solve_with_lns(problem: &Problem, config: LNSConfig, matrix: DistanceMatrix) -> Solution {
+    let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
+    let solution = lns::solve_lns(problem, &matrix, greedy_solution, config);
+    assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    solution
+}
+
+/// Convenience wrapper that builds a haversine distance matrix.
+pub fn solve_with_lns_haversine(problem: &Problem, config: LNSConfig) -> Solution {
+    let matrix = DistanceMatrix::new(problem);
+    solve_with_lns(problem, config, matrix)
 }
