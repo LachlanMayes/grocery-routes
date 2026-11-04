@@ -76,6 +76,10 @@ pub struct SolveArgs {
     /// Enable Large Neighborhood Search (LNS/ALNS) metaheuristic (M2).
     #[arg(long)]
     pub ls: bool,
+    /// OSM PBF extract for road-network distances/durations (M3). When set,
+    /// the solver uses real road travel times instead of haversine/speed.
+    #[arg(long)]
+    pub osm: Option<PathBuf>,
 }
 
 /// Arguments of `export`.
@@ -152,7 +156,23 @@ const MAX_SOLVE_NODES: usize = 5_000;
 pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     let problem = read_problem_json(&args.problem)?;
     ensure_solvable_size(&problem)?;
-    let solution = if args.ls {
+
+    let solution = if let Some(osm_path) = &args.osm {
+        // M3: road-network distances/durations from OSM PBF.
+        let mut cached = routing::CachedMatrix::new();
+        cached.load_pbf(osm_path)?;
+        let profile = routing::TruckProfile::default();
+        if args.ls {
+            solver::solve_with_lns_routing(
+                &problem,
+                solver::LNSConfig::default(),
+                &mut cached,
+                profile,
+            )?
+        } else {
+            solver::solve_greedy_routing(&problem, &mut cached, profile)?
+        }
+    } else if args.ls {
         solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
     } else {
         solver::solve(&problem)

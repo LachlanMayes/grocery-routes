@@ -37,7 +37,10 @@ pub use matrix::{
     DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
 };
 pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
+#[allow(unused_imports)]
+pub use routing::{CachedMatrix, TruckProfile};
 
+use anyhow;
 use domain::{Problem, Solution};
 
 /// Solves `problem` and returns a validated plan using greedy insertion (M0/M1).
@@ -129,4 +132,55 @@ pub fn solve_with_lns(problem: &Problem, config: LNSConfig, matrix: DistanceMatr
 pub fn solve_with_lns_haversine(problem: &Problem, config: LNSConfig) -> Solution {
     let matrix = DistanceMatrix::new(problem);
     solve_with_lns(problem, config, matrix)
+}
+
+/// Solves `problem` using greedy + LNS/ALNS with road-network distances and
+/// durations from an OSM PBF extract.
+///
+/// Loads the PBF at `pbf_path` into a [`CachedMatrix`], builds a
+/// [`DistanceMatrix`] from the road-network distances/durations for the given
+/// `profile`, then runs LNS/ALNS. Returns an error if the PBF cannot be read
+/// or no graph is loaded.
+pub fn solve_with_lns_routing(
+    problem: &Problem,
+    config: LNSConfig,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+) -> anyhow::Result<Solution> {
+    let entries = cached_matrix
+        .matrix_for(problem, profile)?
+        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+    let node_count = problem.depots.len() + problem.stores.len();
+    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
+    let solution = lns::solve_lns(problem, &matrix, greedy_solution, config);
+    assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    Ok(solution)
+}
+
+/// Solves `problem` using greedy insertion (M0) with road-network distances
+/// and durations from an OSM PBF extract.
+///
+/// Loads the PBF at `pbf_path` into a [`CachedMatrix`], builds a
+/// [`DistanceMatrix`] from the road-network distances/durations for the given
+/// `profile`, then runs the greedy insertion heuristic.
+pub fn solve_greedy_routing(
+    problem: &Problem,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+) -> anyhow::Result<Solution> {
+    let entries = cached_matrix
+        .matrix_for(problem, profile)?
+        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+    let node_count = problem.depots.len() + problem.stores.len();
+    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    let solution = greedy::plan_with_matrix(problem, matrix);
+    assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    Ok(solution)
 }

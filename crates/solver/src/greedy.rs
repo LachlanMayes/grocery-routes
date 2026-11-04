@@ -29,7 +29,7 @@ use domain::{
     Store, StoreId, Vehicle, VehicleId,
 };
 
-use crate::matrix::{DistanceMatrix, travel_minutes};
+use crate::matrix::DistanceMatrix;
 
 /// A route sequence scheduled onto one (driver, shift) pair, with the derived
 /// metrics the solution model expects.
@@ -371,7 +371,8 @@ pub(crate) fn schedule_shift(
         let leg_km = matrix.distance_km(previous, node)?;
         distance_km += leg_km;
 
-        let arrival = time + travel_minutes(leg_km, vehicle.avg_speed_kmh);
+        let arrival =
+            time + matrix.travel_minutes_between(previous, node, vehicle.avg_speed_kmh)?;
         let service_start = next_service_start(store, arrival)?;
         let depart = service_start + store.service;
 
@@ -392,7 +393,7 @@ pub(crate) fn schedule_shift(
     // Return leg to the ending depot.
     let leg_km = matrix.distance_km(previous, last)?;
     distance_km += leg_km;
-    let arrival = time + travel_minutes(leg_km, vehicle.avg_speed_kmh);
+    let arrival = time + matrix.travel_minutes_between(previous, last, vehicle.avg_speed_kmh)?;
     if arrival > shift.end {
         return None;
     }

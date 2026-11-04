@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 domain = { path = "../domain" }
+routing = { path = "../routing" }
 anyhow.workspace = true
 rand.workspace = true
 

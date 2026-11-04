@@ -17,5 +17,7 @@ pub mod osm_ingest;
 pub mod router;
 pub mod truck_constraints;
 
+pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey};
 pub use graph::{EdgeId, Graph, NodeId};
 pub use router::{RouteResult, Router};
+pub use truck_constraints::TruckProfile;

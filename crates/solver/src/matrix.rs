@@ -3,8 +3,13 @@
 //! The matrix covers every problem node: all depots first (in vector order),
 //! then all stores. Node ids follow the M0 convention of indexing into the
 //! corresponding vector on [`domain::Problem`].
+//!
+//! M3 extends the matrix to carry road-network distances and durations from
+//! [`crate::routing::CachedMatrix`]. Legs with no road-network path store
+//! `None` and are treated as infeasible by the solver.
 
 use domain::{LatLon, Minutes, Node, Problem, haversine_km};
+use routing::{CachedMatrix, MatrixEntry, TruckProfile};
 
 /// Planning speed used when a vehicle's `avg_speed_kmh` cannot produce a
 /// positive speed (zero, negative or NaN).
@@ -16,20 +21,27 @@ pub const FALLBACK_SPEED_KMH: f64 = 45.0;
 
 const MINUTES_PER_HOUR: f64 = 60.0;
 
-/// Great-circle distances between every pair of problem nodes.
+/// Distances (and, when available, road-network durations) between every pair
+/// of problem nodes.
 ///
-/// Building the matrix costs one haversine call per unordered pair and
-/// `O(n²)` memory, which is cheap at M0 problem sizes.
+/// Building the matrix costs one call per unordered pair and `O(n²)` memory,
+/// which is cheap at M0 problem sizes.
 #[derive(Debug, Clone)]
 pub struct DistanceMatrix {
     depot_count: usize,
     node_count: usize,
-    /// Row-major `node_count × node_count` matrix.
-    distances: Vec<f64>,
+    /// Row-major `node_count × node_count` matrix of road/haversine distances
+    /// in kilometres. `None` means no path exists between the two nodes.
+    distances: Vec<Option<f64>>,
+    /// Row-major `node_count × node_count` matrix of road-network travel
+    /// durations in whole minutes. `None` means "not available from the road
+    /// network; fall back to `distance / avg_speed_kmh`".
+    durations: Vec<Option<i64>>,
 }
 
 impl DistanceMatrix {
-    /// Computes the matrix for every depot and store of `problem`.
+    /// Computes the matrix for every depot and store of `problem` using
+    /// great-circle (haversine) distances.
     pub fn new(problem: &Problem) -> Self {
         let depot_count = problem.depots.len();
         let node_count = depot_count + problem.stores.len();
@@ -40,12 +52,16 @@ impl DistanceMatrix {
             .chain(problem.stores.iter().map(|store| store.location))
             .collect();
 
-        let mut distances = vec![0.0; node_count * node_count];
+        let mut distances = vec![None; node_count * node_count];
+        // Distance from a node to itself is zero.
+        for i in 0..node_count {
+            distances[i * node_count + i] = Some(0.0);
+        }
         for (from_index, &from) in locations.iter().enumerate() {
             for (to_index, &to) in locations.iter().enumerate().skip(from_index + 1) {
                 let km = haversine_km(from, to);
-                distances[from_index * node_count + to_index] = km;
-                distances[to_index * node_count + from_index] = km;
+                distances[from_index * node_count + to_index] = Some(km);
+                distances[to_index * node_count + from_index] = Some(km);
             }
         }
 
@@ -53,6 +69,42 @@ impl DistanceMatrix {
             depot_count,
             node_count,
             distances,
+            durations: vec![None; node_count * node_count],
+        }
+    }
+
+    /// Builds a distance matrix from a [`CachedMatrix`] road-network result.
+    ///
+    /// `entries` is the `Vec<Vec<Option<MatrixEntry>>>` returned by
+    /// [`CachedMatrix::matrix_for`], indexed `[from_node][to_node]` in depot-
+    /// then-store order. Legs with no road-network path (`None` entry) are
+    /// marked unreachable.
+    pub fn from_routing(
+        depot_count: usize,
+        node_count: usize,
+        entries: &[Vec<Option<MatrixEntry>>],
+    ) -> Self {
+        let mut distances = vec![None; node_count * node_count];
+        let mut durations = vec![None; node_count * node_count];
+        // Distance from a node to itself is zero.
+        for i in 0..node_count {
+            distances[i * node_count + i] = Some(0.0);
+            durations[i * node_count + i] = Some(0);
+        }
+        for (i, row) in entries.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                if let Some(entry) = entry {
+                    distances[i * node_count + j] = Some(entry.distance_km);
+                    durations[i * node_count + j] = Some(entry.duration_minutes);
+                }
+            }
+        }
+
+        Self {
+            depot_count,
+            node_count,
+            distances,
+            durations,
         }
     }
 
@@ -66,13 +118,38 @@ impl DistanceMatrix {
         self.node_count == 0
     }
 
-    /// Great-circle distance between two nodes in kilometres.
+    /// Road/haversine distance between two nodes in kilometres.
     ///
-    /// Returns `None` when a node id does not exist in the problem.
+    /// Returns `None` when a node id does not exist in the problem, or when
+    /// no road-network path exists between the two nodes.
     pub fn distance_km(&self, from: Node, to: Node) -> Option<f64> {
         let from_index = self.node_index(from)?;
         let to_index = self.node_index(to)?;
-        Some(self.distances[from_index * self.node_count + to_index])
+        self.distances[from_index * self.node_count + to_index]
+    }
+
+    /// Travel time between two nodes in whole minutes.
+    ///
+    /// When the matrix was built from road-network data and a duration is
+    /// stored for this leg, it is returned directly. Otherwise the time is
+    /// derived from `distance / avg_speed_kmh`. Returns `None` when the nodes
+    /// are invalid or no path exists.
+    pub fn travel_minutes_between(
+        &self,
+        from: Node,
+        to: Node,
+        avg_speed_kmh: f64,
+    ) -> Option<Minutes> {
+        let from_index = self.node_index(from)?;
+        let to_index = self.node_index(to)?;
+        let idx = from_index * self.node_count + to_index;
+        // Use stored road-network duration if available.
+        if let Some(duration) = self.durations[idx] {
+            return Some(Minutes::from_minutes(duration));
+        }
+        // Fall back to distance / speed (haversine matrix or missing duration).
+        let km = self.distances[idx]?;
+        Some(travel_minutes(km, avg_speed_kmh))
     }
 
     fn node_index(&self, node: Node) -> Option<usize> {
@@ -108,12 +185,16 @@ pub fn euclidean_matrix(problem: &Problem) -> DistanceMatrix {
         .chain(problem.stores.iter().map(|store| store.location))
         .collect();
 
-    let mut distances = vec![0.0; node_count * node_count];
+    let mut distances = vec![None; node_count * node_count];
+    // Distance from a node to itself is zero.
+    for i in 0..node_count {
+        distances[i * node_count + i] = Some(0.0);
+    }
     for (from_index, &from) in locations.iter().enumerate() {
         for (to_index, &to) in locations.iter().enumerate().skip(from_index + 1) {
             let km = euclidean_km(from, to);
-            distances[from_index * node_count + to_index] = km;
-            distances[to_index * node_count + from_index] = km;
+            distances[from_index * node_count + to_index] = Some(km);
+            distances[to_index * node_count + from_index] = Some(km);
         }
     }
 
@@ -121,6 +202,7 @@ pub fn euclidean_matrix(problem: &Problem) -> DistanceMatrix {
         depot_count,
         node_count,
         distances,
+        durations: vec![None; node_count * node_count],
     }
 }
 

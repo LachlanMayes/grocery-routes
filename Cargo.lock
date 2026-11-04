@@ -249,6 +249,7 @@ dependencies = [
  "anyhow",
  "clap",
  "domain",
+ "routing",
  "serde_json",
  "sim",
  "solver",
@@ -952,6 +953,7 @@ dependencies = [
  "domain",
  "proptest",
  "rand 0.9.5",
+ "routing",
  "tempfile",
 ]
 
