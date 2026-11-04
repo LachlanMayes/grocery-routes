@@ -6,24 +6,40 @@
 //! - POST /solve — solve a problem (greedy or LNS, optional OSM routing)
 //! - GET /solutions/{id} — retrieve a solution
 //! - GET /solutions/{id}/kpis — KPI summary for a solution
+//! - GET /events — SSE stream of live solve events
 
 use axum::{
     Router,
     extract::{Path, State},
     http::StatusCode,
-    response::Json,
+    response::{Json, sse::Event, sse::Sse},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 
 use crate::db::{import_problem, load_problem, load_solution_with_problem, store_solution};
 use domain::{Problem, Solution};
 use routing::{CachedMatrix, TruckProfile};
 
-/// Shared application state: the SQLite connection pool.
+/// An event broadcast to SSE clients when a solve completes.
+#[derive(Clone, Debug, Serialize)]
+pub struct SolveEvent {
+    pub solution_id: String,
+    pub problem_id: String,
+    pub served: usize,
+    pub total: usize,
+    pub distance_km: f64,
+    pub cost_cents: i64,
+}
+
+/// Shared application state: the SQLite connection pool plus an SSE broadcast
+/// channel for live solve events.
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
+    pub events: broadcast::Sender<SolveEvent>,
 }
 
 /// Import request body: a serialized [`domain::Problem`].
@@ -88,14 +104,31 @@ pub struct Kpis {
 
 /// Build the axum router with all API routes.
 pub fn router(pool: sqlx::SqlitePool) -> Router {
-    let state = Arc::new(AppState { pool });
+    let (events, _rx) = broadcast::channel(16);
+    let state = Arc::new(AppState { pool, events });
     Router::new()
         .route("/problems", post(import_problem_handler))
         .route("/problems/:id", get(get_problem_handler))
         .route("/solve", post(solve_handler))
         .route("/solutions/:id", get(get_solution_handler))
         .route("/solutions/:id/kpis", get(get_kpis_handler))
+        .route("/events", get(sse_events_handler))
         .with_state(state)
+}
+
+/// GET /events — SSE stream of live solve events.
+async fn sse_events_handler(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Box<dyn std::error::Error + Send + Sync>>>> {
+    let rx = state.events.subscribe();
+    let stream = BroadcastStream::new(rx).map(|result| match result {
+        Ok(event) => {
+            let json = serde_json::to_string(&event).unwrap_or_default();
+            Ok(Event::default().data(json))
+        }
+        Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
+    });
+    Sse::new(stream)
 }
 
 /// POST /problems — import a problem JSON.
@@ -171,6 +204,17 @@ async fn solve_handler(
     let solution_id = store_solution(&state.pool, &payload.problem_id, &solution, payload.lns)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Broadcast solve event to SSE subscribers.
+    let event = SolveEvent {
+        solution_id: solution_id.clone(),
+        problem_id: payload.problem_id.clone(),
+        served,
+        total,
+        distance_km: solution.total_distance_km,
+        cost_cents: solution.total_cost_cents,
+    };
+    let _ = state.events.send(event);
 
     Ok(Json(SolveResponse {
         id: solution_id,
