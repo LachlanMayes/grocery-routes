@@ -1546,8 +1546,8 @@ mod tests {
     use super::*;
     use crate::matrix::DistanceMatrix;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
-        Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+        Node, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn small_problem() -> Problem {
@@ -1621,6 +1621,7 @@ mod tests {
                     Minutes::from_minutes(300),
                     Minutes::from_minutes(1200),
                 )],
+                fatigue_rules: FatigueRules::default(),
             }],
             cost: CostModel {
                 fixed_per_route_cents: 15_000,

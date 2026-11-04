@@ -12,8 +12,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-    Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use solver::solve;
 
@@ -76,6 +76,7 @@ fn metro_problem() -> Problem {
                 Minutes::from_minutes(300),
                 Minutes::from_minutes(1200),
             )],
+            fatigue_rules: FatigueRules::default(),
         })
         .collect();
 

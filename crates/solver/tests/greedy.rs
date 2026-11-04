@@ -1,8 +1,8 @@
 //! End-to-end tests for the M0 greedy insertion solver.
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
-    Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Node,
+    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use solver::{solve, solve_greedy_euclidean};
 
@@ -78,6 +78,7 @@ fn small_problem() -> Problem {
                 Minutes::from_minutes(300),
                 Minutes::from_minutes(1200),
             )],
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 15_000,
@@ -148,8 +149,8 @@ fn multi_day_problem() -> Problem {
         stores: vec![Store {
             id: StoreId(0),
             chain: Chain::Coles,
-            name: "Coles Melbourne #001".into(),
-            location: LatLon::new(-37.8136, 144.9631),
+            name: "Coles Wollongong #001".into(),
+            location: LatLon::new(-34.4253, 150.8935),
             demand: Load::new(1, 1, 0),
             service: Minutes::from_minutes(15),
             receiving: vec![TimeWindow::new(
@@ -169,9 +170,10 @@ fn multi_day_problem() -> Problem {
             id: DriverId(0),
             name: "Long haul".into(),
             shifts: vec![Shift::new(
-                Minutes::from_minutes(600),
+                Minutes::from_minutes(1300),
                 Minutes::from_minutes(2400),
             )],
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 15_000,
@@ -219,11 +221,12 @@ fn multi_day_horizon_store_is_served_on_day_two() {
     );
     assert_eq!(stop.depart - stop.arrive, problem.stores[0].service);
 
-    // The run is ~714 km each way at 75 km/h, so the plan spends most of its
-    // time driving; the return leg must land back inside the shift.
+    // The round trip should complete within the driver's shift and fatigue limits
     let last = route.steps.last().expect("return leg");
-    assert!(route.distance_km > 1300.0, "got {}", route.distance_km);
     assert!(last.depart <= problem.drivers[0].shifts[0].end);
+    let total_dist: f64 = solution.routes.iter().map(|r| r.distance_km).sum();
+    assert!(total_dist > 100.0, "got {}", total_dist);
+    assert!(total_dist < 500.0, "got {}", total_dist);
 }
 
 /// C101 calibration test — the standard Solomon benchmark.
@@ -430,6 +433,7 @@ fn single_vehicle_problem(capacity: Load, stores: Vec<Store>) -> Problem {
             id: DriverId(0),
             name: "Sam".into(),
             shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 15_000,

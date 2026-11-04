@@ -15,8 +15,8 @@
 use std::f64::consts::TAU;
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-    Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 
 use solver::{parse_solomon_file, solomon_to_problem};
@@ -313,6 +313,7 @@ fn build_drivers(count: usize) -> Vec<Driver> {
                 Minutes::from_minutes(330),
                 Minutes::from_minutes(870),
             )],
+            fatigue_rules: FatigueRules::default(),
         })
         .collect()
 }

@@ -804,8 +804,8 @@ fn schedule_shift_candidate(
 mod tests {
     use super::*;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-        Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+        Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn simple_problem() -> Problem {
@@ -868,6 +868,7 @@ mod tests {
                         Minutes::from_minutes(300),
                         Minutes::from_minutes(900),
                     )],
+                    fatigue_rules: FatigueRules::default(),
                 },
                 Driver {
                     id: DriverId(1),
@@ -876,6 +877,7 @@ mod tests {
                         Minutes::from_minutes(300),
                         Minutes::from_minutes(900),
                     )],
+                    fatigue_rules: FatigueRules::default(),
                 },
             ],
             cost: CostModel {

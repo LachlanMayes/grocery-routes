@@ -197,8 +197,8 @@ fn haversine_km(a: LatLon, b: LatLon) -> f64 {
 mod tests {
     use super::*;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, Load, Minutes, Problem, Shift, Store,
-        StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+        Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn test_problem_with_nodes(locations: Vec<LatLon>) -> Problem {
@@ -240,6 +240,7 @@ mod tests {
                 id: DriverId(0),
                 name: "Sam".into(),
                 shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+                fatigue_rules: FatigueRules::default(),
             }],
             cost: CostModel {
                 fixed_per_route_cents: 0,

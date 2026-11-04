@@ -431,8 +431,8 @@ impl From<CityArg> for sim::City {
 mod tests {
     use super::ensure_solvable_size;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-        Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+        Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn problem_with_stores(count: usize) -> Problem {
@@ -466,6 +466,7 @@ mod tests {
                 id: DriverId(0),
                 name: "Sam".into(),
                 shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+                fatigue_rules: FatigueRules::default(),
             }],
             cost: CostModel {
                 fixed_per_route_cents: 0,

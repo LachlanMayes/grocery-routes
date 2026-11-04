@@ -8,8 +8,9 @@
 //! drive times.
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, PlannedStop,
-    Problem, RoutePlan, Shift, Solution, Store, StoreId, TimeWindow, Vehicle, VehicleId, Violation,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Node,
+    PlannedStop, Problem, RoutePlan, Shift, Solution, Store, StoreId, TimeWindow, Vehicle,
+    VehicleId, Violation,
 };
 
 fn relay_fixture() -> (Problem, Solution) {
@@ -60,6 +61,7 @@ fn relay_fixture() -> (Problem, Solution) {
                     Minutes::from_minutes(1020),
                     Minutes::from_minutes(1410),
                 )],
+                fatigue_rules: FatigueRules::default(),
             },
             Driver {
                 id: DriverId(1),
@@ -68,6 +70,7 @@ fn relay_fixture() -> (Problem, Solution) {
                     Minutes::from_minutes(1410),
                     Minutes::from_minutes(1890),
                 )],
+                fatigue_rules: FatigueRules::default(),
             },
         ],
         cost: CostModel {
@@ -281,7 +284,8 @@ fn two_vehicle_problem() -> Problem {
         drivers: vec![Driver {
             id: DriverId(0),
             name: "Single driver".into(),
-            shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(120))],
+            shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 0,
@@ -334,18 +338,26 @@ fn overlapping_routes_on_one_driver_are_rejected() {
     ]);
     assert_eq!(
         violations_of(&problem, &solution),
-        vec![Violation::DriverDoubleBooked {
-            driver: DriverId(0),
-        }]
+        vec![
+            Violation::DriverDoubleBooked {
+                driver: DriverId(0),
+            },
+            Violation::DriverInsufficientRest {
+                driver: DriverId(0),
+                rest_hours: -0.5,
+                min_rest_hours: 7.0,
+            },
+        ]
     );
 }
 
 #[test]
 fn back_to_back_routes_on_one_driver_are_allowed() {
     let problem = two_vehicle_problem();
+    // Route 2 starts 7 hours after route 1 ends (meets Standard Hours minimum rest)
     let solution = occupancy_solution(vec![
         depot_hop(VehicleId(0), 0, 60),
-        depot_hop(VehicleId(1), 60, 120),
+        depot_hop(VehicleId(1), 480, 540),
     ]);
     assert_eq!(solution.validate(&problem), Ok(()));
 }
@@ -372,6 +384,7 @@ fn handover_dwell_problem(shifts: Vec<Shift>) -> Problem {
             id: DriverId(0),
             name: "Relay driver".into(),
             shifts,
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 0,

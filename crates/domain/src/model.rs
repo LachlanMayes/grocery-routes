@@ -207,12 +207,59 @@ pub struct Vehicle {
     pub avg_speed_kmh: f64,
 }
 
+/// Fatigue management rules for heavy vehicle drivers (NHVR-standard).
+///
+/// Standard Hours are the default for Australian heavy vehicle drivers:
+/// - Max 12 hours work in any 24-hour period
+/// - Min 7 hours continuous rest between shifts
+/// - Max 144 hours work in any 7-day period
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FatigueRules {
+    /// NHVR Standard Hours (default for most heavy vehicle drivers).
+    #[default]
+    Standard,
+    /// NHVR Basic Fatigue Rules (requires accreditation).
+    /// Max 14 hours work per shift, min 6 hours rest, max 144 hours per 7 days.
+    Basic,
+    /// NHVR Advanced Fatigue Rules (requires accreditation and additional controls).
+    /// Max 14 hours work per shift, min 5 hours rest, max 144 hours per 7 days.
+    Advanced,
+}
+
+impl FatigueRules {
+    /// Maximum work minutes in any 24-hour period.
+    pub fn max_work_24h_minutes(self) -> i64 {
+        match self {
+            Self::Standard => 12 * 60,
+            Self::Basic | Self::Advanced => 14 * 60,
+        }
+    }
+
+    /// Minimum continuous rest minutes between shifts.
+    pub fn min_rest_minutes(self) -> i64 {
+        match self {
+            Self::Standard => 7 * 60,
+            Self::Basic => 6 * 60,
+            Self::Advanced => 5 * 60,
+        }
+    }
+
+    /// Maximum work minutes in any 7-day period.
+    pub fn max_work_7d_minutes(self) -> i64 {
+        // All rule sets cap at 144 hours per 7 days.
+        144 * 60
+    }
+}
+
 /// A driver with one or more working shifts on the horizon.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Driver {
     pub id: DriverId,
     pub name: String,
     pub shifts: Vec<Shift>,
+    /// Fatigue management rules for this driver. Defaults to Standard Hours.
+    #[serde(default)]
+    pub fatigue_rules: FatigueRules,
 }
 
 /// Global cost policy, in Australian cents.
@@ -454,6 +501,68 @@ impl Solution {
                     driver: DriverId(index as u32),
                 });
             }
+
+            // NHVR fatigue rule checks.
+            let driver_id = DriverId(index as u32);
+            let Some(driver) = problem.driver(driver_id) else {
+                continue;
+            };
+            let rules = driver.fatigue_rules;
+            let max_work_24h = rules.max_work_24h_minutes();
+            let min_rest = rules.min_rest_minutes();
+            let max_work_7d = rules.max_work_7d_minutes();
+
+            // Check minimum rest between consecutive shifts.
+            for pair in spans.windows(2) {
+                let rest = pair[1].0.minutes() - pair[0].1.minutes();
+                if rest < min_rest {
+                    violations.push(Violation::DriverInsufficientRest {
+                        driver: driver_id,
+                        rest_hours: rest as f64 / 60.0,
+                        min_rest_hours: min_rest as f64 / 60.0,
+                    });
+                }
+            }
+
+            // Check rolling 24-hour work limit.
+            let day_minutes = 24 * 60;
+            for i in 0..spans.len() {
+                let window_start = spans[i].0;
+                let window_end = window_start + Minutes::from_minutes(day_minutes);
+                let work_in_window: i64 = spans
+                    .iter()
+                    .filter(|(s, e)| *s >= window_start && *s < window_end)
+                    .map(|(s, e)| e.minutes() - s.minutes())
+                    .sum();
+                if work_in_window > max_work_24h {
+                    violations.push(Violation::DriverWorkHoursExceeded {
+                        driver: driver_id,
+                        work_hours: work_in_window as f64 / 60.0,
+                        limit_hours: max_work_24h as f64 / 60.0,
+                    });
+                    break; // Report once per driver per rule
+                }
+            }
+
+            // Check rolling 7-day work limit.
+            let week_minutes = 7 * day_minutes;
+            for i in 0..spans.len() {
+                let window_start = spans[i].0;
+                let window_end = window_start + Minutes::from_minutes(week_minutes);
+                let work_in_window: i64 = spans
+                    .iter()
+                    .filter(|(s, e)| *s >= window_start && *s < window_end)
+                    .map(|(s, e)| e.minutes() - s.minutes())
+                    .sum();
+                if work_in_window > max_work_7d {
+                    violations.push(Violation::DriverWeeklyHoursExceeded {
+                        driver: driver_id,
+                        work_hours: work_in_window as f64 / 60.0,
+                        limit_hours: max_work_7d as f64 / 60.0,
+                    });
+                    break;
+                }
+            }
         }
 
         for &store in &self.unassigned {
@@ -520,5 +629,340 @@ impl Problem {
             Node::Depot(id) => self.depot(id).map(|depot| depot.location),
             Node::Store(id) => self.store(id).map(|store| store.location),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fatigue_rules_standard_limits() {
+        let rules = FatigueRules::Standard;
+        assert_eq!(rules.max_work_24h_minutes(), 12 * 60);
+        assert_eq!(rules.min_rest_minutes(), 7 * 60);
+        assert_eq!(rules.max_work_7d_minutes(), 144 * 60);
+    }
+
+    #[test]
+    fn fatigue_rules_basic_limits() {
+        let rules = FatigueRules::Basic;
+        assert_eq!(rules.max_work_24h_minutes(), 14 * 60);
+        assert_eq!(rules.min_rest_minutes(), 6 * 60);
+        assert_eq!(rules.max_work_7d_minutes(), 144 * 60);
+    }
+
+    #[test]
+    fn fatigue_rules_advanced_limits() {
+        let rules = FatigueRules::Advanced;
+        assert_eq!(rules.max_work_24h_minutes(), 14 * 60);
+        assert_eq!(rules.min_rest_minutes(), 5 * 60);
+        assert_eq!(rules.max_work_7d_minutes(), 144 * 60);
+    }
+
+    #[test]
+    fn fatigue_rules_default_is_standard() {
+        let rules = FatigueRules::default();
+        assert_eq!(rules, FatigueRules::Standard);
+    }
+
+    /// Builds a minimal problem with one depot, one store, one vehicle, one driver.
+    fn fatigue_test_problem(fatigue_rules: FatigueRules) -> Problem {
+        Problem {
+            name: "fatigue test".into(),
+            depots: vec![Depot {
+                id: DepotId(0),
+                name: "Depot".into(),
+                location: LatLon::new(-33.87, 151.21),
+            }],
+            stores: vec![Store {
+                id: StoreId(0),
+                chain: Chain::Coles,
+                name: "Store".into(),
+                location: LatLon::new(-33.92, 151.23),
+                demand: Load::ZERO,
+                service: Minutes::ZERO,
+                receiving: vec![TimeWindow::new(
+                    Minutes::ZERO,
+                    Minutes::from_minutes(10_000),
+                )],
+            }],
+            vehicles: vec![
+                Vehicle {
+                    id: VehicleId(0),
+                    name: "Truck 1".into(),
+                    depot: DepotId(0),
+                    capacity: Load::new(8, 8, 4),
+                    max_duration: Minutes::from_minutes(10_000),
+                    avg_speed_kmh: 60.0,
+                },
+                Vehicle {
+                    id: VehicleId(1),
+                    name: "Truck 2".into(),
+                    depot: DepotId(0),
+                    capacity: Load::new(8, 8, 4),
+                    max_duration: Minutes::from_minutes(10_000),
+                    avg_speed_kmh: 60.0,
+                },
+            ],
+            drivers: vec![Driver {
+                id: DriverId(0),
+                name: "Driver".into(),
+                shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(10_000))],
+                fatigue_rules,
+            }],
+            cost: CostModel {
+                fixed_per_route_cents: 0,
+                per_km_cents: 0,
+                per_hour_cents: 0,
+                late_per_min_cents: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn fatigue_normal_shifts_pass_validation() {
+        let problem = fatigue_test_problem(FatigueRules::Standard);
+        // Two 5-hour shifts with 7 hours rest between them (exactly at minimum)
+        // Total work in 24h: 10 hours < 12 hour limit
+        let solution = Solution {
+            routes: vec![
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::ZERO,
+                            depart: Minutes::ZERO,
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(300),
+                            depart: Minutes::from_minutes(300),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(300),
+                    cost_cents: 0,
+                },
+                RoutePlan {
+                    vehicle: VehicleId(1),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(720),
+                            depart: Minutes::from_minutes(720),
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(1020),
+                            depart: Minutes::from_minutes(1020),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(300),
+                    cost_cents: 0,
+                },
+            ],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::from_minutes(600),
+            total_cost_cents: 0,
+        };
+        assert!(solution.validate(&problem).is_ok());
+    }
+
+    #[test]
+    fn fatigue_insufficient_rest_between_shifts() {
+        let problem = fatigue_test_problem(FatigueRules::Standard);
+        // Shift 1 ends at 480, shift 2 starts at 800 → only 320 min rest (< 420 min = 7h)
+        let solution = Solution {
+            routes: vec![
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::ZERO,
+                            depart: Minutes::ZERO,
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(480),
+                            depart: Minutes::from_minutes(480),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(480),
+                    cost_cents: 0,
+                },
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(800),
+                            depart: Minutes::from_minutes(800),
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(1000),
+                            depart: Minutes::from_minutes(1000),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(200),
+                    cost_cents: 0,
+                },
+            ],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::from_minutes(680),
+            total_cost_cents: 0,
+        };
+        let violations = solution.validate(&problem).unwrap_err();
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v, Violation::DriverInsufficientRest { .. })),
+            "expected DriverInsufficientRest violation, got {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn fatigue_work_hours_exceeded_in_24h() {
+        let problem = fatigue_test_problem(FatigueRules::Standard);
+        // Two shifts within 24h totaling 13 hours (780 min > 720 min = 12h limit)
+        let solution = Solution {
+            routes: vec![
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::ZERO,
+                            depart: Minutes::ZERO,
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(480),
+                            depart: Minutes::from_minutes(480),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(480),
+                    cost_cents: 0,
+                },
+                RoutePlan {
+                    vehicle: VehicleId(1),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(550),
+                            depart: Minutes::from_minutes(550),
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(850),
+                            depart: Minutes::from_minutes(850),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(300),
+                    cost_cents: 0,
+                },
+            ],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::from_minutes(780),
+            total_cost_cents: 0,
+        };
+        let violations = solution.validate(&problem).unwrap_err();
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v, Violation::DriverWorkHoursExceeded { .. })),
+            "expected DriverWorkHoursExceeded violation, got {:?}",
+            violations
+        );
+    }
+
+    #[test]
+    fn fatigue_basic_rules_allow_more_work() {
+        // Same shift pattern as work_hours_exceeded_in_24h but with Basic rules
+        // (14h = 840 min limit vs Standard 12h = 720 min)
+        let problem = fatigue_test_problem(FatigueRules::Basic);
+        let solution = Solution {
+            routes: vec![
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::ZERO,
+                            depart: Minutes::ZERO,
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(480),
+                            depart: Minutes::from_minutes(480),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(480),
+                    cost_cents: 0,
+                },
+                RoutePlan {
+                    vehicle: VehicleId(1),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(850),
+                            depart: Minutes::from_minutes(850),
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(1150),
+                            depart: Minutes::from_minutes(1150),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(300),
+                    cost_cents: 0,
+                },
+            ],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::from_minutes(780),
+            total_cost_cents: 0,
+        };
+        // 780 min < 840 min Basic limit → should pass
+        let result = solution.validate(&problem);
+        if let Err(ref violations) = result {
+            eprintln!("Violations: {:?}", violations);
+        }
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn fatigue_driver_with_no_routes_passes() {
+        let problem = fatigue_test_problem(FatigueRules::Standard);
+        let solution = Solution {
+            routes: vec![],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::ZERO,
+            total_cost_cents: 0,
+        };
+        assert!(solution.validate(&problem).is_ok());
     }
 }

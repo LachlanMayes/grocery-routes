@@ -5,8 +5,9 @@
 
 use cli::export::{escape_html, format_aud_cents, route_sheet_html, routes_geojson};
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, PlannedStop,
-    Problem, RoutePlan, Shift, Solution, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Node,
+    PlannedStop, Problem, RoutePlan, Shift, Solution, Store, StoreId, TimeWindow, Vehicle,
+    VehicleId,
 };
 use serde_json::Value;
 
@@ -60,6 +61,7 @@ fn tiny_fixture() -> (Problem, Solution) {
                 Minutes::from_minutes(420),
                 Minutes::from_minutes(780),
             )],
+            fatigue_rules: FatigueRules::default(),
         }],
         cost: CostModel {
             fixed_per_route_cents: 15_000,

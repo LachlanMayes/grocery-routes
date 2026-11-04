@@ -6,7 +6,7 @@ use crate::ids::{DepotId, DriverId, StoreId, VehicleId};
 use crate::time::Minutes;
 
 /// A rule broken by a [`crate::Solution`].
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum Violation {
     #[error("route {route}: unknown vehicle {vehicle}")]
     UnknownVehicle { route: usize, vehicle: VehicleId },
@@ -28,6 +28,30 @@ pub enum Violation {
     NoDriverAssigned { route: usize },
     #[error("driver {driver} is scheduled on two routes with overlapping work spans")]
     DriverDoubleBooked { driver: DriverId },
+    #[error(
+        "driver {driver} worked {work_hours} hours in a 24-hour period, exceeding the {limit_hours}-hour limit"
+    )]
+    DriverWorkHoursExceeded {
+        driver: DriverId,
+        work_hours: f64,
+        limit_hours: f64,
+    },
+    #[error(
+        "driver {driver} had only {rest_hours} hours rest between shifts, below the {min_rest_hours}-hour minimum"
+    )]
+    DriverInsufficientRest {
+        driver: DriverId,
+        rest_hours: f64,
+        min_rest_hours: f64,
+    },
+    #[error(
+        "driver {driver} worked {work_hours} hours in a 7-day period, exceeding the {limit_hours}-hour limit"
+    )]
+    DriverWeeklyHoursExceeded {
+        driver: DriverId,
+        work_hours: f64,
+        limit_hours: f64,
+    },
     #[error("route {route}: timestamps out of order at step {step}")]
     TimestampsOutOfOrder { route: usize, step: usize },
     #[error("route {route}: duration does not match the spanned time")]

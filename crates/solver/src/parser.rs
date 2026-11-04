@@ -26,8 +26,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-    Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
+    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 
 /// A parsed Solomon instance.
@@ -243,6 +243,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
                 Minutes::ZERO,
                 Minutes::from_minutes(horizon_end),
             )],
+            fatigue_rules: FatigueRules::default(),
         })
         .collect();
 

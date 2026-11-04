@@ -872,8 +872,8 @@ fn build_solution(
 mod tests {
     use super::*;
     use domain::{
-        CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift, Store,
-        StoreId, TimeWindow, Vehicle, VehicleId,
+        CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Problem,
+        Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn small_problem() -> Problem {
@@ -949,6 +949,7 @@ mod tests {
                     Minutes::from_minutes(300),
                     Minutes::from_minutes(1200),
                 )],
+                fatigue_rules: FatigueRules::default(),
             },
             Driver {
                 id: DriverId(1),
@@ -957,6 +958,7 @@ mod tests {
                     Minutes::from_minutes(300),
                     Minutes::from_minutes(1200),
                 )],
+                fatigue_rules: FatigueRules::default(),
             },
         ];
 
