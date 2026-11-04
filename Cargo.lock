@@ -99,6 +99,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]

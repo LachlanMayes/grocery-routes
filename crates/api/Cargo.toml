@@ -16,6 +16,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+tokio-stream.workspace = true
 domain = { path = "../domain" }
 solver = { path = "../solver" }
 routing = { path = "../routing" }

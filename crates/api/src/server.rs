@@ -13,7 +13,6 @@ pub async fn serve(addr: SocketAddr, db_path: &std::path::Path) -> anyhow::Resul
     let app = router(pool);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("listening on {}", addr);
 
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
