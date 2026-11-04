@@ -222,7 +222,7 @@ pub fn travel_minutes(km: f64, avg_speed_kmh: f64) -> Minutes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{Depot, DepotId, Store, StoreId};
+    use domain::{ChainRules, CurfewRules, Depot, DepotId, Store, StoreId};
 
     fn two_node_problem() -> Problem {
         Problem {
@@ -249,6 +249,8 @@ mod tests {
                 per_hour_cents: 0,
                 late_per_min_cents: 0,
             },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
         }
     }
 

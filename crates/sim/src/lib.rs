@@ -15,8 +15,8 @@
 use std::f64::consts::TAU;
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+    LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 
 use solver::{parse_solomon_file, solomon_to_problem};
@@ -127,6 +127,8 @@ pub fn generate(options: &SimOptions) -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 

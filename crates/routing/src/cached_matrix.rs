@@ -197,8 +197,8 @@ fn haversine_km(a: LatLon, b: LatLon) -> f64 {
 mod tests {
     use super::*;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-        Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+        LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn test_problem_with_nodes(locations: Vec<LatLon>) -> Problem {
@@ -248,6 +248,8 @@ mod tests {
                 per_hour_cents: 0,
                 late_per_min_cents: 0,
             },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
         }
     }
 

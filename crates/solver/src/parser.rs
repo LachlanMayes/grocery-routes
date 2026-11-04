@@ -26,8 +26,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+    LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 
 /// A parsed Solomon instance.
@@ -278,6 +278,8 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
             per_hour_cents: 0,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 

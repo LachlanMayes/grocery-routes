@@ -151,8 +151,8 @@ async fn problem_store_count(pool: &SqlitePool, problem_id: &str) -> Result<i64>
 mod tests {
     use super::*;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-        Node, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+        LatLon, Load, Minutes, Node, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
     use tempfile;
 
@@ -193,6 +193,8 @@ mod tests {
                 per_hour_cents: 0,
                 late_per_min_cents: 0,
             },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
         }
     }
 

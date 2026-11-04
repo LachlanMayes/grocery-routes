@@ -22,7 +22,7 @@ pub use error::Violation;
 pub use geo::{LatLon, haversine_km};
 pub use ids::{DepotId, DriverId, StoreId, VehicleId};
 pub use model::{
-    Chain, CostModel, Depot, Driver, FatigueRules, Load, Node, PlannedStop, Problem, RoutePlan,
-    Shift, Solution, Store, TimeWindow, Vehicle,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, Driver, FatigueRules, Load, Node,
+    PlannedStop, Problem, RoutePlan, Shift, Solution, Store, TimeWindow, Vehicle,
 };
 pub use time::Minutes;

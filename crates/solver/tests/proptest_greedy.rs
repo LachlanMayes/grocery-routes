@@ -18,8 +18,8 @@
 //! weakening the assertion.
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Node,
-    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+    LatLon, Load, Minutes, Node, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use proptest::prelude::*;
 use solver::solve;
@@ -116,6 +116,8 @@ fn build_problem(raw_stores: Vec<(f64, f64, u32, u32, u32, i64)>, vehicle_count:
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 

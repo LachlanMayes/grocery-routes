@@ -804,8 +804,8 @@ fn schedule_shift_candidate(
 mod tests {
     use super::*;
     use domain::{
-        Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-        Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+        LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
 
     fn simple_problem() -> Problem {
@@ -886,6 +886,8 @@ mod tests {
                 per_hour_cents: 5_000,
                 late_per_min_cents: 0,
             },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
         }
     }
 

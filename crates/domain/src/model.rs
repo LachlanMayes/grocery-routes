@@ -32,6 +32,80 @@ impl fmt::Display for Chain {
     }
 }
 
+/// Chain-specific receiving rules used when a store does not specify its own
+/// receiving windows. Each Australian grocery chain has typical receiving
+/// patterns (e.g. Coles and Woolworths often receive overnight, ALDI often
+/// receives during trading hours).
+///
+/// Stores can override these defaults with their own `receiving` windows; if a
+/// store has no explicit windows, the chain defaults are used.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChainRules {
+    /// Default receiving windows for Coles stores (minutes from horizon start).
+    pub coles: Vec<TimeWindow>,
+    /// Default receiving windows for Woolworths stores.
+    pub woolworths: Vec<TimeWindow>,
+    /// Default receiving windows for ALDI stores.
+    pub aldi: Vec<TimeWindow>,
+    /// Default receiving windows for IGA stores.
+    pub iga: Vec<TimeWindow>,
+}
+
+impl ChainRules {
+    /// Returns the default receiving windows for `chain`, or `None` if no
+    /// defaults are configured for that chain.
+    pub fn windows_for(&self, chain: Chain) -> Option<&Vec<TimeWindow>> {
+        match chain {
+            Chain::Coles => Some(&self.coles),
+            Chain::Woolworths => Some(&self.woolworths),
+            Chain::Aldi => Some(&self.aldi),
+            Chain::Iga => Some(&self.iga),
+        }
+    }
+
+    /// Returns the effective receiving windows for `store`: the store's own
+    /// windows if non-empty, otherwise the chain defaults.
+    pub fn windows_for_store<'a>(&'a self, store: &'a Store) -> Option<&'a Vec<TimeWindow>> {
+        if !store.receiving.is_empty() {
+            return Some(&store.receiving);
+        }
+        self.windows_for(store.chain)
+    }
+}
+
+/// Curfew rules restrict when trucks may traverse certain road segments.
+/// Each entry forbids travel during a time window on a specific road class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurfewRule {
+    /// Road class this curfew applies to (e.g. "residential", "arterial").
+    pub road_class: String,
+    /// Start of the curfew window (minutes from horizon start).
+    pub start: Minutes,
+    /// End of the curfew window (minutes from horizon start).
+    pub end: Minutes,
+    /// Days of week this curfew applies (0=Sunday, 6=Saturday). `None` = all days.
+    pub days_of_week: Option<[bool; 7]>,
+}
+
+/// Curfew rules for the road network, used to filter edges during planning.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurfewRules {
+    pub rules: Vec<CurfewRule>,
+}
+
+impl CurfewRules {
+    /// Returns true if `road_class` is under curfew at `time` (minutes from
+    /// horizon start) on the given `day_of_week` (0=Sunday).
+    pub fn is_curtailed(&self, road_class: &str, time: Minutes, day_of_week: usize) -> bool {
+        self.rules.iter().any(|r| {
+            r.road_class == road_class
+                && r.start <= time
+                && time < r.end
+                && r.days_of_week.map_or(true, |days| days[day_of_week])
+        })
+    }
+}
+
 /// Handling-unit counts per temperature compartment (e.g. roll cages).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Load {
@@ -274,6 +348,17 @@ pub struct CostModel {
     pub late_per_min_cents: i64,
 }
 
+impl Default for CostModel {
+    fn default() -> Self {
+        Self {
+            fixed_per_route_cents: 0,
+            per_km_cents: 0,
+            per_hour_cents: 0,
+            late_per_min_cents: 0,
+        }
+    }
+}
+
 /// One node on a route: a depot visit or a store delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Node {
@@ -438,10 +523,12 @@ impl Solution {
                             load_reported = true;
                         }
                         served[store_id.0 as usize] += 1;
-                        let window_ok = store
-                            .receiving
-                            .iter()
-                            .any(|window| window.start <= step.arrive && step.depart <= window.end);
+                        let effective_windows = problem.chain_rules.windows_for_store(store);
+                        let window_ok = effective_windows.map_or(false, |windows| {
+                            windows.iter().any(|window| {
+                                window.start <= step.arrive && step.depart <= window.end
+                            })
+                        });
                         if !window_ok {
                             violations.push(Violation::WindowMissed {
                                 route: route_index,
@@ -600,6 +687,28 @@ pub struct Problem {
     pub vehicles: Vec<Vehicle>,
     pub drivers: Vec<Driver>,
     pub cost: CostModel,
+    /// Chain-specific default receiving windows. Stores without explicit
+    /// receiving windows inherit from their chain's defaults.
+    #[serde(default)]
+    pub chain_rules: ChainRules,
+    /// Truck curfew rules restricting when certain road classes may be used.
+    #[serde(default)]
+    pub curfews: CurfewRules,
+}
+
+impl Default for Problem {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            depots: Vec::new(),
+            stores: Vec::new(),
+            vehicles: Vec::new(),
+            drivers: Vec::new(),
+            cost: CostModel::default(),
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
+        }
+    }
 }
 
 impl Problem {
@@ -717,6 +826,8 @@ mod tests {
                 per_hour_cents: 0,
                 late_per_min_cents: 0,
             },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
         }
     }
 
@@ -964,5 +1075,187 @@ mod tests {
             total_cost_cents: 0,
         };
         assert!(solution.validate(&problem).is_ok());
+    }
+
+    #[test]
+    fn chain_rules_windows_for_each_chain() {
+        let rules = ChainRules {
+            coles: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            woolworths: vec![TimeWindow::new(
+                Minutes::from_minutes(720),
+                Minutes::from_minutes(960),
+            )],
+            aldi: vec![TimeWindow::new(
+                Minutes::from_minutes(900),
+                Minutes::from_minutes(1200),
+            )],
+            iga: Vec::new(),
+        };
+
+        assert_eq!(
+            rules
+                .windows_for(Chain::Coles)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            rules
+                .windows_for(Chain::Woolworths)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            rules.windows_for(Chain::Aldi).map(|w| w.len()).unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            rules.windows_for(Chain::Iga).map(|w| w.len()).unwrap_or(0),
+            0
+        );
+    }
+
+    #[test]
+    fn chain_rules_windows_for_store_uses_store_windows_first() {
+        let rules = ChainRules {
+            coles: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            woolworths: vec![],
+            aldi: vec![],
+            iga: vec![],
+        };
+
+        // Store with explicit windows uses those, not chain defaults
+        let store = Store {
+            id: StoreId(0),
+            chain: Chain::Coles,
+            name: "Test Store".into(),
+            location: LatLon::new(-33.87, 151.21),
+            demand: Load::ZERO,
+            service: Minutes::ZERO,
+            receiving: vec![TimeWindow::new(
+                Minutes::from_minutes(700),
+                Minutes::from_minutes(800),
+            )],
+        };
+        assert_eq!(
+            rules
+                .windows_for_store(&store)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            rules.windows_for_store(&store).unwrap()[0].start,
+            Minutes::from_minutes(700)
+        );
+    }
+
+    #[test]
+    fn chain_rules_windows_for_store_falls_back_to_chain_defaults() {
+        let rules = ChainRules {
+            coles: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            woolworths: vec![],
+            aldi: vec![],
+            iga: vec![],
+        };
+
+        // Store with no receiving windows uses chain defaults
+        let store = Store {
+            id: StoreId(0),
+            chain: Chain::Coles,
+            name: "Test Store".into(),
+            location: LatLon::new(-33.87, 151.21),
+            demand: Load::ZERO,
+            service: Minutes::ZERO,
+            receiving: vec![],
+        };
+        assert_eq!(
+            rules
+                .windows_for_store(&store)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            rules.windows_for_store(&store).unwrap()[0].start,
+            Minutes::ZERO
+        );
+        assert_eq!(
+            rules.windows_for_store(&store).unwrap()[0].end,
+            Minutes::from_minutes(600)
+        );
+    }
+
+    #[test]
+    fn chain_rules_empty_profile_has_no_windows() {
+        let rules = ChainRules::default();
+        assert_eq!(
+            rules
+                .windows_for(Chain::Coles)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            rules
+                .windows_for(Chain::Woolworths)
+                .map(|w| w.len())
+                .unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            rules.windows_for(Chain::Aldi).map(|w| w.len()).unwrap_or(0),
+            0
+        );
+        assert_eq!(
+            rules.windows_for(Chain::Iga).map(|w| w.len()).unwrap_or(0),
+            0
+        );
+    }
+
+    #[test]
+    fn curfew_rules_block_curtailed_edges() {
+        let rules = CurfewRules {
+            rules: vec![
+                CurfewRule {
+                    road_class: "residential".to_string(),
+                    start: Minutes::from_minutes(600), // 10:00
+                    end: Minutes::from_minutes(900),   // 15:00
+                    days_of_week: None,                // all days
+                },
+                CurfewRule {
+                    road_class: "arterial".to_string(),
+                    start: Minutes::from_minutes(1080), // 18:00
+                    end: Minutes::from_minutes(1200),   // 20:00
+                    days_of_week: Some([true, true, true, true, true, false, false]), // Mon-Fri
+                },
+            ],
+        };
+
+        // Residential road at 10:00 is curtailed
+        assert!(rules.is_curtailed("residential", Minutes::from_minutes(600), 0));
+
+        // Residential road at 09:00 is NOT curtailed (before window)
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(540), 0));
+
+        // Residential road at 15:00 is NOT curtailed (after window)
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(900), 0));
+
+        // Arterial road at 18:00 on Monday IS curtailed
+        assert!(rules.is_curtailed("arterial", Minutes::from_minutes(1080), 1));
+
+        // Arterial road at 18:00 on Saturday is NOT curtailed (not a weekday)
+        assert!(!rules.is_curtailed("arterial", Minutes::from_minutes(1080), 6));
+
+        // Unknown road class is never curtailed
+        assert!(!rules.is_curtailed("motorway", Minutes::from_minutes(600), 0));
+    }
+
+    #[test]
+    fn curfew_rules_empty_has_no_restrictions() {
+        let rules = CurfewRules::default();
+        assert!(!rules.is_curtailed("residential", Minutes::ZERO, 0));
+        assert!(!rules.is_curtailed("arterial", Minutes::from_minutes(1440), 0));
     }
 }

@@ -1,8 +1,8 @@
 //! End-to-end tests for the M0 greedy insertion solver.
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes, Node,
-    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+    LatLon, Load, Minutes, Node, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use solver::{solve, solve_greedy_euclidean};
 
@@ -86,6 +86,8 @@ fn small_problem() -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 
@@ -181,6 +183,8 @@ fn multi_day_problem() -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 
@@ -441,6 +445,8 @@ fn single_vehicle_problem(capacity: Load, stores: Vec<Store>) -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 
