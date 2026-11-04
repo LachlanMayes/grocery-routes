@@ -18,6 +18,9 @@ use domain::{
     Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
     Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
+
+use solver::{parse_solomon_file, solomon_to_problem};
+
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -65,8 +68,8 @@ pub struct SimOptions {
     pub stores: usize,
     /// Number of distribution centres (clamped to at least 1).
     pub depots: usize,
-    /// Number of vehicles (one driver is generated per vehicle; clamped to at
-    /// least 1).
+    /// Number of vehicles (one driver is generated per vehicle; clamped to
+    /// at least 1).
     pub vehicles: usize,
     /// Random seed; the same seed always produces the same problem.
     pub seed: u64,
@@ -258,11 +261,12 @@ fn build_stores(
             demand.ambient = 1;
         }
 
-        let start = base_start + rng.random_range(-WINDOW_JITTER..=WINDOW_JITTER);
-        let end = base_end + rng.random_range(-WINDOW_JITTER..=WINDOW_JITTER);
-        // The shortest base window is 6 h long and the jitter is ±30 min per
-        // bound, so `start < end` cannot invert; the assertion documents it.
-        debug_assert!(start < end, "receiving window {start}..{end}");
+        let mut start = base_start + rng.random_range(-WINDOW_JITTER..=WINDOW_JITTER);
+        let mut end = base_end + rng.random_range(-WINDOW_JITTER..=WINDOW_JITTER);
+        if start >= end {
+            // Jitter could theoretically invert bounds; swap to keep valid window
+            (start, end) = (end, start);
+        }
 
         stores.push(Store {
             id: StoreId(index as u32),
@@ -283,7 +287,9 @@ fn build_stores(
 /// The fleet: three illustrative temperature classes cycled by index, each
 /// vehicle assigned to a depot round-robin.
 fn build_vehicles(count: usize, depot_count: usize) -> Vec<Vehicle> {
-    debug_assert!(depot_count > 0, "generate clamps the depot count to >= 1");
+    if depot_count == 0 {
+        panic!("generate clamps the depot count to >= 1");
+    };
     (0..count)
         .map(|index| Vehicle {
             id: VehicleId(index as u32),
@@ -309,4 +315,67 @@ fn build_drivers(count: usize) -> Vec<Driver> {
             )],
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    const C101_SAMPLE: &str = r#"C101
+
+VEHICLE
+NUMBER     CAPACITY
+25         200
+
+CUSTOMER
+CUST NO.  XCOORD.   YCOORD.  DEMAND  READY TIME  DUE DATE  SERVICE TIME
+0         40        50       0       0           1236      0
+1         22        22       18      128         250       10
+2         36        26       26      284         386       10
+3         22        42       16      246         378       10
+4         18        46       20      128         250       10
+"#;
+
+    #[test]
+    fn parses_c101_sample() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(C101_SAMPLE.as_bytes()).unwrap();
+        f.flush().unwrap();
+
+        let inst = parse_solomon_file(f.path()).unwrap();
+        assert_eq!(inst.name, "C101");
+        assert_eq!(inst.vehicle_count, 25);
+        assert_eq!(inst.vehicle_capacity, 200);
+        assert_eq!(inst.depot, LatLon::new(40.0, 50.0));
+        assert_eq!(inst.customers.len(), 5); // 0=depot + 4 customers
+        assert_eq!(inst.customers[0].id, 0);
+        assert_eq!(inst.customers[1].id, 1);
+        assert_eq!(inst.customers[1].demand, 18);
+        assert_eq!(inst.customers[1].ready, 128);
+        assert_eq!(inst.customers[1].due, 250);
+        assert_eq!(inst.customers[1].service, 10);
+    }
+
+    #[test]
+    fn converts_to_problem() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(C101_SAMPLE.as_bytes()).unwrap();
+        f.flush().unwrap();
+
+        let inst = parse_solomon_file(f.path()).unwrap();
+        let problem = solomon_to_problem(inst, 1.0);
+
+        assert_eq!(problem.depots.len(), 1);
+        assert_eq!(problem.vehicles.len(), 25);
+        assert_eq!(problem.drivers.len(), 25);
+        assert_eq!(problem.stores.len(), 4); // 4 customers
+        assert_eq!(problem.vehicles[0].capacity, Load::new(200, 0, 0));
+        // First customer has window 128..250
+        assert_eq!(
+            problem.stores[0].receiving[0],
+            TimeWindow::new(Minutes::from_minutes(128), Minutes::from_minutes(250))
+        );
+    }
 }

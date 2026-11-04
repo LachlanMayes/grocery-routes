@@ -24,8 +24,8 @@
 //! [`FALLBACK_SPEED_KMH`]. Every step of the search is deterministic: the
 //! same problem always yields the same plan.
 
-mod greedy;
-mod local_search;
+pub mod greedy;
+pub mod local_search;
 mod matrix;
 pub mod parser; // Solomon/VRPLib parser (vendored for M1)
 
@@ -56,7 +56,7 @@ pub fn solve(problem: &Problem) -> Solution {
 /// Runs the M0 greedy insertion solver (for comparison/benchmarking).
 pub fn solve_greedy(problem: &Problem) -> Solution {
     let solution = greedy::plan(problem);
-    debug_assert!(
+    assert!(
         solution.validate(problem).is_ok(),
         "solver produced an invalid solution"
     );
@@ -72,7 +72,7 @@ pub fn solve_greedy_euclidean(problem: &Problem) -> Solution {
             eprintln!("  - {v}");
         }
     }
-    debug_assert!(
+    assert!(
         solution.validate(problem).is_ok(),
         "solver produced an invalid solution"
     );

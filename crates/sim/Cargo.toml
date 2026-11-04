@@ -10,6 +10,9 @@ workspace = true
 [dependencies]
 domain = { path = "../domain" }
 rand.workspace = true
+solver = { path = "../solver" }
 
 [dev-dependencies]
 serde_json.workspace = true
+solver = { path = "../solver" }
+tempfile.workspace = true

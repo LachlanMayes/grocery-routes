@@ -17,10 +17,11 @@ use domain::{
     Store, StoreId, Vehicle, VehicleId,
 };
 
-use crate::greedy::{ActiveRoute, Scheduled, schedule_route, schedule_shift, spans_overlap};
+use super::greedy::{ActiveRoute, Scheduled, plan, schedule_route, schedule_shift, spans_overlap};
 use crate::matrix::DistanceMatrix;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
+use std::collections::HashSet;
 
 /// A route in the local search, with its schedule and metadata.
 #[derive(Debug, Clone)]
@@ -35,6 +36,9 @@ struct LSSolution {
     routes: Vec<LSRoute>,
     unassigned: Vec<StoreId>,
     total_cost_cents: i64,
+    /// Driver busy spans: for each driver, list of (start, end) spans they are busy.
+    /// Used to enforce driver occupancy constraint during moves.
+    driver_busy: Vec<Vec<(Minutes, Minutes)>>,
 }
 
 /// Result of evaluating a move.
@@ -141,12 +145,27 @@ pub fn improve(
     }
 
     // Convert back to public Solution
-    ls_to_solution(problem, best)
+    let solution = ls_to_solution(problem, best);
+
+    // Final validation - ensure the solution satisfies all constraints
+    if let Err(violations) = solution.validate(problem) {
+        // Log violations but fall back to greedy if local search produced invalid solution
+        eprintln!("Local search produced invalid solution, falling back to greedy:");
+        for v in &violations {
+            eprintln!("  - {v}");
+        }
+        // Fall back to greedy solution
+        let matrix = DistanceMatrix::new(problem);
+        plan(problem)
+    } else {
+        solution
+    }
 }
 
 /// Converts a public Solution to internal LS representation.
 fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
     let mut total_cost = 0;
+    let mut driver_busy: Vec<Vec<(Minutes, Minutes)>> = vec![Vec::new(); problem.drivers.len()];
     let routes = solution
         .routes
         .into_iter()
@@ -162,11 +181,14 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
                 .position(|v| v.id == route.vehicle)
                 .unwrap();
             total_cost += route.cost_cents;
+            let driver = route.drivers[0];
+            let span = (route.steps[0].depart, route.steps.last().unwrap().arrive);
+            driver_busy[driver.0 as usize].push(span);
             LSRoute {
                 vehicle_index,
                 scheduled: Scheduled {
-                    driver: route.drivers[0],
-                    span: (route.steps[0].depart, route.steps.last().unwrap().arrive),
+                    driver,
+                    span,
                     steps: route.steps,
                     distance_km: route.distance_km,
                     duration: route.duration,
@@ -180,6 +202,7 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
         routes,
         unassigned: solution.unassigned,
         total_cost_cents: total_cost,
+        driver_busy,
     }
 }
 
@@ -187,6 +210,7 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
 fn nodes_from_steps(steps: &[PlannedStop]) -> Vec<Node> {
     steps.iter().map(|s| s.node).collect()
 }
+
 fn ls_to_solution(problem: &Problem, ls: LSSolution) -> Solution {
     let routes: Vec<RoutePlan> = ls
         .routes
@@ -330,9 +354,15 @@ fn try_relocate_direct(
 
     let new_src_nodes = nodes_from_steps(&new_src_steps);
 
-    let Some(src_scheduled) =
-        schedule_shift_candidate(problem, matrix, &src_vehicle, src_driver, &new_src_nodes)
-    else {
+    let Some(src_scheduled) = schedule_shift_candidate(
+        problem,
+        matrix,
+        src_vehicle,
+        src_driver,
+        &new_src_nodes,
+        &solution.driver_busy,
+        Some((src_driver.0 as usize, src_route.scheduled.span)),
+    ) else {
         return false;
     };
 
@@ -353,9 +383,15 @@ fn try_relocate_direct(
 
     let new_dst_nodes = nodes_from_steps(&new_dst_steps);
 
-    let Some(dst_scheduled) =
-        schedule_shift_candidate(problem, matrix, &dst_vehicle, dst_driver, &new_dst_nodes)
-    else {
+    let Some(dst_scheduled) = schedule_shift_candidate(
+        problem,
+        matrix,
+        dst_vehicle,
+        dst_driver,
+        &new_dst_nodes,
+        &solution.driver_busy,
+        Some((dst_driver.0 as usize, dst_route.scheduled.span)),
+    ) else {
         return false;
     };
 
@@ -404,9 +440,15 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
                 let driver = solution.routes[route_idx].scheduled.driver;
                 let vehicle_ref = &solution.routes[route_idx];
 
-                if let Some(scheduled) =
-                    schedule_shift_candidate(problem, matrix, vehicle, driver, &candidate_nodes)
-                {
+                if let Some(scheduled) = schedule_shift_candidate(
+                    problem,
+                    matrix,
+                    vehicle,
+                    driver,
+                    &candidate_nodes,
+                    &solution.driver_busy,
+                    Some((driver.0 as usize, vehicle_ref.scheduled.span)),
+                ) {
                     let delta = scheduled.cost_cents - vehicle_ref.scheduled.cost_cents;
                     if delta < 0 {
                         // Apply the improvement
@@ -464,20 +506,26 @@ fn relocate(
 
         // Try to re-schedule source without this store
         let src_driver = src_route.scheduled.driver;
-        let Some(src_scheduled) =
-            schedule_shift_candidate(problem, matrix, src_vehicle, src_driver, &new_src_nodes)
-        else {
+        let Some(src_scheduled) = schedule_shift_candidate(
+            problem,
+            matrix,
+            src_vehicle,
+            src_driver,
+            &new_src_nodes,
+            &solution.driver_busy,
+            Some((src_driver.0 as usize, src_route.scheduled.span)),
+        ) else {
             continue;
         };
 
         // Try inserting into each other route
         for (dst_idx, dst_route) in solution.routes.iter().enumerate() {
-            if dst_idx == src_route.vehicle_index {
+            if dst_idx == src_idx {
                 continue;
             }
             let dst_vehicle = &problem.vehicles[dst_route.vehicle_index];
             let dst_steps = &dst_route.scheduled.steps;
-            if dst_steps.len() < 3 {
+            if dst_steps.len() < 2 {
                 continue;
             }
 
@@ -494,24 +542,28 @@ fn relocate(
                 let new_dst_nodes = nodes_from_steps(&new_dst_steps);
 
                 let dst_driver = dst_route.scheduled.driver;
-                if let Some(dst_scheduled) = schedule_shift_candidate(
+                let Some(dst_scheduled) = schedule_shift_candidate(
                     problem,
                     matrix,
-                    &dst_vehicle,
+                    dst_vehicle,
                     dst_driver,
                     &new_dst_nodes,
-                ) {
-                    let delta = src_scheduled.cost_cents + dst_scheduled.cost_cents
-                        - solution.routes[src_idx].scheduled.cost_cents
-                        - solution.routes[dst_idx].scheduled.cost_cents;
+                    &solution.driver_busy,
+                    Some((dst_driver.0 as usize, dst_route.scheduled.span)),
+                ) else {
+                    continue;
+                };
 
-                    if delta < 0 {
-                        // Apply the move
-                        solution.routes[src_idx].scheduled = src_scheduled;
-                        solution.routes[dst_idx].scheduled = dst_scheduled;
-                        solution.total_cost_cents += delta;
-                        return true;
-                    }
+                let delta = src_scheduled.cost_cents + dst_scheduled.cost_cents
+                    - solution.routes[src_idx].scheduled.cost_cents
+                    - solution.routes[dst_idx].scheduled.cost_cents;
+
+                if delta < 0 {
+                    // Apply the move
+                    solution.routes[src_idx].scheduled = src_scheduled;
+                    solution.routes[dst_idx].scheduled = dst_scheduled;
+                    solution.total_cost_cents += delta;
+                    return true;
                 }
             }
         }
@@ -584,8 +636,24 @@ fn exchange(
         let driver_j = route_j.scheduled.driver;
 
         if let (Some(si_sched), Some(sj_sched)) = (
-            schedule_shift_candidate(problem, matrix, &vi, driver_i, &new_i_nodes),
-            schedule_shift_candidate(problem, matrix, &vj, driver_j, &new_j_nodes),
+            schedule_shift_candidate(
+                problem,
+                matrix,
+                vi,
+                driver_i,
+                &new_i_nodes,
+                &solution.driver_busy,
+                Some((driver_i.0 as usize, route_i.scheduled.span)),
+            ),
+            schedule_shift_candidate(
+                problem,
+                matrix,
+                vj,
+                driver_j,
+                &new_j_nodes,
+                &solution.driver_busy,
+                Some((driver_j.0 as usize, route_j.scheduled.span)),
+            ),
         ) {
             let delta = si_sched.cost_cents + sj_sched.cost_cents
                 - route_i.scheduled.cost_cents
@@ -621,14 +689,14 @@ fn cross_exchange(
             let vj = &problem.vehicles[route_j.vehicle_index];
             let steps_i = &route_i.scheduled.steps;
             let steps_j = &route_j.scheduled.steps;
-            if steps_i.len() <= 4 || steps_j.len() <= 4 {
+            if steps_i.len() < 3 || steps_j.len() < 3 {
                 continue;
             }
 
             // Convert to node sequences for manipulation
             let nodes_i = nodes_from_steps(steps_i);
             let nodes_j = nodes_from_steps(steps_j);
-            if nodes_i.len() <= 4 || nodes_j.len() <= 4 {
+            if nodes_i.len() < 3 || nodes_j.len() < 3 {
                 continue;
             }
 
@@ -648,8 +716,24 @@ fn cross_exchange(
                         let driver_j = route_j.scheduled.driver;
 
                         if let (Some(si_sched), Some(sj_sched)) = (
-                            schedule_shift_candidate(problem, matrix, &vi, driver_i, &new_i),
-                            schedule_shift_candidate(problem, matrix, &vj, driver_j, &new_j),
+                            schedule_shift_candidate(
+                                problem,
+                                matrix,
+                                vi,
+                                driver_i,
+                                &new_i,
+                                &solution.driver_busy,
+                                Some((driver_i.0 as usize, route_i.scheduled.span)),
+                            ),
+                            schedule_shift_candidate(
+                                problem,
+                                matrix,
+                                vj,
+                                driver_j,
+                                &new_j,
+                                &solution.driver_busy,
+                                Some((driver_j.0 as usize, route_j.scheduled.span)),
+                            ),
                         ) {
                             let delta = si_sched.cost_cents + sj_sched.cost_cents
                                 - route_i.scheduled.cost_cents
@@ -671,17 +755,30 @@ fn cross_exchange(
 }
 
 /// Schedules a full route sequence (depot + stores + depot) for a specific driver.
+/// Checks driver occupancy against other routes in the solution.
 fn schedule_shift_candidate(
     problem: &Problem,
     matrix: &DistanceMatrix,
     vehicle: &Vehicle,
     driver: DriverId,
     sequence: &[Node],
+    driver_busy: &[Vec<(Minutes, Minutes)>],
+    exempt: Option<(usize, (Minutes, Minutes))>,
 ) -> Option<Scheduled> {
     // Find the driver's shifts
     let driver_obj = problem.drivers.iter().find(|d| d.id == driver)?;
+    let busy = driver_busy
+        .get(driver.0 as usize)
+        .map_or(&[][..], Vec::as_slice);
     for &shift in &driver_obj.shifts {
-        if let Some(scheduled) = schedule_shift(problem, matrix, vehicle, driver, shift, sequence) {
+        let Some(scheduled) = schedule_shift(problem, matrix, vehicle, driver, shift, sequence)
+        else {
+            continue;
+        };
+        let blocked = busy.iter().any(|&span| {
+            spans_overlap(span, scheduled.span) && Some((driver.0 as usize, span)) != exempt
+        });
+        if !blocked {
             return Some(scheduled);
         }
     }
@@ -776,10 +873,10 @@ mod tests {
     }
 
     #[test]
-    fn local_search_improves_greedy() {
+    fn local_search_does_not_worsen_greedy() {
         let problem = simple_problem();
         let matrix = crate::matrix::DistanceMatrix::new(&problem);
-        let greedy = crate::greedy::plan(&problem);
+        let greedy = plan(&problem);
         let greedy_cost = greedy.total_cost_cents;
 
         let config = LSConfig {

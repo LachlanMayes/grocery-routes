@@ -198,7 +198,15 @@ fn euclidean_distance(a: &SolomonCustomer, b: &SolomonCustomer) -> f64 {
 /// - Time windows from READY TIME .. DUE DATE, service time from SERVICE TIME.
 /// - Travel times are Euclidean distance / speed (Solomon uses Euclidean coordinates).
 pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
-    let max_due = inst.customers.iter().map(|c| c.due).max().unwrap_or(1440);
+    // Skip the depot (customer 0) when computing max_due - depot often has
+    // a large due date (e.g., 1236 in C101) which inflates the horizon artificially
+    let max_due = inst
+        .customers
+        .iter()
+        .skip(1) // skip depot
+        .map(|c| c.due)
+        .max()
+        .unwrap_or(1440);
 
     // Compute worst-case return leg from any customer to depot (in minutes at given speed).
     let depot_cust = &inst.customers[0];

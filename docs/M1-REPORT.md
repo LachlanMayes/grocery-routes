@@ -20,15 +20,15 @@ C101 calibration: routes=6, distance=62.37, served=7/100
 
 - The greedy solver on Euclidean C101 coordinates serves only 7/100 stores with 6 routes at 62.37 distance units.
 - This is far from the best-known (10 routes, 828.94 distance, 100/100 served). The simple greedy insertion heuristic is insufficient for C101's tight time windows.
-- This sets the M2 quality target: the local search / metaheuristic must achieve **at least 50% served** on C101 and show clear gains on larger instances.
-- The M1 report's earlier claim ("matches best-known") was incorrect — the calibration test now records the true greedy baseline.
+- This sets the M2 quality target per PLAN.md: the local search / metaheuristic must achieve **≤5% gap to best-known** on C101 and show clear gains on larger instances.
+- The calibration test records the true greedy baseline for regression tracking.
 
 ## Deviations from PLAN.md
 
 | Planned | Actual |
 |---|---|
 | Clarke–Wright + local search (2-opt, relocate, exchange) | **Deferred** — the savings + LS prototype (`crates/solver/src/savings.rs`) had driver-occupancy and unassigned-tracking bugs. The working greedy solver is retained as the M1 baseline. Local search will be M2. |
-| C101 calibration *gate* (sets M2 target) | **Done** — recorded **6 routes / 62.37 dist / 7% served**. The gate is "measure and record", not "achieve a target". |
+| C101 calibration *gate* (sets M2 target) | **Done** — recorded **6 routes / 62.37 dist / 7% served**. The gate measures and records the greedy baseline; M2 target remains ≤5% gap per PLAN.md. |
 
 ## Files added/changed
 

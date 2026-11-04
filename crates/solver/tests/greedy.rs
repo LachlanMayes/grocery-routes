@@ -4,7 +4,7 @@ use domain::{
     Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
     Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
-use solver::{solve, solve_greedy_euclidean};
+use solver::{parse_solomon_file, solomon_to_problem, solve, solve_greedy_euclidean};
 
 /// One depot, three stores and two vehicles on one driver shift.
 fn small_problem() -> Problem {
@@ -266,9 +266,12 @@ fn c101_calibration_greedy() {
         problem.stores.len()
     );
 
-    // The exact targets will be set after this run; for now just ensure it runs.
-    assert!(routes_used > 0);
-    assert!(total_dist > 0.0);
+    // Baseline targets (from literature: C101 best known = 10 routes, 828.94 km).
+    // Greedy is expected to be far worse; set loose bounds for now.
+    assert!(routes_used <= 15, "too many routes: {}", routes_used);
+    assert!(total_dist <= 1200.0, "distance too high: {}", total_dist);
+    // At least some stores should be served
+    assert!(served >= 5, "too few stores served: {}", served);
 }
 
 /// One depot, one vehicle with `capacity` and one driver on a 10-hour shift;

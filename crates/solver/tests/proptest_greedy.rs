@@ -18,8 +18,8 @@
 //! weakening the assertion.
 
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Problem, Shift,
-    Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, CostModel, Depot, DepotId, Driver, DriverId, LatLon, Load, Minutes, Node, Problem,
+    Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use proptest::prelude::*;
 use solver::solve;
@@ -40,6 +40,18 @@ fn store_strategy() -> impl Strategy<Value = (f64, f64, u32, u32, u32, i64)> {
         0u32..=6,
         0u32..=4,
         0u32..=2,
+        300i64..=320,
+    )
+}
+
+/// Generates a problem where some stores may be infeasible, testing unassigned handling.
+fn store_strategy_with_infeasible() -> impl Strategy<Value = (f64, f64, u32, u32, u32, i64)> {
+    (
+        -34.0f64..-33.5,
+        150.5f64..151.5,
+        0u32..=8, // Allow higher demand that may exceed capacity
+        0u32..=6,
+        0u32..=4,
         300i64..=320,
     )
 }
@@ -123,6 +135,38 @@ proptest! {
             "unassigned: {:?}",
             solution.unassigned
         );
+        prop_assert!(solution.routes.len() <= problem.vehicles.len());
+    }
+
+    #[test]
+    fn greedy_handles_unassigned_stores(
+        raw_stores in prop::collection::vec(store_strategy_with_infeasible(), 1..=8),
+        vehicle_count in 1usize..=4,
+    ) {
+        let problem = build_problem(raw_stores, vehicle_count);
+        let solution = solve(&problem);
+
+        prop_assert_eq!(solution.validate(&problem), Ok(()));
+        // Every store is either served exactly once or listed as unassigned
+        let mut served = vec![0u32; problem.stores.len()];
+        for route in &solution.routes {
+            for step in &route.steps {
+                if let Node::Store(id) = step.node {
+                    served[id.0 as usize] += 1;
+                }
+            }
+        }
+        for (idx, &count) in served.iter().enumerate() {
+            if count == 0 {
+                prop_assert!(solution.unassigned.contains(&StoreId(idx as u32)),
+                    "store {} neither served nor unassigned", idx);
+            } else if count == 1 {
+                prop_assert!(!solution.unassigned.contains(&StoreId(idx as u32)),
+                    "store {} served but also unassigned", idx);
+            } else {
+                prop_assert!(false, "store {} served {} times", idx, count);
+            }
+        }
         prop_assert!(solution.routes.len() <= problem.vehicles.len());
     }
 }
