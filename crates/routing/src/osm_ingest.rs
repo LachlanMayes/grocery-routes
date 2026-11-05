@@ -96,7 +96,8 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
     let mut highway: Option<&str> = None;
     let mut maxweight_tonnes: Option<f64> = None;
     let mut maxheight_m: Option<f64> = None;
-    let mut hgv = false;
+    let mut hgv: Option<String> = None;
+    let mut access: Option<String> = None;
     let mut oneway = false;
     let mut reverse = false;
 
@@ -112,7 +113,10 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
                 maxheight_m = parse_maxheight(value);
             }
             "hgv" => {
-                hgv = matches!(value, "yes" | "true" | "1");
+                hgv = Some(value.to_ascii_lowercase());
+            }
+            "access" => {
+                access = Some(value.to_ascii_lowercase());
             }
             "oneway" => {
                 oneway = matches!(value, "yes" | "true" | "1");
@@ -136,6 +140,7 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
         maxweight_tonnes,
         maxheight_m,
         hgv,
+        access,
     })
 }
 
@@ -148,7 +153,8 @@ struct DrivableWay {
     highway: String,
     maxweight_tonnes: Option<f64>,
     maxheight_m: Option<f64>,
-    hgv: bool,
+    hgv: Option<String>,
+    access: Option<String>,
 }
 
 /// Speed (km/h) assumed for a highway type when no `maxspeed` is tagged.
@@ -176,8 +182,33 @@ fn add_way_to_graph(graph: &mut Graph, nodes: &HashMap<i64, (f64, f64)>, way: Dr
 
     let speed = highway_speed_kmh(&way.highway);
 
-    // Forward direction: nodes[0] -> nodes[1] -> ...
-    for pair in way.nodes.windows(2) {
+    // OSM oneway semantics:
+    // - oneway=yes: forward direction only, in node order.
+    // - oneway=-1: reverse direction only, against node order.
+    // - otherwise: both directions.
+    if !way.reverse {
+        add_chain(graph, nodes, &way, false, way.oneway, speed);
+    }
+    if !way.oneway {
+        add_chain(graph, nodes, &way, true, way.reverse, speed);
+    }
+}
+
+fn add_chain(
+    graph: &mut Graph,
+    nodes: &HashMap<i64, (f64, f64)>,
+    way: &DrivableWay,
+    reverse: bool,
+    oneway_edge: bool,
+    speed: f64,
+) {
+    let chain: Vec<i64> = if reverse {
+        way.nodes.iter().rev().copied().collect()
+    } else {
+        way.nodes.clone()
+    };
+
+    for pair in chain.windows(2) {
         let (from_id, to_id) = (pair[0], pair[1]);
         let Some((from_lat, from_lon)) = nodes.get(&from_id) else {
             continue;
@@ -185,52 +216,21 @@ fn add_way_to_graph(graph: &mut Graph, nodes: &HashMap<i64, (f64, f64)>, way: Dr
         let Some((to_lat, to_lon)) = nodes.get(&to_id) else {
             continue;
         };
-        let from = NodeId(from_id as u64);
-        let to = NodeId(to_id as u64);
         let distance_km = haversine_segment(*from_lat, *from_lon, *to_lat, *to_lon);
         let duration_minutes = (distance_km / speed * 60.0).round() as i64;
 
         graph.add_edge(
-            from,
-            to,
+            NodeId(from_id as u64),
+            NodeId(to_id as u64),
             distance_km,
             duration_minutes,
             Some(way.highway.clone()),
             way.maxweight_tonnes,
             way.maxheight_m,
-            way.hgv,
-            way.oneway,
+            way.hgv.clone(),
+            way.access.clone(),
+            oneway_edge,
         );
-    }
-
-    // Reverse direction for two-way ways.
-    if !way.oneway || way.reverse {
-        let rev_nodes: Vec<i64> = way.nodes.iter().rev().copied().collect();
-        for pair in rev_nodes.windows(2) {
-            let (from_id, to_id) = (pair[0], pair[1]);
-            let Some((from_lat, from_lon)) = nodes.get(&from_id) else {
-                continue;
-            };
-            let Some((to_lat, to_lon)) = nodes.get(&to_id) else {
-                continue;
-            };
-            let from = NodeId(from_id as u64);
-            let to = NodeId(to_id as u64);
-            let distance_km = haversine_segment(*from_lat, *from_lon, *to_lat, *to_lon);
-            let duration_minutes = (distance_km / speed * 60.0).round() as i64;
-
-            graph.add_edge(
-                from,
-                to,
-                distance_km,
-                duration_minutes,
-                Some(way.highway.clone()),
-                way.maxweight_tonnes,
-                way.maxheight_m,
-                way.hgv,
-                way.oneway,
-            );
-        }
     }
 }
 

@@ -189,6 +189,27 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
     }
 }
 
+/// Recomputes the busy spans of all drivers from the current routes.
+///
+/// Local-search moves alter routes, so expensive bookkeeping is centralised
+/// here and always produces a fresh, non-stale view of occupancy.
+fn recompute_driver_busy(problem: &Problem, routes: &[LSRoute]) -> Vec<Vec<(Minutes, Minutes)>> {
+    let mut busy = vec![Vec::new(); problem.drivers.len()];
+    for route in routes {
+        let Some(spans) = busy.get_mut(route.scheduled.driver.0 as usize) else {
+            continue;
+        };
+        spans.push(route.scheduled.span);
+    }
+    busy
+}
+
+/// True when the two candidate routes (with possibly new schedules) share a
+/// driver whose work spans overlap.
+fn candidates_double_book_same_driver(a: &Scheduled, b: &Scheduled) -> bool {
+    a.driver == b.driver && spans_overlap(a.span, b.span)
+}
+
 /// Extracts the node sequence from a scheduled route.
 fn nodes_from_steps(steps: &[PlannedStop]) -> Vec<Node> {
     steps.iter().map(|s| s.node).collect()
@@ -382,42 +403,11 @@ fn try_relocate_direct(
         - solution.routes[src_idx].scheduled.cost_cents
         - solution.routes[dst_idx].scheduled.cost_cents;
 
-    if delta < 0 {
-        // Update driver_busy: remove old spans, add new spans for both drivers
-        let src_driver_idx = src_driver.0 as usize;
-        let dst_driver_idx = dst_driver.0 as usize;
-
-        // Remove old span from source driver
-        if let Some(spans) = solution.driver_busy.get_mut(src_driver_idx) {
-            if let Some(pos) = spans
-                .iter()
-                .position(|&span| span == src_route.scheduled.span)
-            {
-                spans.remove(pos);
-            }
-        }
-        // Add new span for source driver
-        if let Some(spans) = solution.driver_busy.get_mut(src_driver_idx) {
-            spans.push(src_scheduled.span);
-        }
-
-        // Remove old span from destination driver
-        if let Some(spans) = solution.driver_busy.get_mut(dst_driver_idx) {
-            if let Some(pos) = spans
-                .iter()
-                .position(|&span| span == dst_route.scheduled.span)
-            {
-                spans.remove(pos);
-            }
-        }
-        // Add new span for destination driver
-        if let Some(spans) = solution.driver_busy.get_mut(dst_driver_idx) {
-            spans.push(dst_scheduled.span);
-        }
-
+    if delta < 0 && !candidates_double_book_same_driver(&src_scheduled, &dst_scheduled) {
         solution.routes[src_idx].scheduled = src_scheduled;
         solution.routes[dst_idx].scheduled = dst_scheduled;
         solution.total_cost_cents += delta;
+        solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
         return true;
     }
     false
@@ -466,9 +456,9 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
                 ) {
                     let delta = scheduled.cost_cents - vehicle_ref.scheduled.cost_cents;
                     if delta < 0 {
-                        // Apply the improvement
                         solution.routes[route_idx].scheduled = scheduled;
                         solution.total_cost_cents += delta;
+                        solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
                         return true;
                     }
                 }
@@ -573,11 +563,13 @@ fn relocate(
                     - solution.routes[src_idx].scheduled.cost_cents
                     - solution.routes[dst_idx].scheduled.cost_cents;
 
-                if delta < 0 {
+                if delta < 0 && !candidates_double_book_same_driver(&src_scheduled, &dst_scheduled)
+                {
                     // Apply the move
                     solution.routes[src_idx].scheduled = src_scheduled;
                     solution.routes[dst_idx].scheduled = dst_scheduled;
                     solution.total_cost_cents += delta;
+                    solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
                     return true;
                 }
             }
@@ -674,10 +666,11 @@ fn exchange(
                 - route_i.scheduled.cost_cents
                 - route_j.scheduled.cost_cents;
 
-            if delta < 0 {
+            if delta < 0 && !candidates_double_book_same_driver(&si_sched, &sj_sched) {
                 solution.routes[i].scheduled = si_sched;
                 solution.routes[j].scheduled = sj_sched;
                 solution.total_cost_cents += delta;
+                solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
                 return true;
             }
         }
@@ -754,10 +747,14 @@ fn cross_exchange(
                                 - route_i.scheduled.cost_cents
                                 - route_j.scheduled.cost_cents;
 
-                            if delta < 0 {
+                            if delta < 0
+                                && !candidates_double_book_same_driver(&si_sched, &sj_sched)
+                            {
                                 solution.routes[i].scheduled = si_sched;
                                 solution.routes[j].scheduled = sj_sched;
                                 solution.total_cost_cents += delta;
+                                solution.driver_busy =
+                                    recompute_driver_busy(problem, &solution.routes);
                                 return true;
                             }
                         }

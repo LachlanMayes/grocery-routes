@@ -247,6 +247,7 @@ dependencies = [
  "anyhow",
  "axum",
  "domain",
+ "reqwest",
  "routing",
  "serde",
  "serde_json",
@@ -255,6 +256,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tower",
+ "tower-http",
  "tracing",
  "uuid",
 ]
@@ -987,6 +990,7 @@ name = "console"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "domain",
  "eframe",
@@ -995,6 +999,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -4866,6 +4871,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",

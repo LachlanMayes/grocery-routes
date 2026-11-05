@@ -87,7 +87,9 @@ pub struct CurfewRule {
     pub days_of_week: Option<[bool; 7]>,
 }
 
-/// Curfew rules for the road network, used to filter edges during planning.
+/// Curfew rules for the road network. The solver/validator do not currently
+/// apply these because edges carry no road class and horizon timestamps are
+/// not absolute clock times.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurfewRules {
     pub rules: Vec<CurfewRule>,
@@ -213,6 +215,44 @@ impl Shift {
 /// Used for depot dwells (loading, driver hand-overs) that may legally span
 /// two shifts. Shifts are half-open `[start, end)`. Returns `false` for an
 /// empty shift list.
+/// Maximum work (minutes) that intersects any window of `window_minutes`.
+///
+/// For each candidate window, the work is the sum of overlaps with every
+/// span, not the full duration of spans that happen to start inside it. The
+/// best window can always be moved until it starts at a span start or a
+/// span end minus the window length, so only those anchors are checked.
+fn max_work_in_fixed_window(spans: &[(Minutes, Minutes)], window_minutes: i64) -> i64 {
+    if spans.is_empty() {
+        return 0;
+    }
+    let anchors: Vec<i64> = spans
+        .iter()
+        .flat_map(|&(start, end)| {
+            [
+                start.minutes(),
+                start.minutes() - window_minutes,
+                end.minutes(),
+                end.minutes() - window_minutes,
+            ]
+        })
+        .collect();
+    anchors
+        .iter()
+        .map(|&anchor| {
+            let end = anchor + window_minutes;
+            spans
+                .iter()
+                .map(|&(start, finish)| {
+                    let lo = start.minutes().max(anchor);
+                    let hi = finish.minutes().min(end);
+                    hi.saturating_sub(lo).max(0)
+                })
+                .sum()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 fn union_covers(shifts: &[Shift], start: Minutes, end: Minutes) -> bool {
     if shifts.is_empty() {
         return false;
@@ -251,8 +291,9 @@ pub struct Depot {
     pub id: DepotId,
     pub name: String,
     pub location: LatLon,
-    /// IANA timezone name (e.g. "Australia/Sydney"). When present, depot
-    /// operating hours are interpreted in local time.
+    /// IANA timezone name (e.g. "Australia/Sydney"). Stored for API
+    /// import/export and future local-time planning; it is not applied by the
+    /// solver or validator yet.
     #[serde(default)]
     pub timezone: Option<String>,
 }
@@ -270,9 +311,9 @@ pub struct Store {
     pub service: Minutes,
     /// Receiving windows; service must sit inside one of them.
     pub receiving: Vec<TimeWindow>,
-    /// IANA timezone name (e.g. "Australia/Sydney"). When present, receiving
-    /// windows and service times are interpreted in local time and converted
-    /// to horizon minutes for planning. When absent, all times are horizon
+    /// IANA timezone name (e.g. "Australia/Sydney"). Stored for API
+    /// import/export and future local-time planning; it is not applied by the
+    /// solver or validator yet. Omitting it means all times are horizon
     /// minutes.
     #[serde(default)]
     pub timezone: Option<String>,
@@ -622,43 +663,25 @@ impl Solution {
             }
 
             // Check rolling 24-hour work limit.
-            let day_minutes = 24 * 60;
-            for i in 0..spans.len() {
-                let window_start = spans[i].0;
-                let window_end = window_start + Minutes::from_minutes(day_minutes);
-                let work_in_window: i64 = spans
-                    .iter()
-                    .filter(|(s, _e)| *s >= window_start && *s < window_end)
-                    .map(|(s, e)| e.minutes() - s.minutes())
-                    .sum();
-                if work_in_window > max_work_24h {
-                    violations.push(Violation::DriverWorkHoursExceeded {
-                        driver: driver_id,
-                        work_hours: work_in_window as f64 / 60.0,
-                        limit_hours: max_work_24h as f64 / 60.0,
-                    });
-                    break; // Report once per driver per rule
-                }
+            let day_minutes: i64 = 24 * 60;
+            let work_in_window = max_work_in_fixed_window(&spans, day_minutes);
+            if work_in_window > max_work_24h {
+                violations.push(Violation::DriverWorkHoursExceeded {
+                    driver: driver_id,
+                    work_hours: work_in_window as f64 / 60.0,
+                    limit_hours: max_work_24h as f64 / 60.0,
+                });
             }
 
             // Check rolling 7-day work limit.
             let week_minutes = 7 * day_minutes;
-            for i in 0..spans.len() {
-                let window_start = spans[i].0;
-                let window_end = window_start + Minutes::from_minutes(week_minutes);
-                let work_in_window: i64 = spans
-                    .iter()
-                    .filter(|(s, _e)| *s >= window_start && *s < window_end)
-                    .map(|(s, e)| e.minutes() - s.minutes())
-                    .sum();
-                if work_in_window > max_work_7d {
-                    violations.push(Violation::DriverWeeklyHoursExceeded {
-                        driver: driver_id,
-                        work_hours: work_in_window as f64 / 60.0,
-                        limit_hours: max_work_7d as f64 / 60.0,
-                    });
-                    break;
-                }
+            let work_in_window = max_work_in_fixed_window(&spans, week_minutes);
+            if work_in_window > max_work_7d {
+                violations.push(Violation::DriverWeeklyHoursExceeded {
+                    driver: driver_id,
+                    work_hours: work_in_window as f64 / 60.0,
+                    limit_hours: max_work_7d as f64 / 60.0,
+                });
             }
         }
 
@@ -701,7 +724,10 @@ pub struct Problem {
     /// receiving windows inherit from their chain's defaults.
     #[serde(default)]
     pub chain_rules: ChainRules,
-    /// Truck curfew rules restricting when certain road classes may be used.
+    /// Truck curfew rules for certain road classes. Stored for API
+    /// import/export and analysis; not enforced by the solver/validator yet
+    /// because route segments do not carry a road class or absolute clock
+    /// time in this model.
     #[serde(default)]
     pub curfews: CurfewRules,
 }
@@ -1015,6 +1041,62 @@ mod tests {
             "expected DriverWorkHoursExceeded violation, got {:?}",
             violations
         );
+    }
+
+    #[test]
+    fn fatigue_work_intersecting_24h_window_is_not_overcounted() {
+        // A 700-minute span ending at minute 700 contributes only its 700
+        // minutes to the [0, 1440) window, even if the following span starts
+        // just inside that window. Actual work is 710 minutes, below the
+        // Standard 12-hour limit.
+        let problem = fatigue_test_problem(FatigueRules::Standard);
+        let solution = Solution {
+            routes: vec![
+                RoutePlan {
+                    vehicle: VehicleId(0),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::ZERO,
+                            depart: Minutes::ZERO,
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(700),
+                            depart: Minutes::from_minutes(700),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(700),
+                    cost_cents: 0,
+                },
+                RoutePlan {
+                    vehicle: VehicleId(1),
+                    drivers: vec![DriverId(0)],
+                    steps: vec![
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(1430),
+                            depart: Minutes::from_minutes(1430),
+                        },
+                        PlannedStop {
+                            node: Node::Depot(DepotId(0)),
+                            arrive: Minutes::from_minutes(1490),
+                            depart: Minutes::from_minutes(1490),
+                        },
+                    ],
+                    distance_km: 0.0,
+                    duration: Minutes::from_minutes(60),
+                    cost_cents: 0,
+                },
+            ],
+            unassigned: vec![StoreId(0)],
+            total_distance_km: 0.0,
+            total_duration: Minutes::from_minutes(760),
+            total_cost_cents: 0,
+        };
+        assert!(solution.validate(&problem).is_ok());
     }
 
     #[test]

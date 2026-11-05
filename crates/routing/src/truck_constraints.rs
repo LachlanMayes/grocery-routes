@@ -51,10 +51,16 @@ pub fn edge_duration_minutes(edge: &GraphEdge) -> i64 {
 /// permitted, or the first forbidding reason otherwise.
 pub fn edge_allowed_for(edge: &GraphEdge, profile: TruckProfile) -> Result<(), EdgeForbidden> {
     // Hard access bans take precedence.
-    if let Some(highway) = edge.highway.as_deref() {
-        if highway == "no" || highway == "private" {
-            return Err(EdgeForbidden::NoAccess);
-        }
+    if let Some(access) = edge.access.as_deref()
+        && matches!(access.trim(), "no" | "private")
+    {
+        return Err(EdgeForbidden::NoAccess);
+    }
+
+    if let Some(highway) = edge.highway.as_deref()
+        && matches!(highway.trim(), "no" | "private")
+    {
+        return Err(EdgeForbidden::NoAccess);
     }
 
     if let (Some(limit), Some(weight)) = (edge.maxweight_tonnes, profile.maxweight_tonnes) {
@@ -69,13 +75,11 @@ pub fn edge_allowed_for(edge: &GraphEdge, profile: TruckProfile) -> Result<(), E
         }
     }
 
-    if profile.hgv {
-        match edge.highway.as_deref() {
-            Some("hgv=no") | Some("hgv=delivery") => {
-                return Err(EdgeForbidden::HgvNotAllowed);
-            }
-            _ => {}
-        }
+    if profile.hgv
+        && let Some(hgv) = edge.hgv.as_deref()
+        && matches!(hgv.trim(), "no" | "delivery")
+    {
+        return Err(EdgeForbidden::HgvNotAllowed);
     }
 
     Ok(())
@@ -98,7 +102,8 @@ mod tests {
             highway: Some("primary".to_string()),
             maxweight_tonnes: Some(10.0),
             maxheight_m: Some(4.0),
-            hgv: true,
+            hgv: Some("yes".to_string()),
+            access: None,
             oneway: false,
         }
     }
@@ -142,7 +147,7 @@ mod tests {
     #[test]
     fn hgv_blocked_on_hgv_no_road() {
         let mut edge = test_edge();
-        edge.highway = Some("hgv=no".to_string());
+        edge.hgv = Some("no".to_string());
         let profile = TruckProfile {
             hgv: true,
             ..Default::default()
@@ -151,6 +156,47 @@ mod tests {
             edge_allowed_for(&edge, profile),
             Err(EdgeForbidden::HgvNotAllowed)
         );
+    }
+
+    #[test]
+    fn hgv_blocked_on_hgv_delivery_road() {
+        let mut edge = test_edge();
+        edge.hgv = Some("delivery".to_string());
+        let profile = TruckProfile {
+            hgv: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            edge_allowed_for(&edge, profile),
+            Err(EdgeForbidden::HgvNotAllowed)
+        );
+    }
+
+    #[test]
+    fn cars_may_use_hgv_no_road() {
+        let mut edge = test_edge();
+        edge.hgv = Some("no".to_string());
+        assert!(edge_allowed_for(&edge, TruckProfile::default()).is_ok());
+    }
+
+    #[test]
+    fn access_no_blocks_all_vehicles() {
+        let mut edge = test_edge();
+        edge.access = Some("no".to_string());
+        assert_eq!(
+            edge_allowed_for(&edge, TruckProfile::default()),
+            Err(EdgeForbidden::NoAccess)
+        );
+    }
+
+    #[test]
+    fn hgv_road_with_yes_tag_allows_hgv() {
+        let edge = test_edge();
+        let profile = TruckProfile {
+            hgv: true,
+            ..Default::default()
+        };
+        assert!(edge_allowed_for(&edge, profile).is_ok());
     }
 
     #[test]

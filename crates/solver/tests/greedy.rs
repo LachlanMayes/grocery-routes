@@ -246,12 +246,14 @@ fn multi_day_horizon_store_is_served_on_day_two() {
 fn c101_calibration_greedy() {
     use solver::parser::{parse_solomon_file, solomon_to_problem};
 
-    // For the calibration gate we parse the full file if present,
-    // otherwise we skip the test. Path is relative to workspace root.
+    // The calibration dataset is tracked in the repository. Fail loudly when
+    // it is missing rather than silently skipping the calibration gate.
     let path = std::path::Path::new("../../data/solomon/C101.txt");
     if !path.exists() {
-        eprintln!("Skipping C101 calibration: data/solomon/C101.txt not found");
-        return;
+        panic!(
+            "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
+            path.display()
+        );
     }
 
     let inst = parse_solomon_file(path).unwrap();
@@ -302,8 +304,10 @@ fn c101_calibration_local_search() {
 
     let path = std::path::Path::new("../../data/solomon/C101.txt");
     if !path.exists() {
-        eprintln!("Skipping C101 local search calibration: data/solomon/C101.txt not found");
-        return;
+        panic!(
+            "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
+            path.display()
+        );
     }
 
     let inst = parse_solomon_file(path).unwrap();
@@ -362,8 +366,10 @@ fn c101_calibration_lns() {
 
     let path = std::path::Path::new("../../data/solomon/C101.txt");
     if !path.exists() {
-        eprintln!("Skipping C101 LNS calibration: data/solomon/C101.txt not found");
-        return;
+        panic!(
+            "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
+            path.display()
+        );
     }
 
     let inst = parse_solomon_file(path).unwrap();

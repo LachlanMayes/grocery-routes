@@ -15,6 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
+tower-http.workspace = true
 tracing.workspace = true
 tokio-stream.workspace = true
 domain = { path = "../domain" }
@@ -22,4 +23,6 @@ solver = { path = "../solver" }
 routing = { path = "../routing" }
 
 [dev-dependencies]
+reqwest.workspace = true
 tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }

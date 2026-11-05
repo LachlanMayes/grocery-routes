@@ -7,11 +7,14 @@
 //! - **KPIs**: view KPI summary for a solution
 //! - **Live Events**: SSE stream of solve completions
 
+use std::result::Result;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::api_client::{ApiClient, Kpis, SolveRequest, SolveResponse};
 use eframe::egui;
+use tokio::runtime::Handle;
+use tokio_stream::StreamExt;
 
 /// Messages passed from background tasks to the UI thread.
 enum Msg {
@@ -34,6 +37,7 @@ enum Tab {
 
 /// Main console application state.
 pub struct ConsoleApp {
+    runtime: Handle,
     client: ApiClient,
 
     // Navigation
@@ -68,8 +72,9 @@ pub struct ConsoleApp {
     msg_rx: mpsc::Receiver<Msg>,
     msg_tx: mpsc::Sender<Msg>,
 
-    // Last SSE poll time
-    last_event_poll: Instant,
+    // True once the background SSE task has been started. The task owns the
+    // connection and reconnects with backoff, instead of polling on a timer.
+    sse_started: bool,
 }
 
 /// A solved event for display in the events tab.
@@ -84,10 +89,12 @@ struct SolveEventDisplay {
     cost_cents: i64,
 }
 
-impl Default for ConsoleApp {
-    fn default() -> Self {
+impl ConsoleApp {
+    /// Create a new console app backed by the given Tokio runtime handle.
+    pub fn new(runtime: Handle) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
+            runtime,
             client: ApiClient::default_local(),
             tab: Tab::Import,
             import_json: String::new(),
@@ -107,7 +114,7 @@ impl Default for ConsoleApp {
             max_events: 50,
             msg_rx: rx,
             msg_tx: tx,
-            last_event_poll: Instant::now(),
+            sse_started: false,
         }
     }
 }
@@ -119,26 +126,12 @@ impl eframe::App for ConsoleApp {
             self.handle_msg(msg);
         }
 
-        // Poll SSE for live events (every 2 seconds)
-        if self.last_event_poll.elapsed() > Duration::from_secs(2) {
-            self.last_event_poll = Instant::now();
+        // Start the single background SSE task. It owns the connection and
+        // reconnects with backoff, instead of polling on a fixed timer.
+        if !self.sse_started {
+            self.sse_started = true;
             let tx = self.msg_tx.clone();
-            let client = self.client.clone();
-            tokio::task::spawn(async move {
-                if let Ok(resp) = client.events_stream().await {
-                    if let Ok(text) = resp.text().await {
-                        for line in text.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                if let Ok(event) =
-                                    serde_json::from_str::<crate::api_client::SolveEvent>(data)
-                                {
-                                    let _ = tx.send(Msg::SolveEvent(event));
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            self.runtime.spawn(sse_loop(tx));
         }
 
         egui::Window::new("sidebar").show(ctx, |ui| {
@@ -239,7 +232,7 @@ impl ConsoleApp {
                 let tx = self.msg_tx.clone();
                 let client = self.client.clone();
                 self.import_status = None;
-                tokio::task::spawn(async move {
+                self.runtime.spawn(async move {
                     let val: serde_json::Value = match serde_json::from_str(&json) {
                         Ok(v) => v,
                         Err(e) => {
@@ -325,7 +318,7 @@ impl ConsoleApp {
             let tx = self.msg_tx.clone();
             let client = self.client.clone();
             self.solve_status = None;
-            tokio::task::spawn(async move {
+            self.runtime.spawn(async move {
                 let req = SolveRequest {
                     problem_id: pid,
                     lns,
@@ -381,7 +374,7 @@ impl ConsoleApp {
                 let tx = self.msg_tx.clone();
                 let client = self.client.clone();
                 self.solution_status = None;
-                tokio::task::spawn(async move {
+                self.runtime.spawn(async move {
                     match client.get_solution(&id).await {
                         Ok(resp) => {
                             let _ = tx.send(Msg::SolutionFetched(Ok(resp.solution)));
@@ -426,7 +419,7 @@ impl ConsoleApp {
                 let tx = self.msg_tx.clone();
                 let client = self.client.clone();
                 self.kpis_status = None;
-                tokio::task::spawn(async move {
+                self.runtime.spawn(async move {
                     match client.get_kpis(&id).await {
                         Ok(kpis) => {
                             let _ = tx.send(Msg::KpisFetched(Ok(kpis)));
@@ -492,5 +485,133 @@ impl ConsoleApp {
         if self.events.is_empty() {
             ui.label("(no events yet — connect to a running API server)");
         }
+    }
+}
+
+/// Runs a single background SSE connection for the lifetime of the console.
+///
+/// It connects to the API's `/events` stream, reads `data: ` lines
+/// incrementally, and reconnects only when the stream ends or fails. Each
+/// reconnect waits with exponential backoff (starting at 1 second, capped at
+/// 30 seconds), so a slow or unavailable server does not lead to duplicate
+/// connections or unbounded polling.
+async fn sse_loop(tx: mpsc::Sender<Msg>) {
+    let client = crate::api_client::ApiClient::default_local();
+    let mut backoff = Duration::from_secs(1);
+
+    loop {
+        match client.events_stream().await {
+            Ok(resp) => {
+                let mut stream = resp.bytes_stream();
+                let mut buf = String::new();
+                while let Some(chunk) = stream.next().await {
+                    let Ok(bytes) = chunk else {
+                        break;
+                    };
+                    buf.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(pos) = buf.find('\n') {
+                        let line = buf[..pos].trim_end_matches('\r').to_string();
+                        buf.drain(..=pos);
+                        if let Some(data) = line.strip_prefix("data: ")
+                            && let Ok(event) =
+                                serde_json::from_str::<crate::api_client::SolveEvent>(data)
+                        {
+                            let _ = tx.send(Msg::SolveEvent(event));
+                        }
+                    }
+                }
+                backoff = Duration::from_secs(1);
+            }
+            Err(_) => {}
+        }
+
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(30));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn handles_import_success() {
+        let mut app = ConsoleApp::new(Handle::current());
+        app.handle_msg(Msg::ProblemImported(Ok("problem-123".into())));
+
+        match app.import_status {
+            Some(Ok(id)) => assert_eq!(id, "problem-123"),
+            other => panic!("unexpected import status: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handles_import_error() {
+        let mut app = ConsoleApp::new(Handle::current());
+        app.handle_msg(Msg::ProblemImported(Err(anyhow::anyhow!("server said no"))));
+
+        match app.import_status {
+            Some(Err(error)) => assert!(error.to_string().contains("server said no")),
+            other => panic!("unexpected import status: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handles_solve_response() {
+        let mut app = ConsoleApp::new(Handle::current());
+        let response = SolveResponse {
+            id: "solution-123".into(),
+            served: 2,
+            total: 2,
+            distance_km: 12.5,
+            cost_cents: 1000,
+        };
+
+        app.handle_msg(Msg::SolutionSolved(Ok(response)));
+
+        match app.solve_status {
+            Some(Ok(response)) => assert_eq!(response.id, "solution-123"),
+            other => panic!("unexpected solve status: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handles_kpis_response() {
+        let mut app = ConsoleApp::new(Handle::current());
+        let kpis = Kpis {
+            served: 2,
+            total: 2,
+            serve_rate: 1.0,
+            distance_km: 12.5,
+            cost_cents: 1000,
+            routes: 1,
+        };
+
+        app.handle_msg(Msg::KpisFetched(Ok(kpis)));
+
+        match app.kpis_status {
+            Some(Ok(kpis)) => assert_eq!(kpis.routes, 1),
+            other => panic!("unexpected KPI status: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn events_are_bounded_to_max_events() {
+        let mut app = ConsoleApp::new(Handle::current());
+
+        for index in 0..60 {
+            app.handle_msg(Msg::SolveEvent(crate::api_client::SolveEvent {
+                solution_id: format!("solution-{index}"),
+                problem_id: "problem-123".into(),
+                served: 2,
+                total: 2,
+                distance_km: 12.5,
+                cost_cents: 1000,
+            }));
+        }
+
+        assert_eq!(app.events.len(), 50);
+        assert_eq!(app.events.first().unwrap().solution_id, "solution-10");
+        assert_eq!(app.events.last().unwrap().solution_id, "solution-59");
     }
 }

@@ -271,7 +271,8 @@ mod tests {
                 Some("primary".to_string()),
                 None,
                 None,
-                false,
+                None,
+                None,
                 false,
             );
         }
@@ -411,7 +412,8 @@ mod tests {
             Some("primary".to_string()),
             None,
             None,
-            false,
+            None,
+            None,
             false,
         );
         g.add_edge(
@@ -419,10 +421,11 @@ mod tests {
             NodeId(2),
             10.0,
             10,
-            Some("hgv=no".to_string()),
+            Some("secondary".to_string()),
             None,
             None,
-            false,
+            Some("no".to_string()),
+            None,
             true,
         );
         let mut cache = CachedMatrix::new();

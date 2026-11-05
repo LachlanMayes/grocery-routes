@@ -1260,9 +1260,10 @@ fn best_insertion_lns(
                 exempt,
             ) {
                 let base_cost = sched.cost_cents;
-                // Fleet-aware cost (Finding 10): add penalty for using more vehicles
-                let fleet_penalty = if route_idx >= solution.routes.len() - 1 {
-                    5000
+                // Fleet-aware cost (Finding 10): penalize opening a new vehicle,
+                // not using the last existing route.
+                let fleet_penalty = if route_idx == solution.routes.len() {
+                    5_000
                 } else {
                     0
                 };
@@ -1301,7 +1302,8 @@ fn best_insertion_lns(
                 _pos: 1,
                 vehicle_index,
                 scheduled: sched.clone(),
-                cost_cents: sched.cost_cents,
+                // New vehicle for the restricted candidate: penalise using one.
+                cost_cents: sched.cost_cents + 5_000,
             };
             if best.as_ref().is_none_or(|b| ins.cost_cents < b.cost_cents) {
                 best = Some(ins);
@@ -1391,7 +1393,7 @@ fn all_insertions_lns(
                 _pos: 1,
                 vehicle_index,
                 scheduled: sched.clone(),
-                cost_cents: sched.cost_cents,
+                cost_cents: sched.cost_cents + 5_000,
             });
         }
     }

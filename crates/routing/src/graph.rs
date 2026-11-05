@@ -38,8 +38,10 @@ pub struct GraphEdge {
     pub maxweight_tonnes: Option<f64>,
     /// Maximum height in metres, if tagged (`maxheight`).
     pub maxheight_m: Option<f64>,
-    /// True when the way is tagged for heavy goods vehicles (`hgv=yes`).
-    pub hgv: bool,
+    /// Raw OSM `hgv` tag value (e.g. "yes", "no", "delivery"), if tagged.
+    pub hgv: Option<String>,
+    /// Raw OSM `access` tag value (e.g. "no", "private"), if tagged.
+    pub access: Option<String>,
     /// True when the way is one-way in the direction stored (from -> to).
     pub oneway: bool,
 }
@@ -96,7 +98,8 @@ impl Graph {
         highway: Option<String>,
         maxweight_tonnes: Option<f64>,
         maxheight_m: Option<f64>,
-        hgv: bool,
+        hgv: Option<String>,
+        access: Option<String>,
         oneway: bool,
     ) -> EdgeId {
         assert!(
@@ -115,6 +118,7 @@ impl Graph {
             maxweight_tonnes,
             maxheight_m,
             hgv,
+            access,
             oneway,
         };
         self.edges.insert(id, edge.clone());

@@ -12,5 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tokio-stream.workspace = true
 domain = { path = "../../crates/domain" }
 chrono.workspace = true
+
+[dev-dependencies]
+axum.workspace = true

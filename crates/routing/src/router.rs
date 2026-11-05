@@ -191,7 +191,8 @@ mod tests {
                 Some("primary".to_string()),
                 None,
                 None,
-                false,
+                None,
+                None,
                 false,
             );
         }
@@ -261,7 +262,8 @@ mod tests {
             Some("primary".to_string()),
             None,
             None,
-            false,
+            None,
+            None,
             false,
         );
         // 1->2 is tagged hgv=no (oneway forward)
@@ -270,10 +272,11 @@ mod tests {
             NodeId(2),
             10.0,
             10,
-            Some("hgv=no".to_string()),
+            Some("secondary".to_string()),
             None,
             None,
-            false,
+            Some("no".to_string()),
+            None,
             true,
         );
 

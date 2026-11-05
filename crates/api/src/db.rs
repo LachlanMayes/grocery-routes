@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use domain::{
         Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
-        LatLon, Load, Minutes, Node, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        LatLon, Load, Minutes, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
     };
     use tempfile;
 
