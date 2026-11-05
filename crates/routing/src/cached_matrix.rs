@@ -68,6 +68,16 @@ impl CachedMatrix {
         self.graph.as_ref()
     }
 
+    /// Returns a mutable reference to the loaded graph, if any.
+    ///
+    /// Used to fold curated constraints into the graph *before* building
+    /// matrices. Calling this clears any cached matrices, because they may
+    /// have been built from the unconstrained graph.
+    pub fn graph_mut(&mut self) -> Option<&mut Graph> {
+        self.matrices.clear();
+        self.graph.as_mut()
+    }
+
     /// Returns the number of nodes in the loaded graph.
     pub fn graph_node_count(&self) -> usize {
         self.graph.as_ref().map_or(0, |g| g.node_count())

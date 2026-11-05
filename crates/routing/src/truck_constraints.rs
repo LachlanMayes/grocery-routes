@@ -105,6 +105,7 @@ mod tests {
             hgv: Some("yes".to_string()),
             access: None,
             oneway: false,
+            way_id: None,
         }
     }
 

@@ -99,6 +99,10 @@ pub struct SolveArgs {
     /// Classify vehicle as a heavy goods vehicle (truck constraint filter).
     #[arg(long)]
     pub hgv: bool,
+    /// Curated truck constraints JSON folded onto OSM ways (tightening
+    /// only). Requires `--osm`. See `constraints/README.md`.
+    #[arg(long)]
+    pub constraints: Option<PathBuf>,
 }
 
 /// Arguments of `export`.
@@ -191,11 +195,32 @@ const MAX_SOLVE_NODES: usize = 5_000;
 pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     let problem = read_problem_json(&args.problem)?;
     ensure_solvable_size(&problem)?;
+    if args.constraints.is_some() && args.osm.is_none() {
+        anyhow::bail!("--constraints requires --osm (constraints are folded onto the OSM graph)");
+    }
 
     let solution = if let Some(osm_path) = &args.osm {
         // M3: road-network distances/durations from OSM PBF.
         let mut cached = routing::CachedMatrix::new();
         cached.load_pbf(osm_path)?;
+        if let Some(constraints_path) = &args.constraints {
+            let raw = std::fs::read_to_string(constraints_path).with_context(|| {
+                format!("read curated constraints {}", constraints_path.display())
+            })?;
+            let curated = routing::CuratedConstraints::from_json_str(&raw).with_context(|| {
+                format!("parse curated constraints {}", constraints_path.display())
+            })?;
+            let tightened = curated.apply(
+                cached
+                    .graph_mut()
+                    .context("curated constraints require a loaded OSM graph")?,
+            );
+            println!(
+                "  curated constraints: {} entries from {}, {tightened} edges tightened",
+                curated.len(),
+                constraints_path.display()
+            );
+        }
         let profile = routing::TruckProfile {
             maxweight_tonnes: args.maxweight,
             maxheight_m: args.maxheight,

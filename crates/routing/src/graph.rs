@@ -44,6 +44,12 @@ pub struct GraphEdge {
     pub access: Option<String>,
     /// True when the way is one-way in the direction stored (from -> to).
     pub oneway: bool,
+    /// OSM way id this edge was derived from, if any.
+    ///
+    /// `None` for synthetic edges built by tests or tools that do not model
+    /// OSM ways. Used to attach curated, hand-verified constraints to a way
+    /// (see `curated` module) independently of its tags.
+    pub way_id: Option<i64>,
 }
 
 /// An adjacency-list road network.
@@ -102,6 +108,38 @@ impl Graph {
         access: Option<String>,
         oneway: bool,
     ) -> EdgeId {
+        self.add_edge_with_way(
+            from,
+            to,
+            distance_km,
+            duration_minutes,
+            highway,
+            maxweight_tonnes,
+            maxheight_m,
+            hgv,
+            access,
+            oneway,
+            None,
+        )
+    }
+
+    /// Like [`Graph::add_edge`] but records the OSM way id the edge came
+    /// from, so curated constraints can target the way.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_edge_with_way(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        distance_km: f64,
+        duration_minutes: i64,
+        highway: Option<String>,
+        maxweight_tonnes: Option<f64>,
+        maxheight_m: Option<f64>,
+        hgv: Option<String>,
+        access: Option<String>,
+        oneway: bool,
+        way_id: Option<i64>,
+    ) -> EdgeId {
         assert!(
             self.nodes.contains_key(&from) && self.nodes.contains_key(&to),
             "graph edge endpoints must exist"
@@ -120,6 +158,7 @@ impl Graph {
             hgv,
             access,
             oneway,
+            way_id,
         };
         self.edges.insert(id, edge.clone());
         self.out_edges.entry(from).or_default().push((id, to));
@@ -148,5 +187,13 @@ impl Graph {
     /// Iterates over all nodes in the graph.
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, &GraphNode)> {
         self.nodes.iter().map(|(id, node)| (*id, node))
+    }
+
+    /// Iterates mutably over all edges in the graph.
+    ///
+    /// Used by the curated constraint layer to fold hand-verified limits
+    /// into edges without changing edge identities.
+    pub fn edges_mut(&mut self) -> impl Iterator<Item = &mut GraphEdge> {
+        self.edges.values_mut()
     }
 }

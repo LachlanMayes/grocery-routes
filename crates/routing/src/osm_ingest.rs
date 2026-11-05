@@ -132,7 +132,7 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
     }
 
     Some(DrivableWay {
-        _id: w.id(),
+        way_id: w.id(),
         nodes: w.refs().collect(),
         oneway,
         reverse,
@@ -146,7 +146,7 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
 
 /// A drivable way parsed from OSM.
 struct DrivableWay {
-    _id: i64,
+    way_id: i64,
     nodes: Vec<i64>,
     oneway: bool,
     reverse: bool,
@@ -219,7 +219,7 @@ fn add_chain(
         let distance_km = haversine_segment(*from_lat, *from_lon, *to_lat, *to_lon);
         let duration_minutes = (distance_km / speed * 60.0).round() as i64;
 
-        graph.add_edge(
+        graph.add_edge_with_way(
             NodeId(from_id as u64),
             NodeId(to_id as u64),
             distance_km,
@@ -230,6 +230,7 @@ fn add_chain(
             way.hgv.clone(),
             way.access.clone(),
             oneway_edge,
+            Some(way.way_id),
         );
     }
 }
