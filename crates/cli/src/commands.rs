@@ -40,6 +40,53 @@ pub enum Command {
     Holidays(HolidaysArgs),
     /// List the OSM ways a solved plan traverses and their truck limits.
     Audit(AuditArgs),
+    /// Import unzipped G-NAF flat files into a SQLite geocoding database.
+    ImportGnaf(ImportGnafArgs),
+    /// Geocode a free-text Australian address against a G-NAF database.
+    Geocode(GeocodeArgs),
+    /// Find the nearest addresses to a coordinate in a G-NAF database.
+    Reverse(ReverseArgs),
+}
+
+/// Arguments of `import-gnaf`.
+#[derive(Debug, Args)]
+pub struct ImportGnafArgs {
+    /// Directory containing unzipped G-NAF flat files (searched recursively).
+    #[arg(long)]
+    pub dir: PathBuf,
+    /// SQLite database to build (replaced if it exists).
+    #[arg(long)]
+    pub db: PathBuf,
+}
+
+/// Arguments of `geocode`.
+#[derive(Debug, Args)]
+pub struct GeocodeArgs {
+    /// G-NAF SQLite database built by `import-gnaf`.
+    #[arg(long)]
+    pub db: PathBuf,
+    /// Free-text address, e.g. "12 Smith St, Sydney NSW 2000".
+    pub address: String,
+    /// Maximum matches to print.
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
+}
+
+/// Arguments of `reverse`.
+#[derive(Debug, Args)]
+pub struct ReverseArgs {
+    /// G-NAF SQLite database built by `import-gnaf`.
+    #[arg(long)]
+    pub db: PathBuf,
+    /// Latitude (negative values need `--lat=-33.87` or a space).
+    #[arg(long, allow_hyphen_values = true)]
+    pub lat: f64,
+    /// Longitude.
+    #[arg(long, allow_hyphen_values = true)]
+    pub lon: f64,
+    /// Maximum matches to print.
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
 }
 
 /// Arguments of `audit`.
@@ -193,7 +240,70 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Export(args) => run_export(&args),
         Command::Holidays(args) => run_holidays(&args),
         Command::Audit(args) => run_audit(&args),
+        Command::ImportGnaf(args) => run_import_gnaf(&args),
+        Command::Geocode(args) => run_geocode(&args),
+        Command::Reverse(args) => run_reverse(&args),
     }
+}
+
+/// `import-gnaf`: builds the geocoding database from unzipped flat files.
+pub fn run_import_gnaf(args: &ImportGnafArgs) -> anyhow::Result<()> {
+    let stats = geo_au::import_directory(&args.dir, &args.db)?;
+    println!(
+        "imported {} address(es) from {}",
+        stats.addresses,
+        args.dir.display()
+    );
+    println!(
+        "  states: {}, localities: {}, street localities: {}, geocodes: {}",
+        stats.states, stats.localities, stats.street_localities, stats.geocodes
+    );
+    println!(
+        "  skipped: {} incomplete row(s), {} without a geocode",
+        stats.skipped_incomplete, stats.skipped_no_geocode
+    );
+    println!("wrote {}", args.db.display());
+    Ok(())
+}
+
+/// `geocode`: prints ranked matches for a free-text address.
+pub fn run_geocode(args: &GeocodeArgs) -> anyhow::Result<()> {
+    let conn = geo_au::open_database(&args.db)?;
+    let query = geo_au::parse_query(&args.address);
+    let matches = geo_au::geocode(&conn, &query, args.limit)?;
+    if matches.is_empty() {
+        println!("no matches for '{}'", args.address);
+        return Ok(());
+    }
+    for found in &matches {
+        println!(
+            "  {} [pid {}, score {}, {:.5}, {:.5}]",
+            found.address.display(),
+            found.address.pid,
+            found.score,
+            found.address.lat,
+            found.address.lon
+        );
+    }
+    Ok(())
+}
+
+/// `reverse`: prints the nearest addresses to a coordinate.
+pub fn run_reverse(args: &ReverseArgs) -> anyhow::Result<()> {
+    let conn = geo_au::open_database(&args.db)?;
+    let results = geo_au::reverse(&conn, args.lat, args.lon, args.limit)?;
+    if results.is_empty() {
+        println!("no addresses near {}, {}", args.lat, args.lon);
+        return Ok(());
+    }
+    for (address, metres) in &results {
+        println!(
+            "  {} [pid {}, {metres:.0} m away]",
+            address.display(),
+            address.pid
+        );
+    }
+    Ok(())
 }
 
 /// `audit`: lists every OSM way a solved plan traverses, the truck limits

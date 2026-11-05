@@ -122,6 +122,49 @@ fn gen_sim_solve_and_export_round_trip() {
 }
 
 #[test]
+fn gnaf_import_geocode_and_reverse_round_trip() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let db = dir.path().join("gnaf.sqlite");
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../geo-au/tests/fixtures");
+
+    let mut import = Command::new(BIN);
+    import
+        .arg("import-gnaf")
+        .arg("--dir")
+        .arg(&fixtures)
+        .arg("--db")
+        .arg(&db);
+    let output = expect_success(import);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("imported 6 address(es)"),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let mut geocode = Command::new(BIN);
+    geocode
+        .arg("geocode")
+        .arg("--db")
+        .arg(&db)
+        .arg("12 Smith St, Sydney NSW 2000");
+    let output = expect_success(geocode);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pid 1000"), "stdout: {stdout}");
+    assert!(stdout.contains("NSW 2000"), "stdout: {stdout}");
+
+    let mut reverse = Command::new(BIN);
+    reverse
+        .arg("reverse")
+        .arg("--db")
+        .arg(&db)
+        .args(["--lat=-33.8688", "--lon=151.2093"]);
+    let output = expect_success(reverse);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("pid 1000"), "stdout: {stdout}");
+}
+
+#[test]
 fn holidays_subcommand_prints_national_and_state_calendars() {
     let output = Command::new(BIN)
         .args(["holidays", "--year", "2026", "--state", "vic"])
