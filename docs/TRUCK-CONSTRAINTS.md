@@ -1,6 +1,6 @@
 # Truck constraints — enforcement model and limits
 
-Date: 2026-11-05. Scope per [PLAN.md](PLAN.md) (known gap 4).
+Date: 2026-11-06. Scope per [PLAN.md](PLAN.md).
 
 This document states precisely what is and is not enforced when routing
 heavy vehicles, and what an operator must do to get legally usable route
@@ -14,13 +14,27 @@ plans out of the system.
 | One-way awareness | Honors `oneway=yes` and reverses for `oneway=-1`. | `crates/routing/src/osm_ingest.rs` |
 | Curated way constraints | Folds **hand-verified** per-way limits (weight/height) into the graph after ingest. Tightening only; never loosens an existing limit. CLI: `solve --osm … --constraints constraints/truck-constraints.json`. | `crates/routing/src/curated.rs` |
 | Refusal to route | If no legal path exists between depot and store under the profile, the leg is rejected rather than routed through the barrier. | `crates/routing/src/router.rs` |
+| Curfew enforcement | A curfew names a road class (OSM `highway` value) and a local day/time window. After solving, each leg is recomputed time-dependently: a truck **waits at the previous node** until its traversal would be clear of every window, and a store whose waits no longer fit its receiving windows, shift, duration limit or driver occupancy moves to `unassigned` with a recorded reason. CLI: `solve --enforce-curfews --network-timezone <IANA>` (needs `--osm` and `Problem.horizon_start`). | `crates/routing/src/timed.rs`, `crates/solver/src/curfew.rs` |
+| Corridor audit | Reports every OSM way a solved plan traverses with its limit tags, and explicitly flags ways with **no limit data**. CLI: `audit`. This is reporting, not enforcement. | `crates/routing/src/audit.rs` |
+
+Two curfew modelling choices are worth knowing:
+
+- **Presence-interval semantics.** A traversal is blocked when the interval
+  `[enter, enter + duration)` overlaps a window; the truck waits before
+  entering. Waiting is the only remedy applied; the plan is not re-optimised
+  under curfews (route order and fleet assignment are fixed).
+- **Local day/time resolution.** Windows are minutes of the local day on the
+  selected weekdays, resolved through the horizon anchor and the network
+  timezone (`--network-timezone` or the first depot's timezone). Without an
+  anchor the rules stay inert data.
 
 ## What is NOT enforced
 
 | Gap | Why |
 |---|---|
 | Legal bridge/tunnel weight & height limits not present in OSM tags and not curated | OSM tag coverage in Sydney bbox (M0 Overpass count, 2026-11-03): `maxweight` 3.2%, `maxheight` 0.8%, `hgv` 0.4% of ways. **The empty `constraints/truck-constraints.json` means no such limit is assumed anywhere.** Plans through un-annotated ways are not legally verified — see "Operator responsibilities". |
-| Time-based curfews (e.g. peak-hour restrictions, local-area curfews) | The router is not departure-time aware; a curfew applies to a time window, not to an edge. Curfews are stored in the model (`Problem::curfews`) and documented as data-only. Enforcement requires time-dependent routing, which is not implemented. |
+| Curfew rules that are not encoded in `Problem::curfews` | The enforcer only knows the windows you give it; school zones, event closures and ad-hoc restrictions are not inferred from OSM. |
+| Curfew-aware optimisation | Enforcement is a post-solve feasibility restore (waiting and dropping stores), not time-dependent costs inside the search. A plan may therefore use more vehicles or serve fewer stores than a curfew-aware optimiser would. |
 | B-double / HML / PBS permit route networks | Permits are a legal class, not a physical property of a way; OSM does not model them reliably. No permit data is embedded. |
 | Commodity/vehicle-specific rules (dangerous goods, ADR) | Not modelled; treat as out of scope. |
 | State access pre-approvals, NHVR notices | Not modelled. |
@@ -45,6 +59,11 @@ rejects entries without provenance (`source`, `verified_by`,
   loudly (10 unit tests).
 - Routing is covered by Dijkstra correctness tests on synthetic graphs
   with hand-checked shortest paths, plus one-way handling tests.
+- Curfew routing is covered by unit tests for waiting, presence-interval
+  boundaries, wrap-midnight windows, day masks, alternate routes and
+  untagged roads, plus a cross-layer test that drops a store whose window
+  the wait breaks. Contraction hierarchies are checked against Dijkstra
+  pair by pair.
 
 ## What was NOT checked
 
@@ -59,13 +78,16 @@ rejects entries without provenance (`source`, `verified_by`,
 
 ## Operator responsibilities
 
-1. Before dispatching on a plan produced with `--osm`, verify each
+1. Run `audit` against the same extract and profile used to solve. It lists
+   every traversed way, its limit tags and the ways with **no** limit data;
+   start verification with those.
+2. Before dispatching on a plan produced with `--osm`, verify each
    non-obvious leg against the sources below — or accept that the plan is
    an optimisation proposal, not an authorisation to drive.
-2. If a limit is found that OSM does not tag, add it to
+3. If a limit is found that OSM does not tag, add it to
    `constraints/truck-constraints.json` with full provenance
    (`constraints/README.md`) and re-solve.
-3. Record the check (who, when, which sources) in your operations folder;
+4. Record the check (who, when, which sources) in your operations folder;
    this repository does not track your verifications.
 
 ### Authoritative sources
@@ -90,8 +112,9 @@ cargo run -p cli -- solve --problem problem.json --out solution.json \
 
 ## Future work (explicitly not done)
 
-- Departure-time-aware routing to enforce curfews and school-zone
-  restrictions.
+- Time-dependent costs inside the solver search (curfew-aware
+  optimisation) instead of the post-solve feasibility restore; school
+  zones and event closures as first-class curfew sources.
 - Permit-class route networks loaded from NHVR/state sources.
 - Automatic extraction of candidate constraints from street-view signage
   (still requires human sign-off before loading).

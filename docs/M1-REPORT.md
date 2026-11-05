@@ -1,6 +1,6 @@
 # M1 report — solver v1 + calibration gate
 
-Original date: 2026-11-04. Updated: 2026-11-05. Scope per
+Original date: 2026-11-04. Updated: 2026-11-06. Scope per
 [PLAN.md](PLAN.md).
 
 > **Verdict: M1 is delivered.** The C101 calibration path is now wired, the
@@ -50,7 +50,7 @@ quality baseline.
 
 ```console
 cargo test --workspace
-# all 173 tests pass (as of 2026-11-05)
+# all 236 tests pass (as of 2026-11-06)
 
 cargo clippy --workspace --all-targets
 # exits 0 with warnings; clippy is not enforced with -D warnings

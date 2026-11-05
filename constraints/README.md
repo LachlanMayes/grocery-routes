@@ -57,9 +57,11 @@ limits silently.
 
 - **Covered**: weight/height limits verified per way, folded into the graph
   before routing (tightening only).
-- **Not covered**: time-based curfews (routing is not departure-time aware),
-  B-double/HML permit networks (permit classes, not physical limits),
-  commodity-specific rules, and limits that exist but were never verified —
-  those must come from the sources above, not from this file.
+- **Not covered**: B-double/HML permit networks (permit classes, not physical
+  limits), commodity-specific rules, and limits that exist but were never
+  verified — those must come from the sources above, not from this file.
+  Time-based curfews are a different mechanism: they live in
+  `Problem::curfews` and are enforced by `solve --enforce-curfews`
+  (see `docs/TRUCK-CONSTRAINTS.md`).
 
 See `docs/TRUCK-CONSTRAINTS.md` for the full enforcement model.
