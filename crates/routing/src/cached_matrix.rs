@@ -211,6 +211,7 @@ mod tests {
                     id: DepotId(i as u32),
                     name: format!("Depot {i}"),
                     location: loc,
+                    timezone: None,
                 })
                 .take(1)
                 .collect(),
@@ -226,6 +227,7 @@ mod tests {
                     demand: Load::ZERO,
                     service: Minutes::ZERO,
                     receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(1440))],
+                    timezone: None,
                 })
                 .collect(),
             vehicles: vec![Vehicle {

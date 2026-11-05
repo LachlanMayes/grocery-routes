@@ -205,6 +205,7 @@ fn build_depots(rng: &mut StdRng, city: City, centre: LatLon, count: usize) -> V
             id: DepotId(index as u32),
             name: format!("{display} DC {}", index + 1),
             location: offset_km(centre, radius_km * bearing.cos(), radius_km * bearing.sin()),
+            timezone: None,
         });
     }
     depots
@@ -275,6 +276,7 @@ fn build_stores(
             chain,
             name: format!("{chain} {display} #{:03}", index + 1),
             location,
+            timezone: None,
             demand,
             service: Minutes::from_minutes(rng.random_range(3..=6) * 5),
             receiving: vec![TimeWindow::new(

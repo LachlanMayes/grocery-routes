@@ -251,6 +251,10 @@ pub struct Depot {
     pub id: DepotId,
     pub name: String,
     pub location: LatLon,
+    /// IANA timezone name (e.g. "Australia/Sydney"). When present, depot
+    /// operating hours are interpreted in local time.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// A supermarket to deliver to.
@@ -266,6 +270,12 @@ pub struct Store {
     pub service: Minutes,
     /// Receiving windows; service must sit inside one of them.
     pub receiving: Vec<TimeWindow>,
+    /// IANA timezone name (e.g. "Australia/Sydney"). When present, receiving
+    /// windows and service times are interpreted in local time and converted
+    /// to horizon minutes for planning. When absent, all times are horizon
+    /// minutes.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// A truck, with one capacity value per temperature compartment.
@@ -783,12 +793,14 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                timezone: None,
             }],
             stores: vec![Store {
                 id: StoreId(0),
                 chain: Chain::Coles,
                 name: "Store".into(),
                 location: LatLon::new(-33.92, 151.23),
+                timezone: None,
                 demand: Load::ZERO,
                 service: Minutes::ZERO,
                 receiving: vec![TimeWindow::new(
@@ -1137,6 +1149,7 @@ mod tests {
                 Minutes::from_minutes(700),
                 Minutes::from_minutes(800),
             )],
+            timezone: None,
         };
         assert_eq!(
             rules
@@ -1169,6 +1182,7 @@ mod tests {
             demand: Load::ZERO,
             service: Minutes::ZERO,
             receiving: vec![],
+            timezone: None,
         };
         assert_eq!(
             rules

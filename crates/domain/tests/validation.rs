@@ -21,16 +21,19 @@ fn relay_fixture() -> (Problem, Solution) {
                 id: DepotId(0),
                 name: "Sydney DC".into(),
                 location: LatLon::new(-33.79, 150.90),
+                timezone: None,
             },
             Depot {
                 id: DepotId(1),
                 name: "Albury relay".into(),
                 location: LatLon::new(-36.06, 146.92),
+                timezone: None,
             },
             Depot {
                 id: DepotId(2),
                 name: "Melbourne DC".into(),
                 location: LatLon::new(-37.70, 144.85),
+                timezone: None,
             },
         ],
         stores: vec![Store {
@@ -38,6 +41,7 @@ fn relay_fixture() -> (Problem, Solution) {
             chain: Chain::Coles,
             name: "Coles Melbourne #001".into(),
             location: LatLon::new(-37.75, 144.90),
+            timezone: None,
             demand: Load::new(1, 2, 0),
             service: Minutes::from_minutes(15),
             receiving: vec![TimeWindow::new(
@@ -263,6 +267,7 @@ fn two_vehicle_problem() -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.80, 151.20),
+            timezone: None,
         }],
         stores: vec![],
         vehicles: vec![
@@ -374,6 +379,7 @@ fn handover_dwell_problem(shifts: Vec<Shift>) -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.80, 151.20),
+            timezone: None,
         }],
         stores: vec![],
         vehicles: vec![Vehicle {

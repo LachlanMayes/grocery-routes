@@ -815,6 +815,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                timezone: None,
             }],
             stores: vec![
                 Store {
@@ -822,6 +823,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Store 0".into(),
                     location: LatLon::new(-33.90, 151.20),
+                    timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(10),
                     receiving: vec![TimeWindow::new(
@@ -834,6 +836,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Store 1".into(),
                     location: LatLon::new(-33.85, 151.25),
+                    timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(10),
                     receiving: vec![TimeWindow::new(

@@ -1558,6 +1558,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Sydney DC".into(),
                 location: LatLon::new(-33.87, 151.21),
+                timezone: None,
             }],
             stores: vec![
                 Store {
@@ -1565,6 +1566,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Coles Inner West".into(),
                     location: LatLon::new(-33.92, 151.23),
+                    timezone: None,
                     demand: Load::new(2, 1, 0),
                     service: Minutes::from_minutes(15),
                     receiving: vec![TimeWindow::new(
@@ -1577,6 +1579,7 @@ mod tests {
                     chain: Chain::Woolworths,
                     name: "Woolworths North".into(),
                     location: LatLon::new(-33.80, 151.15),
+                    timezone: None,
                     demand: Load::new(1, 2, 1),
                     service: Minutes::from_minutes(10),
                     receiving: vec![TimeWindow::new(
@@ -1589,6 +1592,7 @@ mod tests {
                     chain: Chain::Aldi,
                     name: "ALDI Hills".into(),
                     location: LatLon::new(-33.75, 151.30),
+                    timezone: None,
                     demand: Load::new(0, 1, 0),
                     service: Minutes::from_minutes(20),
                     receiving: vec![TimeWindow::new(

@@ -14,6 +14,7 @@ fn small_problem() -> Problem {
             id: DepotId(0),
             name: "Sydney DC".into(),
             location: LatLon::new(-33.87, 151.21),
+            timezone: None,
         }],
         stores: vec![
             Store {
@@ -21,6 +22,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Coles,
                 name: "Coles Inner West".into(),
                 location: LatLon::new(-33.92, 151.23),
+                timezone: None,
                 demand: Load::new(2, 1, 0),
                 service: Minutes::from_minutes(15),
                 receiving: vec![TimeWindow::new(
@@ -33,6 +35,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Woolworths,
                 name: "Woolworths North".into(),
                 location: LatLon::new(-33.80, 151.15),
+                timezone: None,
                 demand: Load::new(1, 2, 1),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -45,6 +48,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Aldi,
                 name: "ALDI Hills".into(),
                 location: LatLon::new(-33.75, 151.30),
+                timezone: None,
                 demand: Load::new(0, 1, 0),
                 service: Minutes::from_minutes(20),
                 receiving: vec![TimeWindow::new(
@@ -147,12 +151,14 @@ fn multi_day_problem() -> Problem {
             id: DepotId(0),
             name: "Sydney DC".into(),
             location: LatLon::new(-33.8688, 151.2093),
+            timezone: None,
         }],
         stores: vec![Store {
             id: StoreId(0),
             chain: Chain::Coles,
             name: "Coles Wollongong #001".into(),
             location: LatLon::new(-34.4253, 150.8935),
+            timezone: None,
             demand: Load::new(1, 1, 0),
             service: Minutes::from_minutes(15),
             receiving: vec![TimeWindow::new(
@@ -423,6 +429,7 @@ fn single_vehicle_problem(capacity: Load, stores: Vec<Store>) -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.87, 151.21),
+            timezone: None,
         }],
         stores,
         vehicles: vec![Vehicle {
@@ -456,6 +463,7 @@ fn make_store(id: u32, demand: Load, window: (i64, i64)) -> Store {
         chain: Chain::Coles,
         name: format!("Coles #{id}"),
         location: LatLon::new(-33.90, 151.20),
+        timezone: None,
         demand,
         service: Minutes::from_minutes(5),
         receiving: vec![TimeWindow::new(

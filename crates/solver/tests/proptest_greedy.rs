@@ -66,6 +66,7 @@ fn build_problem(raw_stores: Vec<(f64, f64, u32, u32, u32, i64)>, vehicle_count:
                 chain: CHAINS[index % CHAINS.len()],
                 name: format!("store {index}"),
                 location: LatLon::new(lat, lon),
+                timezone: None,
                 demand: Load::new(ambient, chilled, frozen),
                 service: Minutes::from_minutes(SERVICE_MINUTES),
                 receiving: vec![TimeWindow::new(
@@ -106,6 +107,7 @@ fn build_problem(raw_stores: Vec<(f64, f64, u32, u32, u32, i64)>, vehicle_count:
             id: DepotId(0),
             name: "synthetic DC".into(),
             location: DEPOT_LOCATION,
+            timezone: None,
         }],
         stores,
         vehicles,

@@ -12,8 +12,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use domain::{
-    Chain, CostModel, Depot, DepotId, Driver, DriverId, FatigueRules, LatLon, Load, Minutes,
-    Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+    LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 use solver::solve;
 
@@ -49,6 +49,7 @@ fn metro_problem() -> Problem {
                     Minutes::from_minutes(330),
                     Minutes::from_minutes(1170),
                 )],
+                timezone: None,
             }
         })
         .collect();
@@ -86,6 +87,7 @@ fn metro_problem() -> Problem {
             id: DepotId(0),
             name: "synthetic DC".into(),
             location: DEPOT_LOCATION,
+            timezone: None,
         }],
         stores,
         vehicles,
@@ -96,6 +98,8 @@ fn metro_problem() -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
     }
 }
 

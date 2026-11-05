@@ -442,6 +442,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                timezone: None,
             }],
             stores: (0..count)
                 .map(|index| Store {
@@ -449,6 +450,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: format!("Coles #{index}"),
                     location: LatLon::new(-33.90, 151.20),
+                    timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(5),
                     receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
