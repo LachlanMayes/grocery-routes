@@ -163,6 +163,82 @@ pub fn solve_with_lns_routing(
     Ok(solution)
 }
 
+/// Runs `repeats` independent LNS runs over the same greedy start in
+/// parallel and keeps the best plan by `(fewest unassigned, total distance,
+/// route count)`.
+///
+/// Each run derives a distinct seed from `config.seed` (or the problem hash
+/// when it is zero); run 0 uses the base seed itself, so a single-repeat
+/// call matches [`solve_with_lns`] exactly. Ties prefer the earliest run and
+/// threads are joined in order, so scheduling cannot change the selected
+/// plan, which makes the outcome reproducible.
+pub fn solve_with_lns_multistart(
+    problem: &Problem,
+    config: LNSConfig,
+    matrix: DistanceMatrix,
+    repeats: usize,
+) -> Solution {
+    let repeats = repeats.max(1);
+    let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
+    let base_seed = lns::derived_seed(problem, config.seed);
+    let results: Vec<Solution> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..repeats)
+            .map(|index| {
+                let mut run_config = config.clone();
+                // Run 0 keeps the base seed; later runs extend it. (When the
+                // hash-based base seed is zero, fall back to small non-zero
+                // seeds.)
+                run_config.seed = if base_seed == 0 {
+                    1 + index as u64
+                } else {
+                    base_seed.wrapping_add(index as u64)
+                };
+                let matrix_ref = &matrix;
+                let greedy_ref = &greedy_solution;
+                scope.spawn(move || {
+                    lns::solve_lns(problem, matrix_ref, greedy_ref.clone(), run_config)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("LNS worker panicked"))
+            .collect()
+    });
+    let solution = results
+        .into_iter()
+        .min_by(|a, b| {
+            a.unassigned
+                .len()
+                .cmp(&b.unassigned.len())
+                .then_with(|| a.total_distance_km.total_cmp(&b.total_distance_km))
+                .then_with(|| a.routes.len().cmp(&b.routes.len()))
+        })
+        .expect("repeats is at least one");
+    assert!(
+        solution.validate(problem).is_ok(),
+        "solver produced an invalid solution"
+    );
+    solution
+}
+
+/// [`solve_with_lns_routing`] with multi-start: runs `repeats` LNS runs over
+/// the road-network matrix and keeps the best plan.
+pub fn solve_with_lns_routing_multistart(
+    problem: &Problem,
+    config: LNSConfig,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+    repeats: usize,
+) -> anyhow::Result<Solution> {
+    let entries = cached_matrix
+        .matrix_for(problem, profile)?
+        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+    let node_count = problem.depots.len() + problem.stores.len();
+    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    Ok(solve_with_lns_multistart(problem, config, matrix, repeats))
+}
+
 /// Solves `problem` using greedy insertion (M0) with road-network distances
 /// and durations from an OSM PBF extract.
 ///

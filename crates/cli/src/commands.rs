@@ -104,6 +104,10 @@ pub struct SolveArgs {
     /// Enable Large Neighborhood Search (LNS/ALNS) metaheuristic (M2).
     #[arg(long)]
     pub ls: bool,
+    /// Run N independent LNS searches in parallel and keep the best plan
+    /// (only used with `--ls`; default 1).
+    #[arg(long, default_value_t = 1)]
+    pub repeat: usize,
     /// OSM PBF extract for road-network distances/durations (M3). When set,
     /// the solver uses real road travel times instead of haversine/speed.
     #[arg(long)]
@@ -297,19 +301,38 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
             );
         }
         let solved = if args.ls {
-            solver::solve_with_lns_routing(
-                &problem,
-                solver::LNSConfig::default(),
-                &mut cached,
-                profile,
-            )?
+            if args.repeat > 1 {
+                solver::solve_with_lns_routing_multistart(
+                    &problem,
+                    solver::LNSConfig::default(),
+                    &mut cached,
+                    profile,
+                    args.repeat,
+                )?
+            } else {
+                solver::solve_with_lns_routing(
+                    &problem,
+                    solver::LNSConfig::default(),
+                    &mut cached,
+                    profile,
+                )?
+            }
         } else {
             solver::solve_greedy_routing(&problem, &mut cached, profile)?
         };
         cache = Some(cached);
         solved
     } else if args.ls {
-        solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
+        if args.repeat > 1 {
+            solver::solve_with_lns_multistart(
+                &problem,
+                solver::LNSConfig::default(),
+                solver::DistanceMatrix::new(&problem),
+                args.repeat,
+            )
+        } else {
+            solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
+        }
     } else {
         solver::solve(&problem)
     };
@@ -359,13 +382,22 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         .flat_map(|route| &route.steps)
         .filter(|step| matches!(step.node, Node::Store(_)))
         .count();
+    let solver_label = if args.ls {
+        if args.repeat > 1 {
+            format!(" (with LNS x{})", args.repeat)
+        } else {
+            " (with LNS)".to_string()
+        }
+    } else {
+        String::new()
+    };
     println!(
         "solved '{}': {} routes used, {} of {} stores served{}",
         problem.name,
         solution.routes.len(),
         served,
         problem.stores.len(),
-        if args.ls { " (with LNS)" } else { "" }
+        solver_label
     );
     match solution.unassigned.as_slice() {
         [] => println!("  unassigned: none"),

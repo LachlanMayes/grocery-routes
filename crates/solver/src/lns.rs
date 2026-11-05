@@ -257,11 +257,7 @@ pub fn solve_lns(
         ),
     ]);
 
-    let base_seed = if config.seed == 0 {
-        hash_problem(problem) as u64
-    } else {
-        config.seed
-    };
+    let base_seed = derived_seed(problem, config.seed);
     let mut rng = StdRng::seed_from_u64(base_seed);
 
     let start_time = Instant::now();
@@ -487,6 +483,16 @@ fn apply_conflict_penalties(weights: &mut HashMap<&'static str, OperatorStats>) 
         if let Some(stats) = weights.get_mut(op) {
             stats.weight *= factor;
         }
+    }
+}
+
+/// The RNG seed for a run: `seed` itself when non-zero, otherwise a stable
+/// hash of the problem (so `seed = 0` means "deterministic for this input").
+pub(crate) fn derived_seed(problem: &Problem, seed: u64) -> u64 {
+    if seed == 0 {
+        hash_problem(problem)
+    } else {
+        seed
     }
 }
 

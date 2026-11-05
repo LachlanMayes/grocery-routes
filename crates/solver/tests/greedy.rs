@@ -358,6 +358,67 @@ fn c101_calibration_local_search() {
     // TODO: tighten route count once fleet cost is non-zero (best-known=10 routes)
 }
 
+/// C101 calibration with multi-start LNS: do eight parallel seeds beat the
+/// single run (709.10) and the local-search path (621.42)?
+#[test]
+fn c101_calibration_lns_multistart() {
+    use solver::{
+        LNSConfig, euclidean_matrix, parse_solomon_file, solomon_to_problem,
+        solve_with_lns_multistart,
+    };
+
+    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    if !path.exists() {
+        panic!(
+            "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
+            path.display()
+        );
+    }
+
+    let inst = parse_solomon_file(path).unwrap();
+    let problem = solomon_to_problem(inst, 60.0);
+    // Each parallel run is wall-clock bounded; the budget is tunable so
+    // longer measurements can be taken without editing the test.
+    let time_limit_ms = std::env::var("C101_LNS_MS")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(30_000);
+    let config = LNSConfig {
+        max_no_improve: 1000,
+        ruin_size_range: (6, 14),
+        seed: 42,
+        time_limit_ms,
+        initial_temperature: 1500.0,
+        cooling_rate: 0.9995,
+        min_temperature: 0.1,
+        adaptive: true,
+        reaction_factor: 0.1,
+    };
+
+    let started = std::time::Instant::now();
+    let solution = solve_with_lns_multistart(&problem, config, euclidean_matrix(&problem), 8);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        solution.validate(&problem),
+        Ok(()),
+        "solution must be valid"
+    );
+    let served = problem.stores.len() - solution.unassigned.len();
+    assert_eq!(served, 100, "must serve all 100 stores: {served}");
+    assert!(
+        solution.total_distance_km <= 870.39,
+        "distance {:.2} exceeds the 5% gate",
+        solution.total_distance_km
+    );
+    eprintln!(
+        "C101 LNS x8: routes={}, distance={:.2}, served={}/100, elapsed={elapsed:.1?}",
+        solution.routes.len(),
+        solution.total_distance_km,
+        served,
+    );
+}
+
 /// C101 calibration with LNS/ALNS (M2).
 /// Tests whether LNS improves the greedy baseline.
 #[test]
