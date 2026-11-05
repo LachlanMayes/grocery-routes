@@ -29,8 +29,8 @@ Current C101 calibration output (2026-11-05):
 - LNS prints an invalid result and falls back to greedy (`841.68`); it remains
   opt-in and should not be treated as the calibrated production default.
 
-`docs/M1-REPORT.md` is stale and records the original 7/100 greedy result; the
-status above is the measured current state.
+`docs/M1-REPORT.md` has been corrected to the current measured state while
+keeping the original result as clearly marked history.
 
 ## Why this shape (cost/time)
 
@@ -75,8 +75,8 @@ status above is the measured current state.
   gathered (see the gate table).
 - **M1 — Solver v1** — **done**. Vendored Solomon/VRPLib parser, C101 gate wired,
   greedy and local search validated, C101 dataset tracked
-  (`data/solomon/C101.txt`). `docs/M1-REPORT.md` is stale; use the status
-  numbers at the top of this plan.
+  (`data/solomon/C101.txt`). [docs/M1-REPORT.md](M1-REPORT.md) is current as of
+  2026-11-05 and retains the superseded original result for history.
 - **M2 — Solver v2** — **done sufficiently for the current quality gate, with
   caveats**. Local search is deterministic enough to pass C101 at 621.42 with
   100/100 served. LNS/ALNS and deterministic seeds are implemented, but LNS

@@ -3,8 +3,9 @@
 Route + delivery planning for Australian supermarket distribution — Coles,
 Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
 
-- Roadmap and gates: [docs/PLAN.md](docs/PLAN.md)
-- Current state and evidence: [docs/M0-REPORT.md](docs/M0-REPORT.md)
+- Roadmap, milestones and current gate outcomes: [docs/PLAN.md](docs/PLAN.md)
+- Historical milestone reports: [docs/M0-REPORT.md](docs/M0-REPORT.md) ·
+  [docs/M1-REPORT.md](docs/M1-REPORT.md)
 
 ## Quickstart
 
@@ -14,16 +15,20 @@ cargo run -p cli -- solve --problem data/demo/problem.json --out data/demo/solut
 cargo run -p cli -- export --problem data/demo/problem.json --solution data/demo/solution.json --out-dir data/demo
 ```
 
-`data/` is gitignored. Everything generated is synthetic; no real store
-addresses are shipped.
+`data/demo/` is gitignored; `data/solomon/C101.txt` is tracked so the C101
+calibration gates run in a clean checkout. Everything generated is synthetic; no
+real store addresses are shipped.
 
 ## Checks
 
 ```console
 cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets
 cargo bench -p solver --no-run
 ```
+
+The workspace currently builds with warnings under `clippy::all` (warn level);
+it is not enforced with `-D warnings`.
 
 ## Layout
 
@@ -31,6 +36,9 @@ cargo bench -p solver --no-run
 |---|---|
 | `crates/domain` | timeline model + validation rules (the contract) |
 | `crates/sim` | seeded synthetic network generator |
-| `crates/solver` | route construction (greedy insertion at M0) |
+| `crates/solver` | haversine matrix, greedy insertion, local search, LNS/ALNS and C101 gates |
+| `crates/routing` | OSM PBF ingest, directed graph, truck constraints, cached matrices |
 | `crates/cli` | `gen-sim`, `solve`, `export` |
-| `docs/` | plan + milestone reports |
+| `crates/api` | axum + SQLite API, SSE solve events, import/solve/solution/KPI endpoints |
+| `apps/console` | egui operator console |
+| `docs/` | roadmap, plan status, milestone reports |

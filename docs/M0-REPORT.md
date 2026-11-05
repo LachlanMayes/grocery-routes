@@ -4,6 +4,10 @@ Date: 2026-11-03. Scope and gates per [PLAN.md](PLAN.md). Every measurement belo
 was produced by the command shown next to it; anything not yet built is listed
 under "Not done (by design)".
 
+> Historical snapshot, not a current verification report. Test counts and lint
+> claims reflect 2026-11-03; the Solomon C101 rows were corrected on 2026-11-05
+> (see [M1-REPORT.md](M1-REPORT.md) and [PLAN.md](PLAN.md)).
+
 ## What exists
 
 | Crate | Contents |
@@ -18,7 +22,7 @@ under "Not done (by design)".
 | Check | Command | Result |
 |---|---|---|
 | Tests | `cargo test --workspace` | 48 passed, 0 failed — domain 19 (7 unit + 12 validation), sim 8, solver 12 (5 unit incl. cost arithmetic + 6 greedy + 1 proptest at 256 cases), cli 9 (4 lib + 4 export + 1 e2e) |
-| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| Lints | `cargo clippy --workspace --all-targets` | clean on 2026-11-03; not enforced with `-D warnings` in current checks |
 | Formatting | `cargo fmt --all` | applied (exit 0) |
 | Bench (compiles + runs) | `cargo bench -p solver` | `greedy_insertion/metro_40`: **1.10 ms** [1.077, 1.132], 100 samples (858 µs before the post-review driver-occupancy checks) |
 | Demo (40 stores / 3 depots / 12 vehicles, seed 42) | `cargo run -q -p cli -- gen-sim …` then `solve` then `export` | **40/40 stores served**, 8 routes, 825.5 km, Σ duration 1d 09:36, cost **$3,454.98**; solve wall time 141 ms including cargo overhead (re-measured after the review fixes) |
@@ -74,9 +78,13 @@ versioned truck-constraints layer** (street-level load limits, bridge/tunnel
 limits, council curfews, B-double/HML route restrictions). OSM truck tags are
 used where present, not relied on. Re-run the queries before starting M3.
 
-### 3. Solomon C101 calibration — PENDING BY DESIGN
+### 3. Solomon C101 calibration — COMPLETE (corrected 2026-11-05)
 
-Due at the end of M1; no quality target has been committed.
+The calibration path was fixed after this report was written: the C101
+problem uses `solomon_to_problem(inst, 60.0)`, so one distance unit maps to
+one minute. Current state: greedy 841.68 with 100/100 served, local search
+621.42 with 100/100 served. See [M1-REPORT.md](M1-REPORT.md) and
+[PLAN.md](PLAN.md) for the current evidence.
 
 ### 4. Benchmark parser — decision recorded, not yet written
 
@@ -121,17 +129,18 @@ M1 vendors a ~50-line Solomon/VRPLib parser in the bench harness.
   deliberately conservative until relay-precise attribution exists (M5).
 - `solve` accepts at most 5,000 nodes (≈200 MB distance matrix).
 
-## Not done (by design)
+## Not done (at the time of this report)
 
 Local search + metaheuristics, the C101 bench harness, OSM routing (`routing`),
 G-NAF geocoding (`geo-au`), the API, the egui console, and driver tools — all
-per the milestone plan.
+per the milestone plan. (As of 2026-11-05 the solver, routing, API and console
+are implemented; see [PLAN.md](PLAN.md).)
 
 ## Reproduce
 
 ```console
 cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets
 cargo bench -p solver
 cargo run -q -p cli -- gen-sim --chain coles --city sydney --stores 40 --depots 3 --vehicles 12 --seed 42 --out data/demo/problem.json
 cargo run -q -p cli -- solve --problem data/demo/problem.json --out data/demo/solution.json
