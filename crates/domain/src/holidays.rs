@@ -1,23 +1,44 @@
-//! Australian national public holidays, computed from the calendar.
+//! Australian public holidays, computed from the calendar.
 //!
-//! **Scope: national holidays only.** State/territory-specific holidays
-//! (e.g. Melbourne Cup Day, varying King's Birthday dates, the AFL Grand
-//! Final Friday in some states) and one-off declarations are **not**
-//! modelled. ANZAC Day is observed on 25 April even on a weekend (Sunday
-//! observance varies by jurisdiction and is not modelled). This is a
-//! scheduling aid, **not legal advice**; consult the Fair Work Ombudsman
-//! and the relevant state/territory authority for the authoritative
-//! calendar.
+//! Two layers are offered:
 //!
-//! Substituted ("observed") dates follow the common national rule: when a
-//! fixed-date national holiday falls on a Saturday or Sunday, the next
-//! weekday not already taken by another national holiday is observed. If
-//! two national holidays ever coincide (the real-world case is Easter
+//! - [`holidays_in_year`] / [`national_public_holidays`]: the *national*
+//!   calendar (New Year's Day, Australia Day, the Easter days, ANZAC Day,
+//!   Christmas and Boxing Day, plus observed dates).
+//! - [`state_holidays_in_year`]: a full jurisdiction calendar
+//!   ([`Jurisdiction`]) adding state/territory holidays — Labour Day,
+//!   King's Birthday, Melbourne Cup, the AFL Grand Final Friday and the
+//!   other state-specific dates.
+//!
+//! Substituted ("observed") dates follow the common rule: when a fixed-date
+//! holiday falls on a Saturday or Sunday, the next weekday not already taken
+//! is observed. If two holidays ever coincide (the real-world case is Easter
 //! Monday falling on ANZAC Day, e.g. 25 April 2011), the following
 //! non-holiday weekday becomes a "Substitute public holiday".
 //!
+//! ANZAC Day substitution is jurisdiction-specific: ACT, NSW and WA observe
+//! the following Monday whenever 25 April falls on a weekend; QLD and NT
+//! observe it when it falls on a Sunday; SA, TAS and VIC never substitute.
+//!
+//! # Sources and limits
+//!
+//! Dates follow each jurisdiction's published rules and were cross-checked
+//! against the NT Government's public holiday page (nt.gov.au/nt-public-holidays,
+//! accessed 2026-11-05) and the timeanddate.com Australia 2026–2027 holiday
+//! pages (accessed 2026-11-05). **Every authority's own calendar is
+//! authoritative.**
+//!
+//! Irregular dates that cannot be computed (the AFL Grand Final Friday in
+//! Victoria) come from a small sourced table covering 2026–2027; in other
+//! years that holiday is *omitted* from the returned list. Regional show
+//! days, part-day holidays (e.g. Christmas Eve from 19:00), Easter Tuesday
+//! (Tasmanian public sector) and one-off declarations are out of scope.
+//! This is a scheduling aid, **not legal advice**.
+//!
 //! No data files are required; Easter is computed with the standard
 //! Gregorian computus (valid for 1900–2099 and beyond).
+
+use std::fmt;
 
 use jiff::Span;
 use jiff::civil::{Date, Weekday};
@@ -170,6 +191,278 @@ fn shift_days(date: Date, days: i64) -> Date {
 
 fn date(year: i16, month: i8, day: i8) -> Date {
     Date::new(year, month, day).expect("fixed calendar dates are valid")
+}
+
+/// One of the eight Australian state/territory jurisdictions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Jurisdiction {
+    Act,
+    Nsw,
+    Nt,
+    Qld,
+    Sa,
+    Tas,
+    Vic,
+    Wa,
+}
+
+impl Jurisdiction {
+    /// Every jurisdiction, in a stable order.
+    pub const ALL: [Self; 8] = [
+        Self::Act,
+        Self::Nsw,
+        Self::Nt,
+        Self::Qld,
+        Self::Sa,
+        Self::Tas,
+        Self::Vic,
+        Self::Wa,
+    ];
+
+    /// The uppercase code used on the command line (`ACT`, `NSW`, ...).
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Act => "ACT",
+            Self::Nsw => "NSW",
+            Self::Nt => "NT",
+            Self::Qld => "QLD",
+            Self::Sa => "SA",
+            Self::Tas => "TAS",
+            Self::Vic => "VIC",
+            Self::Wa => "WA",
+        }
+    }
+
+    /// Parses a jurisdiction code (case-insensitively).
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|jurisdiction| jurisdiction.code().eq_ignore_ascii_case(code))
+    }
+
+    /// The full name, e.g. `"Victoria"`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Act => "Australian Capital Territory",
+            Self::Nsw => "New South Wales",
+            Self::Nt => "Northern Territory",
+            Self::Qld => "Queensland",
+            Self::Sa => "South Australia",
+            Self::Tas => "Tasmania",
+            Self::Vic => "Victoria",
+            Self::Wa => "Western Australia",
+        }
+    }
+}
+
+impl fmt::Display for Jurisdiction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// The full public holiday calendar for one jurisdiction and year, in date
+/// order: the national holidays adjusted to that jurisdiction plus its
+/// state/territory-specific dates.
+///
+/// See the module docs for sources and what is deliberately excluded.
+#[must_use]
+pub fn state_holidays_in_year(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
+    use Jurisdiction::{Act, Nsw, Nt, Qld, Sa, Tas, Vic, Wa};
+
+    let mut holidays: Vec<Holiday> = Vec::new();
+
+    // Fixed national dates with observed shifts; SA calls 26 December
+    // Proclamation Day.
+    for holiday in fixed_holidays(year) {
+        let name = if jurisdiction == Sa && holiday.name == "Boxing Day" {
+            "Proclamation Day"
+        } else {
+            holiday.name
+        };
+        holidays.push(Holiday {
+            date: holiday.date,
+            name,
+        });
+    }
+
+    holidays.push(Holiday {
+        date: shift_days(easter_sunday(year), -2),
+        name: "Good Friday",
+    });
+    holidays.push(Holiday {
+        date: shift_days(easter_sunday(year), 1),
+        name: "Easter Monday",
+    });
+    if matches!(jurisdiction, Act | Nsw | Nt | Qld | Sa | Vic) {
+        holidays.push(Holiday {
+            date: shift_days(easter_sunday(year), -1),
+            name: "Easter Saturday",
+        });
+    }
+    if matches!(jurisdiction, Act | Nsw | Nt | Qld | Sa | Vic | Wa) {
+        holidays.push(Holiday {
+            date: easter_sunday(year),
+            name: "Easter Sunday",
+        });
+    }
+
+    // ANZAC Day, with jurisdiction-specific substitution.
+    let anzac = date(year, 4, 25);
+    holidays.push(Holiday {
+        date: anzac,
+        name: "ANZAC Day",
+    });
+    let weekend_shift = match jurisdiction {
+        Act | Nsw | Wa => {
+            anzac.weekday() == Weekday::Saturday || anzac.weekday() == Weekday::Sunday
+        }
+        Qld | Nt => anzac.weekday() == Weekday::Sunday,
+        Sa | Tas | Vic => false,
+    };
+    if weekend_shift {
+        let mut observed = shift_days(anzac, 1);
+        while is_weekend(observed) {
+            observed = shift_days(observed, 1);
+        }
+        holidays.push(Holiday {
+            date: observed,
+            name: "ANZAC Day (observed)",
+        });
+    }
+
+    // King's Birthday: 2nd Monday in June for most jurisdictions, 1st Monday
+    // in October for QLD, and the proclaimed (recently: last) Monday in
+    // September for WA.
+    let kings_birthday = match jurisdiction {
+        Qld => nth_weekday(year, 10, Weekday::Monday, 1),
+        Wa => last_weekday(year, 9, Weekday::Monday),
+        Act | Nsw | Nt | Sa | Tas | Vic => nth_weekday(year, 6, Weekday::Monday, 2),
+    };
+    holidays.push(Holiday {
+        date: kings_birthday,
+        name: "King's Birthday",
+    });
+
+    // Labour Day under its local name and date.
+    let (labour_day, labour_name) = match jurisdiction {
+        Wa => (nth_weekday(year, 3, Weekday::Monday, 1), "Labour Day"),
+        Tas => (nth_weekday(year, 3, Weekday::Monday, 2), "Eight Hours Day"),
+        Vic => (nth_weekday(year, 3, Weekday::Monday, 2), "Labour Day"),
+        Nt | Qld => (nth_weekday(year, 5, Weekday::Monday, 1), "May Day"),
+        Act | Nsw | Sa => (nth_weekday(year, 10, Weekday::Monday, 1), "Labour Day"),
+    };
+    holidays.push(Holiday {
+        date: labour_day,
+        name: labour_name,
+    });
+
+    // Jurisdiction-specific extras.
+    match jurisdiction {
+        Act => {
+            holidays.push(Holiday {
+                date: nth_weekday(year, 3, Weekday::Monday, 2),
+                name: "Canberra Day",
+            });
+            holidays.push(Holiday {
+                date: monday_on_or_after(year, 5, 27),
+                name: "Reconciliation Day",
+            });
+        }
+        Nsw => holidays.push(Holiday {
+            date: nth_weekday(year, 8, Weekday::Monday, 1),
+            name: "Bank Holiday",
+        }),
+        Nt => holidays.push(Holiday {
+            date: nth_weekday(year, 8, Weekday::Monday, 1),
+            name: "Picnic Day",
+        }),
+        Qld => {}
+        Sa => holidays.push(Holiday {
+            date: nth_weekday(year, 3, Weekday::Monday, 2),
+            name: "Adelaide Cup",
+        }),
+        Tas => holidays.push(Holiday {
+            date: nth_weekday(year, 11, Weekday::Monday, 1),
+            name: "Recreation Day",
+        }),
+        Vic => {
+            holidays.push(Holiday {
+                date: nth_weekday(year, 11, Weekday::Tuesday, 1),
+                name: "Melbourne Cup",
+            });
+            if let Some(friday) = victoria_afl_grand_final_friday(year) {
+                holidays.push(Holiday {
+                    date: friday,
+                    name: "Friday before the AFL Grand Final",
+                });
+            }
+        }
+        Wa => holidays.push(Holiday {
+            date: nth_weekday(year, 6, Weekday::Monday, 1),
+            name: "WA Day",
+        }),
+    }
+
+    holidays.sort_by_key(|holiday| holiday.date);
+    substitute_for_coincidences(holidays)
+}
+
+/// AFL Grand Final Fridays in Victoria, which the league fixes too late to
+/// compute. Sourced from the timeanddate.com Australia 2027 page (accessed
+/// 2026-11-05; 2027 marked tentative there) and its 2026 page; YEARS OUTSIDE
+/// THIS TABLE RETURN `None` and the holiday is omitted.
+fn victoria_afl_grand_final_friday(year: i16) -> Option<Date> {
+    match year {
+        2026 => Some(date(2026, 9, 25)),
+        2027 => Some(date(2027, 9, 24)),
+        _ => None,
+    }
+}
+
+/// Sunday-zero weekday number.
+fn weekday_number(weekday: Weekday) -> u8 {
+    match weekday {
+        Weekday::Sunday => 0,
+        Weekday::Monday => 1,
+        Weekday::Tuesday => 2,
+        Weekday::Wednesday => 3,
+        Weekday::Thursday => 4,
+        Weekday::Friday => 5,
+        Weekday::Saturday => 6,
+    }
+}
+
+/// The `n`th `weekday` of `month` (1-based).
+fn nth_weekday(year: i16, month: i8, weekday: Weekday, n: u8) -> Date {
+    let first = date(year, month, 1);
+    let offset = (i64::from(weekday_number(weekday)) - i64::from(weekday_number(first.weekday())))
+        .rem_euclid(7);
+    let day = 1 + offset + 7 * (i64::from(n) - 1);
+    date(year, month, day as i8)
+}
+
+/// The last `weekday` of `month`.
+fn last_weekday(year: i16, month: i8, weekday: Weekday) -> Date {
+    let next_month = if month == 12 {
+        date(year + 1, 1, 1)
+    } else {
+        date(year, month + 1, 1)
+    };
+    let last = shift_days(next_month, -1);
+    let offset = (i64::from(weekday_number(last.weekday())) - i64::from(weekday_number(weekday)))
+        .rem_euclid(7);
+    shift_days(last, -offset)
+}
+
+/// The Monday on or after `month`/`day` (ACT's Reconciliation Day rule).
+fn monday_on_or_after(year: i16, month: i8, day: i8) -> Date {
+    let start = date(year, month, day);
+    let offset = (1 - i64::from(weekday_number(start.weekday()))).rem_euclid(7);
+    shift_days(start, offset)
 }
 
 #[cfg(test)]
@@ -334,5 +627,204 @@ mod tests {
         for pair in holidays.windows(2) {
             assert!(pair[0].date <= pair[1].date);
         }
+    }
+
+    /// Date of the holiday called `name`, if present.
+    fn state_date(holidays: &[Holiday], name: &str) -> Option<Date> {
+        holidays
+            .iter()
+            .find(|holiday| holiday.name == name)
+            .map(|holiday| holiday.date)
+    }
+
+    /// True when `name` is observed on `date`.
+    fn state_has(holidays: &[Holiday], date: Date, name: &str) -> bool {
+        holidays
+            .iter()
+            .any(|holiday| holiday.date == date && holiday.name == name)
+    }
+
+    #[test]
+    fn state_calendars_always_contain_the_national_core() {
+        for jurisdiction in Jurisdiction::ALL {
+            let holidays = state_holidays_in_year(2026, jurisdiction);
+            for name in [
+                "New Year's Day",
+                "Australia Day",
+                "Good Friday",
+                "ANZAC Day",
+                "Christmas Day",
+            ] {
+                assert!(
+                    state_date(&holidays, name).is_some(),
+                    "{jurisdiction} 2026 is missing {name}"
+                );
+            }
+            for pair in holidays.windows(2) {
+                assert!(
+                    pair[0].date <= pair[1].date,
+                    "{jurisdiction} calendar is not sorted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn victoria_2026_matches_published_calendar() {
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Vic);
+        assert_eq!(state_date(&holidays, "Labour Day"), Some(d(2026, 3, 9)));
+        assert_eq!(
+            state_date(&holidays, "King's Birthday"),
+            Some(d(2026, 6, 8))
+        );
+        assert_eq!(
+            state_date(&holidays, "Friday before the AFL Grand Final"),
+            Some(d(2026, 9, 25))
+        );
+        assert_eq!(state_date(&holidays, "Melbourne Cup"), Some(d(2026, 11, 3)));
+        assert!(state_has(&holidays, d(2026, 4, 4), "Easter Saturday"));
+        assert!(state_has(&holidays, d(2026, 4, 5), "Easter Sunday"));
+        assert!(
+            !state_has(&holidays, d(2026, 4, 27), "ANZAC Day (observed)"),
+            "Victoria does not substitute ANZAC Day"
+        );
+    }
+
+    #[test]
+    fn northern_territory_2026_and_2027_match_the_nt_government_page() {
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Nt);
+        assert!(state_has(&holidays, d(2026, 4, 4), "Easter Saturday"));
+        assert!(state_has(&holidays, d(2026, 4, 5), "Easter Sunday"));
+        assert_eq!(state_date(&holidays, "May Day"), Some(d(2026, 5, 4)));
+        assert_eq!(
+            state_date(&holidays, "King's Birthday"),
+            Some(d(2026, 6, 8))
+        );
+        assert_eq!(state_date(&holidays, "Picnic Day"), Some(d(2026, 8, 3)));
+        assert!(
+            !state_has(&holidays, d(2026, 4, 27), "ANZAC Day (observed)"),
+            "NT does not substitute a Saturday ANZAC Day"
+        );
+
+        let holidays = state_holidays_in_year(2027, Jurisdiction::Nt);
+        // Sunday 25 April 2027 -> Monday 26 April observed (NT Government).
+        assert!(state_has(&holidays, d(2027, 4, 26), "ANZAC Day (observed)"));
+        assert!(state_has(&holidays, d(2027, 12, 27), "Christmas Day"));
+        assert!(state_has(&holidays, d(2027, 12, 28), "Boxing Day"));
+    }
+
+    #[test]
+    fn western_australia_2026_matches_published_calendar() {
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Wa);
+        assert_eq!(state_date(&holidays, "Labour Day"), Some(d(2026, 3, 2)));
+        assert_eq!(state_date(&holidays, "WA Day"), Some(d(2026, 6, 1)));
+        assert_eq!(
+            state_date(&holidays, "King's Birthday"),
+            Some(d(2026, 9, 28))
+        );
+        assert!(state_has(&holidays, d(2026, 4, 5), "Easter Sunday"));
+        assert!(
+            state_date(&holidays, "Easter Saturday").is_none(),
+            "WA does not observe Easter Saturday"
+        );
+        assert!(state_has(&holidays, d(2026, 4, 27), "ANZAC Day (observed)"));
+    }
+
+    #[test]
+    fn queensland_and_act_2026_match_published_calendars() {
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Qld);
+        assert_eq!(state_date(&holidays, "May Day"), Some(d(2026, 5, 4)));
+        assert_eq!(
+            state_date(&holidays, "King's Birthday"),
+            Some(d(2026, 10, 5))
+        );
+        assert!(state_has(&holidays, d(2026, 4, 4), "Easter Saturday"));
+        assert!(state_has(&holidays, d(2026, 4, 5), "Easter Sunday"));
+        assert!(!state_has(
+            &holidays,
+            d(2026, 4, 27),
+            "ANZAC Day (observed)"
+        ));
+
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Act);
+        assert_eq!(state_date(&holidays, "Canberra Day"), Some(d(2026, 3, 9)));
+        assert_eq!(
+            state_date(&holidays, "Reconciliation Day"),
+            Some(d(2026, 6, 1))
+        );
+        assert_eq!(state_date(&holidays, "Labour Day"), Some(d(2026, 10, 5)));
+        assert!(state_has(&holidays, d(2026, 4, 27), "ANZAC Day (observed)"));
+    }
+
+    #[test]
+    fn nsw_sa_tas_2026_match_published_calendars() {
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Nsw);
+        assert_eq!(state_date(&holidays, "Bank Holiday"), Some(d(2026, 8, 3)));
+        assert_eq!(state_date(&holidays, "Labour Day"), Some(d(2026, 10, 5)));
+        assert!(state_has(&holidays, d(2026, 4, 27), "ANZAC Day (observed)"));
+
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Sa);
+        assert_eq!(state_date(&holidays, "Adelaide Cup"), Some(d(2026, 3, 9)));
+        assert_eq!(state_date(&holidays, "Labour Day"), Some(d(2026, 10, 5)));
+        assert!(state_has(&holidays, d(2026, 12, 26), "Proclamation Day"));
+        assert!(
+            state_date(&holidays, "Boxing Day").is_none(),
+            "SA calls 26 December Proclamation Day"
+        );
+
+        let holidays = state_holidays_in_year(2026, Jurisdiction::Tas);
+        assert_eq!(
+            state_date(&holidays, "Eight Hours Day"),
+            Some(d(2026, 3, 9))
+        );
+        assert_eq!(
+            state_date(&holidays, "King's Birthday"),
+            Some(d(2026, 6, 8))
+        );
+        assert_eq!(
+            state_date(&holidays, "Recreation Day"),
+            Some(d(2026, 11, 2))
+        );
+        assert!(state_date(&holidays, "Easter Saturday").is_none());
+        assert!(state_date(&holidays, "Easter Sunday").is_none());
+    }
+
+    #[test]
+    fn irregular_dates_are_omitted_outside_the_sourced_table() {
+        // 2027's AFL Grand Final Friday is in the sourced table (tentative).
+        let vic_2027 = state_holidays_in_year(2027, Jurisdiction::Vic);
+        assert_eq!(
+            state_date(&vic_2027, "Friday before the AFL Grand Final"),
+            Some(d(2027, 9, 24))
+        );
+        // Outside the table the holiday is omitted rather than guessed.
+        let vic_2028 = state_holidays_in_year(2028, Jurisdiction::Vic);
+        assert!(
+            state_date(&vic_2028, "Friday before the AFL Grand Final").is_none(),
+            "unsourced years must not guess the AFL date"
+        );
+        // WA 2027 King's Birthday follows the last-Monday-of-September rule.
+        let wa_2027 = state_holidays_in_year(2027, Jurisdiction::Wa);
+        assert_eq!(
+            state_date(&wa_2027, "King's Birthday"),
+            Some(d(2027, 9, 27))
+        );
+    }
+
+    #[test]
+    fn jurisdiction_codes_round_trip() {
+        for jurisdiction in Jurisdiction::ALL {
+            assert_eq!(
+                Jurisdiction::from_code(jurisdiction.code()),
+                Some(jurisdiction)
+            );
+            assert_eq!(
+                Jurisdiction::from_code(&jurisdiction.code().to_lowercase()),
+                Some(jurisdiction)
+            );
+        }
+        assert_eq!(Jurisdiction::from_code("nsw"), Some(Jurisdiction::Nsw));
+        assert_eq!(Jurisdiction::from_code("VIC"), Some(Jurisdiction::Vic));
+        assert_eq!(Jurisdiction::from_code("xx"), None);
     }
 }

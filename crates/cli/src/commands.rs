@@ -36,6 +36,20 @@ pub enum Command {
     Solve(SolveArgs),
     /// Write an HTML route sheet and a GeoJSON report for a solved plan.
     Export(ExportArgs),
+    /// Print a national or state/territory public holiday calendar.
+    Holidays(HolidaysArgs),
+}
+
+/// Arguments of `holidays`.
+#[derive(Debug, Args)]
+pub struct HolidaysArgs {
+    /// Calendar year to print.
+    #[arg(long)]
+    pub year: i16,
+    /// Jurisdiction code (ACT, NSW, NT, QLD, SA, TAS, VIC, WA). Omit for the
+    /// national calendar.
+    #[arg(long)]
+    pub state: Option<String>,
 }
 
 /// Arguments of `gen-sim`.
@@ -140,7 +154,35 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::GenSim(args) => run_gen_sim(&args),
         Command::Solve(args) => run_solve(&args),
         Command::Export(args) => run_export(&args),
+        Command::Holidays(args) => run_holidays(&args),
     }
+}
+
+/// `holidays`: prints the national calendar, or one jurisdiction's full
+/// calendar when `--state` is given.
+pub fn run_holidays(args: &HolidaysArgs) -> anyhow::Result<()> {
+    match &args.state {
+        Some(code) => {
+            let jurisdiction = domain::Jurisdiction::from_code(code).with_context(|| {
+                format!(
+                    "unknown state code '{code}' (expected one of ACT, NSW, NT, QLD, SA, TAS, VIC, WA)"
+                )
+            })?;
+            println!("{} public holidays {}", jurisdiction.name(), args.year);
+            for holiday in domain::state_holidays_in_year(args.year, jurisdiction) {
+                println!("  {}  {}", holiday.date, holiday.name);
+            }
+        }
+        None => {
+            println!("National public holidays {}", args.year);
+            for holiday in domain::holidays_in_year(args.year) {
+                println!("  {}  {}", holiday.date, holiday.name);
+            }
+        }
+    }
+    println!();
+    println!("Scheduling aid, not legal advice; each authority's calendar is authoritative.");
+    Ok(())
 }
 
 /// `gen-sim`: generates a synthetic problem, writes it as pretty JSON and

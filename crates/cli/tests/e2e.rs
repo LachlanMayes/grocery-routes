@@ -122,6 +122,43 @@ fn gen_sim_solve_and_export_round_trip() {
 }
 
 #[test]
+fn holidays_subcommand_prints_national_and_state_calendars() {
+    let output = Command::new(BIN)
+        .args(["holidays", "--year", "2026", "--state", "vic"])
+        .output()
+        .expect("spawning grocery-routes");
+    assert!(
+        output.status.success(),
+        "holidays failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Victoria public holidays 2026"));
+    assert!(stdout.contains("2026-11-03  Melbourne Cup"));
+    assert!(stdout.contains("2026-09-25  Friday before the AFL Grand Final"));
+
+    let output = Command::new(BIN)
+        .args(["holidays", "--year", "2026"])
+        .output()
+        .expect("spawning grocery-routes");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("National public holidays 2026"));
+    assert!(stdout.contains("2026-04-06  Easter Monday"));
+
+    let output = Command::new(BIN)
+        .args(["holidays", "--year", "2026", "--state", "xx"])
+        .output()
+        .expect("spawning grocery-routes");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown state code"),
+        "stderr should name the bad code, got: {stderr}"
+    );
+}
+
+#[test]
 fn enforce_curfews_fails_gracefully_without_osm() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let problem_path = dir.path().join("problem.json");

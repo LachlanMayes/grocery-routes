@@ -30,7 +30,10 @@ pub use clock::{
 };
 pub use error::Violation;
 pub use geo::{LatLon, haversine_km};
-pub use holidays::{Holiday, holidays_in_year, is_public_holiday, national_public_holidays};
+pub use holidays::{
+    Holiday, Jurisdiction, holidays_in_year, is_public_holiday, national_public_holidays,
+    state_holidays_in_year,
+};
 pub use ids::{DepotId, DriverId, StoreId, VehicleId};
 pub use ledger::{ReturnablesLedger, StoreBalance, ledger};
 pub use model::{
