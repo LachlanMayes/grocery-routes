@@ -38,6 +38,34 @@ pub enum Command {
     Export(ExportArgs),
     /// Print a national or state/territory public holiday calendar.
     Holidays(HolidaysArgs),
+    /// List the OSM ways a solved plan traverses and their truck limits.
+    Audit(AuditArgs),
+}
+
+/// Arguments of `audit`.
+#[derive(Debug, Args)]
+pub struct AuditArgs {
+    /// Problem JSON to read.
+    #[arg(long)]
+    pub problem: PathBuf,
+    /// Solution JSON to read.
+    #[arg(long)]
+    pub solution: PathBuf,
+    /// OSM PBF extract the plan's corridors are audited against.
+    #[arg(long)]
+    pub osm: PathBuf,
+    /// Vehicle weight in tonnes, for context in the report.
+    #[arg(long)]
+    pub maxweight: Option<f64>,
+    /// Vehicle height in metres, for context in the report.
+    #[arg(long)]
+    pub maxheight: Option<f64>,
+    /// Classify the vehicle as an HGV, for context in the report.
+    #[arg(long)]
+    pub hgv: bool,
+    /// Directory `corridor-audit.csv` is written to.
+    #[arg(long, alias = "out")]
+    pub out_dir: PathBuf,
 }
 
 /// Arguments of `holidays`.
@@ -164,7 +192,42 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Solve(args) => run_solve(&args),
         Command::Export(args) => run_export(&args),
         Command::Holidays(args) => run_holidays(&args),
+        Command::Audit(args) => run_audit(&args),
     }
+}
+
+/// `audit`: lists every OSM way a solved plan traverses, the truck limits
+/// found on it, and which corridors have no limit data (legality unverified).
+pub fn run_audit(args: &AuditArgs) -> anyhow::Result<()> {
+    let problem = read_problem_json(&args.problem)?;
+    let solution = read_solution_json(&args.solution)?;
+    check_solution(&problem, &solution)?;
+
+    let mut cached = routing::CachedMatrix::new();
+    cached.load_pbf(&args.osm)?;
+    let node_ids = cached.problem_node_ids(&problem)?;
+    let graph = cached
+        .graph()
+        .context("corridor audit requires a loaded OSM graph")?;
+    let profile = routing::TruckProfile {
+        maxweight_tonnes: args.maxweight,
+        maxheight_m: args.maxheight,
+        hgv: args.hgv,
+    };
+    let audit = routing::audit_solution(&problem, &solution, graph, &node_ids, profile);
+
+    std::fs::create_dir_all(&args.out_dir)
+        .with_context(|| format!("creating output directory {}", args.out_dir.display()))?;
+    let csv_path = args.out_dir.join("corridor-audit.csv");
+    std::fs::write(&csv_path, audit.to_csv())
+        .with_context(|| format!("writing {}", csv_path.display()))?;
+    println!("corridor audit: {}", audit.summary());
+    println!(
+        "WARNING: this report is not legal verification; check ways without limit data \
+         against the authoritative source (docs/TRUCK-CONSTRAINTS.md)"
+    );
+    println!("wrote {}", csv_path.display());
+    Ok(())
 }
 
 /// `holidays`: prints the national calendar, or one jurisdiction's full

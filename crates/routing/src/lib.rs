@@ -11,6 +11,7 @@
 //! - Compute shortest paths (Dijkstra) for distance/duration matrices
 //! - Cache matrices keyed by problem + vehicle profile
 
+pub mod audit;
 pub mod cached_matrix;
 pub mod ch;
 pub mod curated;
@@ -20,6 +21,7 @@ pub mod router;
 pub mod timed;
 pub mod truck_constraints;
 
+pub use audit::{CorridorAudit, CorridorRow, audit_solution};
 pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey, MatrixStrategy};
 pub use ch::{ChError, ContractionHierarchy};
 pub use curated::{CuratedConstraints, CuratedEntry, CuratedError};
