@@ -39,6 +39,6 @@ pub use ledger::{ReturnablesLedger, StoreBalance, ledger};
 pub use model::{
     Chain, ChainRules, CostModel, CurfewRule, CurfewRules, Depot, Driver, FatigueRules, Load, Node,
     PlannedStop, Problem, ReturnablesDefaults, RoutePlan, Shift, Solution, Store, TimeWindow,
-    Vehicle,
+    Vehicle, max_work_in_fixed_window,
 };
 pub use time::Minutes;

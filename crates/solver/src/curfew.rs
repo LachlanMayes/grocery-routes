@@ -169,7 +169,13 @@ pub fn enforce_curfews(
             }
             match try_reschedule(problem, &candidate, legs) {
                 Ok(attempt) => {
-                    if driver_conflicts(&candidate.drivers, attempt.span, &committed, &remaining) {
+                    if driver_conflicts(
+                        problem,
+                        &candidate.drivers,
+                        attempt.span,
+                        &committed,
+                        &remaining,
+                    ) {
                         let Some(store) = last_store(&candidate) else {
                             break None;
                         };
@@ -252,21 +258,56 @@ fn original_span(route: &RoutePlan) -> (Minutes, Minutes) {
     }
 }
 
-/// True when `span` would overlap an already-finalised route span or a
+/// True when `span` would clash with an already-finalised route span or a
 /// not-yet-processed route span of any of `drivers`.
+///
+/// "Clash" means the same three things [`Solution::validate`] checks for a
+/// driver: overlapping bookings, less than the fatigue rules' minimum rest
+/// between consecutive spans, and exceeding the rolling 24-hour or 7-day
+/// work caps. Without the fatigue checks, a curfew wait that ate a driver's
+/// rest would slip past enforcement and then trip validate's assert.
 fn driver_conflicts(
+    problem: &Problem,
     drivers: &[DriverId],
     span: (Minutes, Minutes),
     committed: &[Vec<(Minutes, Minutes)>],
     remaining: &[(usize, DriverId, (Minutes, Minutes))],
 ) -> bool {
     drivers.iter().any(|driver| {
-        committed
+        let mut spans: Vec<(Minutes, Minutes)> = committed
             .get(driver.0 as usize)
-            .is_some_and(|spans| spans.iter().any(|&other| spans_overlap(other, span)))
-            || remaining.iter().any(|&(_, other_driver, other_span)| {
-                other_driver == *driver && spans_overlap(other_span, span)
-            })
+            .into_iter()
+            .flatten()
+            .copied()
+            .chain(
+                remaining
+                    .iter()
+                    .filter(|&&(_, other_driver, _)| other_driver == *driver)
+                    .map(|&(_, _, other_span)| other_span),
+            )
+            .collect();
+        if spans.iter().any(|&other| spans_overlap(other, span)) {
+            return true;
+        }
+        let Some(driver_record) = problem.driver(*driver) else {
+            return false;
+        };
+        spans.push(span);
+        spans.sort_unstable();
+        let rules = driver_record.fatigue_rules;
+        if spans
+            .windows(2)
+            .any(|pair| pair[1].0.minutes() - pair[0].1.minutes() < rules.min_rest_minutes())
+        {
+            return true;
+        }
+        if domain::max_work_in_fixed_window(&spans, 24 * 60) > rules.max_work_24h_minutes() {
+            return true;
+        }
+        if domain::max_work_in_fixed_window(&spans, 7 * 24 * 60) > rules.max_work_7d_minutes() {
+            return true;
+        }
+        false
     })
 }
 
@@ -595,15 +636,19 @@ mod tests {
     }
 
     #[test]
-    fn driver_conflicts_are_detected_against_committed_and_remaining() {
+    fn driver_conflicts_check_overlap_rest_and_work_caps() {
+        let problem = problem_with_two_stores();
+        // The pre-existing spans themselves respect the 420-minute rest
+        // rule (they come from a valid plan in real use).
         let committed = vec![vec![(Minutes::from_minutes(0), Minutes::from_minutes(100))]];
         let remaining = vec![(
             1usize,
             DriverId(0),
-            (Minutes::from_minutes(200), Minutes::from_minutes(300)),
+            (Minutes::from_minutes(520), Minutes::from_minutes(620)),
         )];
         // Overlaps the committed span.
         assert!(driver_conflicts(
+            &problem,
             &[DriverId(0)],
             (Minutes::from_minutes(50), Minutes::from_minutes(150)),
             &committed,
@@ -611,24 +656,46 @@ mod tests {
         ));
         // Overlaps the remaining span.
         assert!(driver_conflicts(
+            &problem,
             &[DriverId(0)],
-            (Minutes::from_minutes(250), Minutes::from_minutes(350)),
+            (Minutes::from_minutes(550), Minutes::from_minutes(650)),
             &committed,
             &remaining,
         ));
-        // Clear of both.
+        // No overlap, but only 50 minutes of rest after the committed span
+        // (Standard Hours require 420).
+        assert!(driver_conflicts(
+            &problem,
+            &[DriverId(0)],
+            (Minutes::from_minutes(150), Minutes::from_minutes(200)),
+            &committed,
+            &remaining,
+        ));
+        // Clear of both with enough rest: 940 minutes after the first span
+        // and exactly the 420-minute minimum after the second.
         assert!(!driver_conflicts(
+            &problem,
             &[DriverId(0)],
-            (Minutes::from_minutes(100), Minutes::from_minutes(200)),
+            (Minutes::from_minutes(1040), Minutes::from_minutes(1140)),
             &committed,
             &remaining,
         ));
-        // A different driver is unaffected.
+        // A single span over the 12-hour daily cap conflicts even alone.
+        assert!(driver_conflicts(
+            &problem,
+            &[DriverId(0)],
+            (Minutes::ZERO, Minutes::from_minutes(800)),
+            &[Vec::new()],
+            &[],
+        ));
+        // A different driver is unaffected (and unknown drivers cannot
+        // conflict: the fixture defines only driver 0).
         let committed = vec![
             vec![(Minutes::ZERO, Minutes::from_minutes(100))],
             Vec::new(),
         ];
         assert!(!driver_conflicts(
+            &problem,
             &[DriverId(1)],
             (Minutes::from_minutes(50), Minutes::from_minutes(150)),
             &committed,

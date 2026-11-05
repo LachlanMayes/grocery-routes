@@ -12,7 +12,7 @@ use domain::LatLon;
 pub struct NodeId(pub u64);
 
 /// Identifier for a graph edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EdgeId(pub u64);
 
 /// A node in the road network with a geographic position.

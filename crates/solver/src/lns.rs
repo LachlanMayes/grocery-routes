@@ -276,7 +276,7 @@ pub fn solve_lns(
 
         // Select ruin and recreate operators
         let ruin_op = if config.adaptive {
-            select_operator_weighted(&ruin_weights, &mut rng)
+            select_operator_weighted(&RUIN_OPERATORS, &ruin_weights, &mut rng)
         } else {
             let ops = [
                 "random_removal",
@@ -291,7 +291,7 @@ pub fn solve_lns(
             ops[idx]
         };
         let recreate_op = if config.adaptive {
-            select_operator_weighted(&recreate_weights, &mut rng)
+            select_operator_weighted(&RECREATE_OPERATORS, &recreate_weights, &mut rng)
         } else {
             let ops = [
                 "greedy_repair",
@@ -429,19 +429,48 @@ pub fn solve_lns(
     solution
 }
 
+/// Ruin operators in a fixed order. Selection must iterate this list rather
+/// than the `HashMap`, whose iteration order varies per process — seeded
+/// runs would otherwise not be reproducible.
+const RUIN_OPERATORS: [&str; 7] = [
+    "random_removal",
+    "worst_removal",
+    "proximity_removal",
+    "shaw_removal",
+    "time_window_removal",
+    "route_removal",
+    "cluster_removal",
+];
+
+/// Recreate operators in the same fixed order as [`RUIN_OPERATORS`].
+const RECREATE_OPERATORS: [&str; 4] = [
+    "greedy_repair",
+    "regret_repair",
+    "regret3_repair",
+    "regret4_repair",
+];
+
 fn select_operator_weighted(
+    order: &[&'static str],
     weights: &HashMap<&'static str, OperatorStats>,
     rng: &mut StdRng,
 ) -> &'static str {
-    let total_weight: f64 = weights.values().map(|s| s.weight).sum();
+    let total_weight: f64 = order
+        .iter()
+        .filter_map(|op| weights.get(op))
+        .map(|stats| stats.weight)
+        .sum();
     let mut r = rng.random::<f64>() * total_weight;
-    for (op, stats) in weights {
+    for op in order {
+        let Some(stats) = weights.get(op) else {
+            continue;
+        };
         r -= stats.weight;
         if r <= 0.0 {
-            return *op;
+            return op;
         }
     }
-    weights.keys().next().copied().unwrap()
+    order[0]
 }
 
 fn update_weights(weights: &mut HashMap<&'static str, OperatorStats>, reaction_factor: f64) {

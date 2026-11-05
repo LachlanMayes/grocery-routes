@@ -335,12 +335,23 @@ pub fn returnables_csv(problem: &Problem, solution: &Solution) -> String {
     out
 }
 
-/// Quotes a CSV field when it contains a comma or quote.
+/// Quotes a CSV field when it contains a comma, quote or line break, and
+/// neutralises spreadsheet formula prefixes (`=`, `+`, `-`, `@`) with a
+/// leading apostrophe.
 fn csv_field(value: &str) -> String {
-    if value.contains(',') || value.contains('"') {
-        format!("\"{}\"", value.replace('"', "\"\""))
+    let prefixed = if matches!(value.chars().next(), Some('=' | '+' | '-' | '@')) {
+        format!("'{value}")
     } else {
         value.to_string()
+    };
+    if prefixed.contains(',')
+        || prefixed.contains('"')
+        || prefixed.contains('\n')
+        || prefixed.contains('\r')
+    {
+        format!("\"{}\"", prefixed.replace('"', "\"\""))
+    } else {
+        prefixed
     }
 }
 
@@ -449,6 +460,16 @@ mod tests {
             escape_html("<script>alert('x & y')</script>"),
             "&lt;script&gt;alert(&#39;x &amp; y&#39;)&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn csv_field_quotes_breaks_and_neutralises_formulas() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("a\nb"), "\"a\nb\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("=1+1"), "'=1+1");
+        assert_eq!(csv_field("@cmd"), "'@cmd");
     }
 
     #[test]

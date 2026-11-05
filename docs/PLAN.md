@@ -48,7 +48,7 @@ proof of delivery, no further console UI.
 
 Current checks:
 
-- `cargo test --workspace`: all **236** tests pass.
+- `cargo test --workspace`: all **238** tests pass.
 - `cargo clippy --workspace --all-targets`: exits 0 with warnings (no errors).
 - Latest commits: `95eb982` (G-NAF), `2905f93` (corridor audit), `86a5321`
   (contraction hierarchy), `200d446` (LNS multi-start), `db79960` (state

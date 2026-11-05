@@ -137,15 +137,19 @@ impl ContractionHierarchy {
     /// Returns `None` when either node is unknown to the hierarchy or no
     /// path exists.
     pub fn shortest_path(&mut self, source: NodeId, target: NodeId) -> Option<RouteResult> {
-        let &source_dense = self.to_dense.get(&source)?;
-        let &target_dense = self.to_dense.get(&target)?;
-        if source_dense == target_dense {
+        // Same graph node (including two problem nodes snapped to the same
+        // node): zero-length leg, even when that node has no usable edges.
+        // This must precede the `to_dense` lookups so isolated or
+        // profile-filtered nodes behave exactly like `Router`.
+        if source == target {
             return Some(RouteResult {
                 distance_km: 0.0,
                 duration_minutes: 0,
                 nodes: vec![source],
             });
         }
+        let &source_dense = self.to_dense.get(&source)?;
+        let &target_dense = self.to_dense.get(&target)?;
         let path = self
             .calculator
             .calc_path(&self.fast_graph, source_dense, target_dense)?;
@@ -263,6 +267,16 @@ mod tests {
         assert_eq!(ch.shortest_path(NodeId(1), NodeId(0)), None);
         assert_eq!(ch.shortest_path(NodeId(0), NodeId(2)), None);
         assert_eq!(ch.shortest_path(NodeId(0), NodeId(99)), None);
+        // A node with no usable edges still answers a zero-length query,
+        // exactly like Router::shortest_path(source, source).
+        assert_eq!(
+            ch.shortest_path(NodeId(2), NodeId(2)),
+            Some(RouteResult {
+                distance_km: 0.0,
+                duration_minutes: 0,
+                nodes: vec![NodeId(2)],
+            })
+        );
     }
 
     #[test]

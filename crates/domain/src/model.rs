@@ -328,7 +328,11 @@ impl Shift {
 /// span, not the full duration of spans that happen to start inside it. The
 /// best window can always be moved until it starts at a span start or a
 /// span end minus the window length, so only those anchors are checked.
-fn max_work_in_fixed_window(spans: &[(Minutes, Minutes)], window_minutes: i64) -> i64 {
+///
+/// Public so callers that re-schedule routes (e.g. curfew enforcement) can
+/// apply the same fatigue arithmetic [`Solution::validate`] uses.
+#[must_use]
+pub fn max_work_in_fixed_window(spans: &[(Minutes, Minutes)], window_minutes: i64) -> i64 {
     if spans.is_empty() {
         return 0;
     }

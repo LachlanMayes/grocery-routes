@@ -78,7 +78,15 @@ fn fixture() -> Problem {
                 fatigue_rules: FatigueRules::default(),
             },
         ],
-        cost: CostModel::default(),
+        cost: CostModel {
+            // Non-zero costs so LNS actually distinguishes candidates; with
+            // all-zero costs every run returns the greedy plan and the
+            // reproducibility assertions would pass vacuously.
+            fixed_per_route_cents: 15_000,
+            per_km_cents: 90,
+            per_hour_cents: 4_500,
+            late_per_min_cents: 0,
+        },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
         horizon_start: None,

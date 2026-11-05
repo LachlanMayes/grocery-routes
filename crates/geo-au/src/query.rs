@@ -89,6 +89,12 @@ pub fn parse_query(raw: &str) -> GeocodeQuery {
 
 /// Searches the database, best match first.
 ///
+/// This is an interactive-scale search, not a complete one: candidates are
+/// capped at 2,000 rows *before* ranking (the `LIKE` scan has no index to
+/// order by), so a very broad query (a common street name with no locality,
+/// state or postcode filter) can miss matches beyond the cap. Narrow the
+/// query when that matters.
+///
 /// Returns an empty list when the query has neither a street nor a locality.
 pub fn geocode(conn: &Connection, query: &GeocodeQuery, limit: usize) -> Result<Vec<AddressMatch>> {
     if query.street.is_empty() && query.locality.is_none() {
@@ -144,7 +150,11 @@ pub fn geocode(conn: &Connection, query: &GeocodeQuery, limit: usize) -> Result<
 
 /// Nearest addresses to a coordinate, closest first (metres).
 pub fn reverse(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Vec<(Address, f64)>> {
+    /// Half-width of the search box in degrees of latitude (~2.2 km).
     const DELTA_DEGREES: f64 = 0.02;
+    // Longitude degrees shrink with latitude: widen the box east-west so
+    // the search reaches the same ground distance in both axes.
+    let lon_delta = DELTA_DEGREES / lat.to_radians().cos().abs().max(0.1);
     let mut stmt = conn
         .prepare(
             "SELECT pid, number_first, number_last, street, street_type, locality, state, \
@@ -155,8 +165,8 @@ pub fn reverse(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
     let mut rows = stmt.query(rusqlite::params![
         lat - DELTA_DEGREES,
         lat + DELTA_DEGREES,
-        lon - DELTA_DEGREES,
-        lon + DELTA_DEGREES,
+        lon - lon_delta,
+        lon + lon_delta,
     ])?;
     let mut results: Vec<(Address, f64)> = Vec::new();
     while let Some(row) = rows.next()? {

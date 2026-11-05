@@ -16,16 +16,27 @@ use std::fmt::Write as _;
 
 use domain::{Node, Problem, Solution};
 
-use crate::graph::{Graph, NodeId};
+use crate::graph::{EdgeId, Graph, NodeId};
 use crate::truck_constraints::TruckProfile;
+
+/// Aggregation key: a real way, or one synthetic edge (which has no way id).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum WayKey {
+    Way(i64),
+    Synthetic(EdgeId),
+}
 
 /// One distinct way used by one route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CorridorRow {
     /// Route index in the solution.
     pub route: usize,
-    /// OSM way id; `None` for synthetic edges (tests/tools without OSM).
+    /// OSM way id; `None` for synthetic edges (tests/tools without OSM),
+    /// which are keyed per edge and identified by `edge_id`.
     pub way_id: Option<i64>,
+    /// The first edge of this way traversed (always known; distinguishes
+    /// synthetic edges from each other).
+    pub edge_id: EdgeId,
     pub highway: Option<String>,
     pub maxweight_tonnes: Option<f64>,
     pub maxheight_m: Option<f64>,
@@ -59,9 +70,10 @@ impl CorridorAudit {
             "route,way_id,highway,traversals,length_km,maxweight_t,maxheight_m,hgv,access,has_limit_data\n",
         );
         for row in &self.rows {
-            let way = row
-                .way_id
-                .map_or_else(|| "synthetic".to_string(), |id| id.to_string());
+            let way = row.way_id.map_or_else(
+                || format!("synthetic:{}", row.edge_id.0),
+                |id| id.to_string(),
+            );
             let _ = writeln!(
                 out,
                 "{},{},{},{},{:.3},{},{},{},{},{}",
@@ -113,12 +125,12 @@ pub fn audit_solution(
     profile: TruckProfile,
 ) -> CorridorAudit {
     let mut audit = CorridorAudit::default();
-    let mut all_way_ids: std::collections::BTreeSet<Option<i64>> =
-        std::collections::BTreeSet::new();
+    let mut all_way_ids: std::collections::BTreeSet<WayKey> = std::collections::BTreeSet::new();
 
     for (route_index, route) in solution.routes.iter().enumerate() {
-        // (way key) -> aggregate for this route.
-        let mut per_route: BTreeMap<Option<i64>, CorridorRow> = BTreeMap::new();
+        // (way key) -> aggregate for this route. Synthetic edges (no way id)
+        // are keyed individually so distinct corridors never merge.
+        let mut per_route: BTreeMap<WayKey, CorridorRow> = BTreeMap::new();
         for pair in route.steps.windows(2) {
             let (from, to) = (pair[0].node, pair[1].node);
             let (Some(&from_graph), Some(&to_graph)) = (
@@ -142,9 +154,14 @@ pub fn audit_solution(
                     || edge.maxheight_m.is_some()
                     || edge.hgv.is_some()
                     || edge.access.is_some();
-                let entry = per_route.entry(edge.way_id).or_insert_with(|| CorridorRow {
+                let key = match edge.way_id {
+                    Some(way) => WayKey::Way(way),
+                    None => WayKey::Synthetic(step.edge),
+                };
+                let entry = per_route.entry(key).or_insert_with(|| CorridorRow {
                     route: route_index,
                     way_id: edge.way_id,
+                    edge_id: step.edge,
                     highway: edge.highway.clone(),
                     maxweight_tonnes: edge.maxweight_tonnes,
                     maxheight_m: edge.maxheight_m,
@@ -158,18 +175,21 @@ pub fn audit_solution(
                 entry.length_km += edge.distance_km;
             }
         }
-        for row in per_route.into_values() {
-            all_way_ids.insert(row.way_id);
+        for (key, row) in per_route {
+            all_way_ids.insert(key);
             audit.rows.push(row);
         }
     }
 
     audit.distinct_ways = all_way_ids.len();
-    let unlimited: std::collections::BTreeSet<Option<i64>> = audit
+    let unlimited: std::collections::BTreeSet<WayKey> = audit
         .rows
         .iter()
         .filter(|row| !row.has_limit_data)
-        .map(|row| row.way_id)
+        .map(|row| match row.way_id {
+            Some(way) => WayKey::Way(way),
+            None => WayKey::Synthetic(row.edge_id),
+        })
         .collect();
     audit.ways_without_limits = unlimited.len();
     audit
@@ -189,12 +209,22 @@ fn node_index(problem: &Problem, node: Node) -> Option<usize> {
     }
 }
 
-/// Quotes a CSV field when it contains a comma or quote.
+/// Quotes a CSV field when it contains a comma, quote or line break, and
+/// neutralises spreadsheet formula prefixes (`=`, `+`, `-`, `@`).
 fn csv_field(value: &str) -> String {
-    if value.contains(',') || value.contains('"') {
-        format!("\"{}\"", value.replace('"', "\"\""))
+    let prefixed = if matches!(value.chars().next(), Some('=' | '+' | '-' | '@')) {
+        format!("'{value}")
     } else {
         value.to_string()
+    };
+    if prefixed.contains(',')
+        || prefixed.contains('"')
+        || prefixed.contains('\n')
+        || prefixed.contains('\r')
+    {
+        format!("\"{}\"", prefixed.replace('"', "\"\""))
+    } else {
+        prefixed
     }
 }
 
@@ -427,6 +457,13 @@ mod tests {
         assert!(csv.contains(",10,primary,"));
         assert!(csv.contains(",no\n") || csv.contains(",no"));
         assert!(csv.contains(",yes"));
+    }
+
+    #[test]
+    fn audit_csv_neutralises_formula_prefixes() {
+        assert_eq!(csv_field("=cmd"), "'=cmd");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("plain"), "plain");
     }
 
     #[test]
