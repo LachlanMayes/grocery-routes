@@ -146,9 +146,10 @@ fn route_sheet_html_escapes_names_and_renders_every_step() {
     assert!(html.contains("D&#39;Souza &amp; &lt;Sam&gt;"));
     assert!(!html.contains("<North>"));
 
-    // One route section; one table row per step plus the header row.
+    // One route section; one table row per step plus the header row. The
+    // returnables ledger (below) adds its own header row and one store row.
     assert!(html.contains("Route 1"));
-    assert_eq!(html.matches("<tr>").count(), 4);
+    assert_eq!(html.matches("<tr>").count(), 4 + 2);
     assert!(html.contains("<td>1</td>"));
     assert!(html.contains("<td class=\"tag\">depot</td>"));
     assert!(html.contains("<td class=\"tag\">store</td>"));
@@ -250,6 +251,36 @@ fn route_sheet_html_without_anchor_has_no_local_column() {
 
     assert!(!html.contains("Local (arrive)"));
     assert!(!html.contains("<p class=\"holiday-note\">"));
+}
+
+#[test]
+fn returnables_section_and_csv_cover_served_stores_only() {
+    let (mut problem, solution) = tiny_fixture();
+    problem.chain_rules.returnables = domain::ReturnablesDefaults {
+        coles: Load::new(1, 1, 0),
+        ..domain::ReturnablesDefaults::default()
+    };
+
+    let html = route_sheet_html(&problem, &solution);
+    assert!(html.contains("<h2>Returnables ledger</h2>"));
+    // Store 0 (Coles) delivered 2/1/0 and handed back 1/1/0: outstanding 1/0/0.
+    assert!(html.contains("<td>1 / 0 / 0</td>"));
+    // The unassigned store appears only in the unassigned section.
+    assert_eq!(html.matches("Woolworths &lt;unassigned&gt;").count(), 1);
+
+    let csv = cli::export::returnables_csv(&problem, &solution);
+    let mut lines = csv.lines();
+    assert!(
+        lines
+            .next()
+            .expect("header")
+            .starts_with("store_id,store,chain,visits,")
+    );
+    assert_eq!(
+        lines.next().expect("one served store"),
+        "0,\"Coles O'Brien & Sons \"\"Fresh\"\"\",Coles,1,2,1,0,1,1,0,1,0,0"
+    );
+    assert_eq!(lines.next(), None, "only served stores get rows");
 }
 
 #[test]

@@ -100,13 +100,25 @@ fn gen_sim_solve_and_export_round_trip() {
     expect_success(export);
     let sheet_path = out_dir.join("route-sheet.html");
     let geojson_path = out_dir.join("routes.geojson");
+    let returnables_path = out_dir.join("returnables.csv");
     assert!(sheet_path.exists(), "missing {}", sheet_path.display());
     assert!(geojson_path.exists(), "missing {}", geojson_path.display());
+    assert!(
+        returnables_path.exists(),
+        "missing {}",
+        returnables_path.display()
+    );
     let document: serde_json::Value =
         serde_json::from_str(&read_text(&geojson_path)).expect("GeoJSON parses");
     assert_eq!(document["type"], "FeatureCollection");
     let features = document["features"].as_array().expect("features array");
     assert_eq!(features.len(), solution.routes.len() + problem.stores.len());
+    let returnables = read_text(&returnables_path);
+    assert!(returnables.starts_with("store_id,store,chain,visits,"));
+    assert!(
+        returnables.lines().count() >= 2,
+        "sim problems collect returnables, so at least one store row is expected"
+    );
 }
 
 #[test]

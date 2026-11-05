@@ -15,6 +15,7 @@ fn reference_options() -> SimOptions {
         depots: 3,
         vehicles: 12,
         seed: 42,
+        christmas_peak: false,
     }
 }
 
@@ -119,6 +120,7 @@ fn counts_below_one_are_clamped() {
         depots: 0,
         vehicles: 0,
         seed: 7,
+        christmas_peak: false,
     });
 
     assert_eq!(problem.stores.len(), 1);
@@ -216,6 +218,80 @@ fn stores_follow_banner_naming_demand_and_window_fixtures() {
         );
         assert_eq!(store.receiving.len(), 1, "store {} windows", store.id);
     }
+}
+
+#[test]
+fn chain_returnables_fixture_is_set() {
+    let problem = generate(&reference_options());
+    assert_eq!(
+        problem.chain_rules.returnables_for(Chain::Coles),
+        Load::new(3, 2, 2)
+    );
+    assert_eq!(
+        problem.chain_rules.returnables_for(Chain::Woolworths),
+        Load::new(3, 2, 2)
+    );
+    assert_eq!(
+        problem.chain_rules.returnables_for(Chain::Aldi),
+        Load::new(2, 1, 1)
+    );
+    assert_eq!(
+        problem.chain_rules.returnables_for(Chain::Iga),
+        Load::new(2, 1, 1)
+    );
+}
+
+#[test]
+fn christmas_peak_uplifts_demand_and_widens_windows() {
+    let base = generate(&reference_options());
+    let mut peak_options = reference_options();
+    peak_options.christmas_peak = true;
+    let peak = generate(&peak_options);
+
+    assert_eq!(
+        peak.name,
+        "sim coles sydney stores=40 depots=3 vehicles=12 seed=42 profile=christmas-peak"
+    );
+    assert!(!base.name.contains("christmas-peak"));
+
+    let mut strictly_higher = 0usize;
+    for (base_store, peak_store) in base.stores.iter().zip(&peak.stores) {
+        assert!(peak_store.demand.ambient >= base_store.demand.ambient);
+        assert!(peak_store.demand.chilled >= base_store.demand.chilled);
+        assert!(peak_store.demand.frozen >= base_store.demand.frozen);
+        if peak_store.demand.total() > base_store.demand.total() {
+            strictly_higher += 1;
+        }
+        for (base_window, peak_window) in base_store.receiving.iter().zip(&peak_store.receiving) {
+            assert!(
+                peak_window.start <= base_window.start,
+                "peak windows should open no later"
+            );
+            assert!(
+                peak_window.end >= base_window.end,
+                "peak windows should close no earlier"
+            );
+        }
+    }
+    assert!(
+        strictly_higher > 0,
+        "peak profile should raise at least one store's demand"
+    );
+    // Everything else about the two scenarios is identical.
+    assert_eq!(base.depots, peak.depots);
+    assert_eq!(base.vehicles, peak.vehicles);
+    assert_eq!(base.drivers, peak.drivers);
+    for (base_store, peak_store) in base.stores.iter().zip(&peak.stores) {
+        assert_eq!(base_store.location, peak_store.location);
+        assert_eq!(base_store.receiving.len(), peak_store.receiving.len());
+    }
+}
+
+#[test]
+fn christmas_peak_is_deterministic() {
+    let mut options = reference_options();
+    options.christmas_peak = true;
+    assert_eq!(json(&generate(&options)), json(&generate(&options)));
 }
 
 #[test]

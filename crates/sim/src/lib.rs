@@ -16,7 +16,8 @@ use std::f64::consts::TAU;
 
 use domain::{
     Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
-    LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    LatLon, Load, Minutes, Problem, ReturnablesDefaults, Shift, Store, StoreId, TimeWindow,
+    Vehicle, VehicleId,
 };
 
 use solver::{parse_solomon_file, solomon_to_problem};
@@ -84,6 +85,10 @@ pub struct SimOptions {
     pub vehicles: usize,
     /// Random seed; the same seed always produces the same problem.
     pub seed: u64,
+    /// Apply the Christmas-peak trading profile: higher demand and wider
+    /// receiving windows (see [`apply_christmas_peak`]). Illustrative
+    /// fixture parameters, not researched operator data.
+    pub christmas_peak: bool,
 }
 
 /// Approximate kilometres per degree of latitude; longitude degrees shrink by
@@ -107,6 +112,18 @@ const VEHICLE_CAPACITIES: [Load; 3] = [
     Load::new(20, 14, 0),
 ];
 
+/// Illustrative Christmas-peak demand uplift per compartment (ambient,
+/// chilled, frozen). Fixture parameters, not researched operator data.
+const PEAK_DEMAND_FACTORS: [f64; 3] = [1.5, 1.4, 1.3];
+
+/// Peak-season receiving windows open this much earlier (clamped to the start
+/// of the horizon).
+const PEAK_WINDOW_OPEN_EARLIER: i64 = 60;
+
+/// Peak-season receiving windows close this much later, reflecting the extra
+/// delivery slots chains run in December.
+const PEAK_WINDOW_CLOSE_LATER: i64 = 120;
+
 /// Generates a deterministic synthetic problem from `options`.
 ///
 /// Layout: up to four cluster centres are scattered 0–35 km around the city
@@ -117,6 +134,8 @@ const VEHICLE_CAPACITIES: [Load; 3] = [
 ///
 /// Counts are clamped to at least one (`stores.max(1)`, `depots.max(1)`,
 /// `vehicles.max(1)`), and [`Problem::name`] reports those effective counts.
+/// With `christmas_peak`, stores get the peak trading profile (higher demand,
+/// wider receiving windows) before the problem is assembled.
 /// Identical options always produce an identical [`Problem`].
 pub fn generate(options: &SimOptions) -> Problem {
     let store_count = options.stores.max(1);
@@ -126,10 +145,15 @@ pub fn generate(options: &SimOptions) -> Problem {
     let mut rng = StdRng::seed_from_u64(options.seed);
     let centre = city_centre(options.city);
 
+    let mut stores = build_stores(&mut rng, options.chain, options.city, centre, store_count);
+    if options.christmas_peak {
+        apply_christmas_peak(&mut stores);
+    }
+
     Problem {
         name: problem_name(options, store_count, depot_count, vehicle_count),
         depots: build_depots(&mut rng, options.city, centre, depot_count),
-        stores: build_stores(&mut rng, options.chain, options.city, centre, store_count),
+        stores,
         vehicles: build_vehicles(vehicle_count, depot_count),
         drivers: build_drivers(vehicle_count),
         cost: CostModel {
@@ -138,19 +162,66 @@ pub fn generate(options: &SimOptions) -> Problem {
             per_hour_cents: 4_500,
             late_per_min_cents: 0,
         },
-        chain_rules: ChainRules::default(),
+        chain_rules: build_chain_rules(),
         curfews: CurfewRules::default(),
         horizon_start: None,
     }
 }
 
+/// Illustrative per-banner returnables fixture: empties (roll cages) the
+/// stores hand back on each visit. Fixture parameters, not researched
+/// operator data.
+fn build_chain_rules() -> ChainRules {
+    ChainRules {
+        returnables: ReturnablesDefaults {
+            coles: Load::new(3, 2, 2),
+            woolworths: Load::new(3, 2, 2),
+            aldi: Load::new(2, 1, 1),
+            iga: Load::new(2, 1, 1),
+        },
+        ..ChainRules::default()
+    }
+}
+
+/// Applies the Christmas-peak trading profile in place: a per-compartment
+/// demand uplift (rounded up) and wider receiving windows.
+///
+/// Illustrative fixture parameters, not researched operator data: the point
+/// is a deterministic high-pressure scenario that stresses vehicle capacity
+/// and receiving windows.
+fn apply_christmas_peak(stores: &mut [Store]) {
+    for store in stores {
+        store.demand = Load::new(
+            uplift(store.demand.ambient, PEAK_DEMAND_FACTORS[0]),
+            uplift(store.demand.chilled, PEAK_DEMAND_FACTORS[1]),
+            uplift(store.demand.frozen, PEAK_DEMAND_FACTORS[2]),
+        );
+        for window in &mut store.receiving {
+            window.start =
+                Minutes::from_minutes((window.start.minutes() - PEAK_WINDOW_OPEN_EARLIER).max(0));
+            window.end = Minutes::from_minutes(window.end.minutes() + PEAK_WINDOW_CLOSE_LATER);
+        }
+    }
+}
+
+/// Multiplies a handling-unit count by `factor`, rounding up. Never decreases
+/// the count.
+fn uplift(units: u32, factor: f64) -> u32 {
+    ((f64::from(units) * factor).ceil() as u32).max(units)
+}
+
 /// The scenario label, e.g. `sim coles sydney stores=40 depots=3 vehicles=12 seed=42`.
 fn problem_name(options: &SimOptions, stores: usize, depots: usize, vehicles: usize) -> String {
     format!(
-        "sim {} {} stores={stores} depots={depots} vehicles={vehicles} seed={}",
+        "sim {} {} stores={stores} depots={depots} vehicles={vehicles} seed={}{}",
         chain_slug(options.chain),
         options.city.name(),
         options.seed,
+        if options.christmas_peak {
+            " profile=christmas-peak"
+        } else {
+            ""
+        },
     )
 }
 

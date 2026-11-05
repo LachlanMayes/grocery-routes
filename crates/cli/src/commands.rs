@@ -12,7 +12,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use domain::{Chain, Load, Node, Problem, Solution};
 use sim::{SimOptions, generate};
 
-use crate::export::{format_aud_cents, route_sheet_html, routes_geojson};
+use crate::export::{format_aud_cents, returnables_csv, route_sheet_html, routes_geojson};
 
 /// The `grocery-routes` command line.
 #[derive(Debug, Parser)]
@@ -69,6 +69,10 @@ pub struct GenSimArgs {
     /// `--horizon-start` to resolve local civil times in the export.
     #[arg(long)]
     pub timezones: bool,
+    /// Apply the Christmas-peak trading profile: higher demand and wider
+    /// receiving windows (illustrative fixture parameters).
+    #[arg(long)]
+    pub christmas_peak: bool,
     /// File the problem JSON is written to.
     #[arg(long)]
     pub out: PathBuf,
@@ -149,6 +153,7 @@ pub fn run_gen_sim(args: &GenSimArgs) -> anyhow::Result<()> {
         depots: args.depots,
         vehicles: args.vehicles,
         seed: args.seed,
+        christmas_peak: args.christmas_peak,
     };
     let mut problem = sim::generate(&options);
     if args.timezones {
@@ -192,6 +197,11 @@ pub fn run_gen_sim(args: &GenSimArgs) -> anyhow::Result<()> {
         capacity.frozen,
         capacity.total()
     );
+    if args.christmas_peak {
+        println!(
+            "  profile: christmas-peak (demand uplift + wider receiving windows — illustrative fixtures)"
+        );
+    }
     println!("wrote {}", args.out.display());
     Ok(())
 }
@@ -420,12 +430,16 @@ pub fn run_export(args: &ExportArgs) -> anyhow::Result<()> {
         .with_context(|| format!("creating output directory {}", args.out_dir.display()))?;
     let sheet_path = args.out_dir.join("route-sheet.html");
     let geojson_path = args.out_dir.join("routes.geojson");
+    let returnables_path = args.out_dir.join("returnables.csv");
     std::fs::write(&sheet_path, route_sheet_html(&problem, &solution))
         .with_context(|| format!("writing {}", sheet_path.display()))?;
     std::fs::write(&geojson_path, routes_geojson(&problem, &solution))
         .with_context(|| format!("writing {}", geojson_path.display()))?;
+    std::fs::write(&returnables_path, returnables_csv(&problem, &solution))
+        .with_context(|| format!("writing {}", returnables_path.display()))?;
     println!("route sheet: {}", sheet_path.display());
     println!("geojson: {}", geojson_path.display());
+    println!("returnables: {}", returnables_path.display());
     Ok(())
 }
 

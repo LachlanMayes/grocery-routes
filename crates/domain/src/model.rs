@@ -49,6 +49,11 @@ pub struct ChainRules {
     pub aldi: Vec<TimeWindow>,
     /// Default receiving windows for IGA stores.
     pub iga: Vec<TimeWindow>,
+    /// Empties each banner's stores hand back per visit, used by
+    /// [`crate::ledger`]. Illustrative fixture data; defaults to "collect
+    /// nothing".
+    #[serde(default)]
+    pub returnables: ReturnablesDefaults,
 }
 
 impl ChainRules {
@@ -70,6 +75,38 @@ impl ChainRules {
             return Some(&store.receiving);
         }
         self.windows_for(store.chain)
+    }
+
+    /// Empties (roll cages) a store of `chain` hands back per visit, for the
+    /// returnables ledger. Illustrative fixture data; zeros mean "collect
+    /// nothing".
+    pub fn returnables_for(&self, chain: Chain) -> Load {
+        self.returnables.for_chain(chain)
+    }
+}
+
+/// Empties (roll cages) each banner's stores hand back on a visit, used by
+/// [`crate::ledger`] to balance issued cages against collections.
+///
+/// These are illustrative fixture defaults, not researched operator data;
+/// `Load::ZERO` (the default) means the banner collects nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReturnablesDefaults {
+    pub coles: Load,
+    pub woolworths: Load,
+    pub aldi: Load,
+    pub iga: Load,
+}
+
+impl ReturnablesDefaults {
+    /// The collection fixture for `chain`.
+    pub fn for_chain(&self, chain: Chain) -> Load {
+        match chain {
+            Chain::Coles => self.coles,
+            Chain::Woolworths => self.woolworths,
+            Chain::Aldi => self.aldi,
+            Chain::Iga => self.iga,
+        }
     }
 }
 
@@ -1299,7 +1336,21 @@ mod tests {
                 Minutes::from_minutes(1200),
             )],
             iga: Vec::new(),
+            returnables: ReturnablesDefaults {
+                coles: Load::new(2, 2, 1),
+                ..ReturnablesDefaults::default()
+            },
         };
+        assert_eq!(
+            rules.returnables_for(Chain::Coles),
+            Load::new(2, 2, 1),
+            "chain returnables lookup"
+        );
+        assert_eq!(
+            rules.returnables_for(Chain::Iga),
+            Load::ZERO,
+            "unset banners collect nothing"
+        );
 
         assert_eq!(
             rules
@@ -1332,6 +1383,7 @@ mod tests {
             woolworths: vec![],
             aldi: vec![],
             iga: vec![],
+            returnables: ReturnablesDefaults::default(),
         };
 
         // Store with explicit windows uses those, not chain defaults
@@ -1368,6 +1420,7 @@ mod tests {
             woolworths: vec![],
             aldi: vec![],
             iga: vec![],
+            returnables: ReturnablesDefaults::default(),
         };
 
         // Store with no receiving windows uses chain defaults

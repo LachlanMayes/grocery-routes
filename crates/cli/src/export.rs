@@ -70,6 +70,9 @@ pub fn route_sheet_html(problem: &Problem, solution: &Solution) -> String {
     for (index, route) in solution.routes.iter().enumerate() {
         blocks.push(route_section_html(problem, index, route));
     }
+    if let Some(section) = returnables_section_html(problem, solution) {
+        blocks.push(section);
+    }
     if !solution.unassigned.is_empty() {
         blocks.push(unassigned_section_html(problem, &solution.unassigned));
     }
@@ -250,6 +253,97 @@ fn unassigned_section_html(problem: &Problem, unassigned: &[StoreId]) -> String 
     format!("<section class=\"unassigned\">\n<h2>Unassigned</h2>\n<ul>\n{items}\n</ul>\n</section>")
 }
 
+/// Renders the returnables ledger as a section, when the plan serves at
+/// least one store.
+///
+/// Collection figures come from the problem's per-banner fixtures; see
+/// `domain::ledger`.
+fn returnables_section_html(problem: &Problem, solution: &Solution) -> Option<String> {
+    let ledger = domain::ledger(problem, solution);
+    if ledger.stores.is_empty() {
+        return None;
+    }
+    let rows: Vec<String> = ledger
+        .stores
+        .iter()
+        .map(|balance| {
+            let (name, chain) = problem.store(balance.store).map_or_else(
+                || (format!("store {}", balance.store), "—".to_string()),
+                |store| (store.name.clone(), store.chain.to_string()),
+            );
+            format!(
+                "<tr><td>{}</td><td>{chain}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                escape_html(&name),
+                balance.visits,
+                format_load(balance.issued),
+                format_load(balance.collected),
+                format_load(balance.outstanding),
+            )
+        })
+        .collect();
+    Some(format!(
+        "<section class=\"returnables\">\n\
+         <h2>Returnables ledger</h2>\n\
+         <p class=\"meta\">Cages issued with deliveries against empties collected per visit. \
+         Collection figures are illustrative fixtures, not researched operator data.</p>\n\
+         <table>\n\
+         <thead><tr><th>Store</th><th>Chain</th><th>Visits</th>\
+         <th>Issued (amb / chl / frz)</th><th>Collected (amb / chl / frz)</th>\
+         <th>Outstanding (amb / chl / frz)</th></tr></thead>\n\
+         <tbody>\n{}\n\
+         <tr class=\"total\"><td>Total</td><td></td><td></td><td>{}</td><td>{}</td><td>{}</td></tr>\n\
+         </tbody>\n</table>\n</section>",
+        rows.join("\n"),
+        format_load(ledger.total_issued),
+        format_load(ledger.total_collected),
+        format_load(ledger.total_outstanding),
+    ))
+}
+
+/// Renders the returnables ledger as CSV: a header plus one row per served
+/// store. Store names are quoted when they contain commas or quotes.
+pub fn returnables_csv(problem: &Problem, solution: &Solution) -> String {
+    let ledger = domain::ledger(problem, solution);
+    let mut out = String::from(
+        "store_id,store,chain,visits,\
+         issued_ambient,issued_chilled,issued_frozen,\
+         collected_ambient,collected_chilled,collected_frozen,\
+         outstanding_ambient,outstanding_chilled,outstanding_frozen\n",
+    );
+    for balance in &ledger.stores {
+        let (name, chain) = problem.store(balance.store).map_or_else(
+            || (format!("store {}", balance.store), "unknown".to_string()),
+            |store| (store.name.clone(), store.chain.to_string()),
+        );
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            balance.store.0,
+            csv_field(&name),
+            csv_field(&chain),
+            balance.visits,
+            balance.issued.ambient,
+            balance.issued.chilled,
+            balance.issued.frozen,
+            balance.collected.ambient,
+            balance.collected.chilled,
+            balance.collected.frozen,
+            balance.outstanding.ambient,
+            balance.outstanding.chilled,
+            balance.outstanding.frozen,
+        ));
+    }
+    out
+}
+
+/// Quotes a CSV field when it contains a comma or quote.
+fn csv_field(value: &str) -> String {
+    if value.contains(',') || value.contains('"') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 /// Formats a load as `ambient / chilled / frozen` handling units.
 fn format_load(load: Load) -> String {
     format!("{} / {} / {}", load.ambient, load.chilled, load.frozen)
@@ -334,7 +428,9 @@ p.meta { color: #444; }
 p.holiday-note { background: #fff3cd; border: 1px solid #e0c878; padding: 0.5rem 0.75rem; border-radius: 4px; }
 p.attribution { color: #666; font-size: 0.85rem; margin-top: 2rem; }
 section.route { margin-top: 2rem; }
+section.returnables { margin-top: 2rem; }
 section.unassigned { margin-top: 2rem; }
+tr.total td { font-weight: 600; }
 table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
 th, td { border: 1px solid #ccc; padding: 0.25rem 0.5rem; text-align: left; }
 th { background: #f4f4f4; }
