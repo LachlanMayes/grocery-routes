@@ -346,8 +346,13 @@ pub fn solve_lns(
         let candidate_cost = candidate.total_cost_cents;
         let delta = candidate_cost as f64 - current_cost as f64;
 
+        // A corrupted candidate is never accepted, no matter how cheap it
+        // looks (dropping stores lowers apparent cost). Skip it entirely.
+        let candidate_valid = stores_partition_valid(problem, &candidate);
         let mut accepted = false;
-        if delta < 0.0 {
+        if !candidate_valid {
+            no_improve += 1;
+        } else if delta < 0.0 {
             let candidate_clone = candidate.clone();
             current = candidate;
             accepted = true;
@@ -415,12 +420,17 @@ pub fn solve_lns(
     );
 
     let solution = lns_to_solution(problem, global_best);
-    if solution.validate(problem).is_ok() {
-        solution
-    } else {
+    if let Err(violations) = solution.validate(problem) {
         eprintln!("LNS produced invalid solution, falling back to greedy:");
-        plan_with_matrix(problem, matrix.clone())
+        for violation in violations.iter().take(10) {
+            eprintln!("  violation: {violation}");
+        }
+        if violations.len() > 10 {
+            eprintln!("  ... and {} more", violations.len() - 10);
+        }
+        return plan_with_matrix(problem, matrix.clone());
     }
+    solution
 }
 
 fn select_operator_weighted(
@@ -502,6 +512,74 @@ fn hash_problem(problem: &Problem) -> u64 {
     hasher.finish()
 }
 
+/// Removes every occurrence of the given store ids from the solution's routes.
+///
+/// Matching is by store identity, never by position, so interacting removals
+/// cannot shift indices and delete the wrong step (or a route's end depot).
+/// Routes left with no store steps are dropped entirely. Returns the ids that
+/// were actually removed, in route order.
+fn remove_stores_by_id(solution: &mut LNSSolution, selected: &HashSet<StoreId>) -> Vec<StoreId> {
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    let mut removed = Vec::new();
+    for route in &mut solution.routes {
+        let mut steps = std::mem::take(&mut route.scheduled.steps);
+        steps.retain(|step| match step.node {
+            Node::Store(id) if selected.contains(&id) => {
+                removed.push(id);
+                false
+            }
+            _ => true,
+        });
+        route.scheduled.steps = steps;
+    }
+    solution.routes.retain(|route| {
+        route
+            .scheduled
+            .steps
+            .iter()
+            .any(|step| matches!(step.node, Node::Store(_)))
+    });
+    removed
+}
+
+/// True when every store in the problem appears exactly once across the
+/// solution's routes and its unassigned list.
+///
+/// Ruin/recreate candidates are accepted only when this holds, so a corrupted
+/// candidate can never displace a valid incumbent in the acceptance loop or
+/// in `global_best`.
+fn stores_partition_valid(problem: &Problem, solution: &LNSSolution) -> bool {
+    let mut seen = vec![false; problem.stores.len()];
+    let mut claim = |id: StoreId| -> bool {
+        let index = id.0 as usize;
+        match seen.get_mut(index) {
+            Some(slot) => {
+                let was_seen = *slot;
+                *slot = true;
+                !was_seen
+            }
+            None => false,
+        }
+    };
+    for route in &solution.routes {
+        for step in &route.scheduled.steps {
+            if let Node::Store(id) = step.node {
+                if !claim(id) {
+                    return false;
+                }
+            }
+        }
+    }
+    for &id in &solution.unassigned {
+        if !claim(id) {
+            return false;
+        }
+    }
+    seen.iter().all(|&claimed| claimed)
+}
+
 /// -----------------------------------------------------------------------
 /// Ruin operators
 /// -----------------------------------------------------------------------
@@ -547,19 +625,12 @@ fn random_removal(
         }
     }
     all_stores.shuffle(rng);
-    let mut removed = Vec::new();
-    for _ in 0..k {
-        if all_stores.is_empty() {
-            break;
-        }
-        let (route_idx, pos, store_id) = all_stores.pop().unwrap();
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
-    }
+    let selected: HashSet<StoreId> = all_stores
+        .into_iter()
+        .take(k)
+        .map(|(_, _, id)| id)
+        .collect();
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -624,16 +695,12 @@ fn worst_removal(
         };
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
-    let mut removed = Vec::new();
-    for i in 0..k {
-        let (_, route_idx, pos, store_id) = store_costs[i];
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
-    }
+    let selected: HashSet<StoreId> = store_costs
+        .into_iter()
+        .take(k)
+        .map(|(_, _, _, id)| id)
+        .collect();
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -677,42 +744,30 @@ fn proximity_removal(
         };
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
-    let mut removed = Vec::new();
-    let (seed_route_idx, seed_pos, seed_store_id) =
-        all_stores[rng.random_range(0..all_stores.len())];
-    removed.push(seed_store_id);
-    if let Some(route) = current.routes.get_mut(seed_route_idx) {
-        if seed_pos < route.scheduled.steps.len() {
-            route.scheduled.steps.remove(seed_pos);
-        }
-    }
-    let mut neighbors: Vec<(f64, usize, usize, StoreId)> = Vec::new();
-    for (r_idx, route) in current.routes.iter().enumerate() {
+    let (_, _, seed_store_id) = all_stores[rng.random_range(0..all_stores.len())];
+    let mut selected: HashSet<StoreId> = HashSet::from([seed_store_id]);
+    let mut neighbors: Vec<(f64, StoreId)> = Vec::new();
+    for route in current.routes.iter() {
         let route_len = route.scheduled.steps.len();
         if route_len < 3 {
             continue;
         }
-        for pos in 1..route_len - 1 {
-            if let Node::Store(id) = route.scheduled.steps[pos].node {
+        for step in &route.scheduled.steps[1..route_len - 1] {
+            if let Node::Store(id) = step.node {
                 if id == seed_store_id {
                     continue;
                 }
                 if let Some(d) = matrix.distance_km(Node::Store(seed_store_id), Node::Store(id)) {
-                    neighbors.push((d, r_idx, pos, id));
+                    neighbors.push((d, id));
                 }
             }
         }
     }
     neighbors.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    for i in 0..(k - 1).min(neighbors.len()) {
-        let (_, route_idx, pos, store_id) = neighbors[i];
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
+    for (_, store_id) in neighbors.into_iter().take(k.saturating_sub(1)) {
+        selected.insert(store_id);
     }
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -757,16 +812,13 @@ fn shaw_removal(
         };
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
-    let mut removed = Vec::new();
-    let (seed_route_idx, seed_pos, seed_store_id) =
-        all_stores[rng.random_range(0..all_stores.len())];
-    removed.push(seed_store_id);
-    if let Some(route) = current.routes.get_mut(seed_route_idx) {
-        if seed_pos < route.scheduled.steps.len() {
-            route.scheduled.steps.remove(seed_pos);
-        }
-    }
+    let (_, _, seed_store_id) = all_stores[rng.random_range(0..all_stores.len())];
+    let mut selected: HashSet<StoreId> = HashSet::from([seed_store_id]);
     let Some(seed_store) = problem.store(seed_store_id) else {
+        // Unknown seed store: remove it anyway so it is never lost silently.
+        let removed = remove_stores_by_id(&mut current, &selected);
+        current.unassigned.extend(&removed);
+        re_schedule_routes(problem, matrix, &mut current);
         return RuinResult {
             _removed_stores: removed,
             modified_solution: current,
@@ -785,14 +837,14 @@ fn shaw_removal(
         .min()
         .unwrap_or(i64::MAX);
     let _seed_loc = seed_store.location;
-    let mut relatedness: Vec<(f64, usize, usize, StoreId)> = Vec::new();
-    for (r_idx, route) in current.routes.iter().enumerate() {
+    let mut relatedness: Vec<(f64, StoreId)> = Vec::new();
+    for route in current.routes.iter() {
         let route_len = route.scheduled.steps.len();
         if route_len < 3 {
             continue;
         }
-        for pos in 1..route_len - 1 {
-            if let Node::Store(id) = route.scheduled.steps[pos].node {
+        for step in &route.scheduled.steps[1..route_len - 1] {
+            if let Node::Store(id) = step.node {
                 if id == seed_store_id {
                     continue;
                 }
@@ -825,20 +877,15 @@ fn shaw_removal(
                     - (seed_store.demand.total() as i64 - store.demand.total() as i64).abs() as f64
                         / (seed_store.demand.total() as f64 + store.demand.total() as f64).max(1.0);
                 let rel = 0.4 * tw_overlap + 0.4 * dist_sim + 0.2 * demand_sim;
-                relatedness.push((rel, r_idx, pos, id));
+                relatedness.push((rel, id));
             }
         }
     }
     relatedness.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    for i in 0..(k - 1).min(relatedness.len()) {
-        let (_, route_idx, pos, store_id) = relatedness[i];
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
+    for (_, store_id) in relatedness.into_iter().take(k.saturating_sub(1)) {
+        selected.insert(store_id);
     }
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -899,16 +946,12 @@ fn time_window_removal(
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
     store_tw_scores.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut removed = Vec::new();
-    for i in 0..k {
-        let (_, route_idx, pos, store_id) = store_tw_scores[i];
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
-    }
+    let selected: HashSet<StoreId> = store_tw_scores
+        .into_iter()
+        .take(k)
+        .map(|(_, _, _, id)| id)
+        .collect();
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -936,20 +979,23 @@ fn route_removal(
     let num_routes = rng.random_range(1..=max_routes);
     let mut route_indices: Vec<usize> = (0..current.routes.len()).collect();
     route_indices.shuffle(rng);
-    let mut removed = Vec::new();
+    let mut selected: HashSet<StoreId> = HashSet::new();
     for i in 0..num_routes {
         let route_idx = route_indices[i];
-        if route_idx >= current.routes.len() {
-            continue;
+        if let Some(route) = current.routes.get(route_idx) {
+            selected.extend(
+                route
+                    .scheduled
+                    .steps
+                    .iter()
+                    .filter_map(|step| match step.node {
+                        Node::Store(id) => Some(id),
+                        _ => None,
+                    }),
+            );
         }
-        let route = &current.routes[route_idx];
-        for step in &route.scheduled.steps {
-            if let Node::Store(id) = step.node {
-                removed.push(id);
-            }
-        }
-        current.routes[route_idx].scheduled.steps.clear();
     }
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
@@ -1015,7 +1061,6 @@ fn cluster_removal(
     let max_k = ruin_size_range.1.min(route_indices.len() * 3);
     let min_k = ruin_size_range.0.min(max_k);
     let k = rng.random_range(min_k..=max_k);
-    let mut removed = Vec::new();
     let mut all_stores_in_cluster = Vec::new();
     for &r_idx in &route_indices {
         if r_idx >= current.routes.len() {
@@ -1024,20 +1069,13 @@ fn cluster_removal(
         let route = &current.routes[r_idx];
         for pos in 1..route.scheduled.steps.len().saturating_sub(1) {
             if let Node::Store(id) = route.scheduled.steps[pos].node {
-                all_stores_in_cluster.push((r_idx, pos, id));
+                all_stores_in_cluster.push(id);
             }
         }
     }
     all_stores_in_cluster.shuffle(rng);
-    for i in 0..k.min(all_stores_in_cluster.len()) {
-        let (route_idx, pos, store_id) = all_stores_in_cluster[i];
-        if let Some(route) = current.routes.get_mut(route_idx) {
-            if pos < route.scheduled.steps.len() {
-                route.scheduled.steps.remove(pos);
-                removed.push(store_id);
-            }
-        }
-    }
+    let selected: HashSet<StoreId> = all_stores_in_cluster.into_iter().take(k).collect();
+    let removed = remove_stores_by_id(&mut current, &selected);
     current.unassigned.extend(&removed);
     re_schedule_routes(problem, matrix, &mut current);
     RuinResult {
