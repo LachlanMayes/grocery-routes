@@ -12,6 +12,7 @@
 //! - Cache matrices keyed by problem + vehicle profile
 
 pub mod cached_matrix;
+pub mod ch;
 pub mod curated;
 pub mod graph;
 pub mod osm_ingest;
@@ -19,7 +20,8 @@ pub mod router;
 pub mod timed;
 pub mod truck_constraints;
 
-pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey};
+pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey, MatrixStrategy};
+pub use ch::{ChError, ContractionHierarchy};
 pub use curated::{CuratedConstraints, CuratedEntry, CuratedError};
 pub use graph::{EdgeId, Graph, NodeId};
 pub use router::{RouteResult, Router};

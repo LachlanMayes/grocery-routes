@@ -125,6 +125,11 @@ pub struct SolveArgs {
     /// only). Requires `--osm`. See `constraints/README.md`.
     #[arg(long)]
     pub constraints: Option<PathBuf>,
+    /// Build distance matrices with a contraction hierarchy (prepared once,
+    /// time-optimal queries) instead of per-source Dijkstra. Requires
+    /// `--osm`; see `routing::ch` for the time-vs-distance trade-off.
+    #[arg(long)]
+    pub ch: bool,
     /// Re-schedule the solved plan with time-dependent (curfew-aware) leg
     /// times: a truck waits before entering a road class banned during its
     /// traversal window, and stores whose waits no longer fit move to
@@ -266,6 +271,14 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     if args.constraints.is_some() && args.osm.is_none() {
         anyhow::bail!("--constraints requires --osm (constraints are folded onto the OSM graph)");
     }
+    if args.ch && args.osm.is_none() {
+        anyhow::bail!("--ch requires --osm (a contraction hierarchy indexes the road graph)");
+    }
+    let strategy = if args.ch {
+        routing::MatrixStrategy::ContractionHierarchy
+    } else {
+        routing::MatrixStrategy::Dijkstra
+    };
     let curfew_timezone = if args.enforce_curfews {
         Some(resolve_curfew_timezone(args, &problem)?)
     } else {
@@ -300,25 +313,30 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
                 constraints_path.display()
             );
         }
+        if args.ch {
+            println!("  matrix strategy: contraction hierarchy (time-optimal)");
+        }
         let solved = if args.ls {
             if args.repeat > 1 {
-                solver::solve_with_lns_routing_multistart(
+                solver::solve_with_lns_routing_multistart_with(
                     &problem,
                     solver::LNSConfig::default(),
                     &mut cached,
                     profile,
+                    strategy,
                     args.repeat,
                 )?
             } else {
-                solver::solve_with_lns_routing(
+                solver::solve_with_lns_routing_with(
                     &problem,
                     solver::LNSConfig::default(),
                     &mut cached,
                     profile,
+                    strategy,
                 )?
             }
         } else {
-            solver::solve_greedy_routing(&problem, &mut cached, profile)?
+            solver::solve_greedy_routing_with(&problem, &mut cached, profile, strategy)?
         };
         cache = Some(cached);
         solved

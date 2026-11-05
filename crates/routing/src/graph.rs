@@ -184,6 +184,11 @@ impl Graph {
         self.edges.get(&id)
     }
 
+    /// Returns a mutable reference to an edge by id.
+    pub fn edge_mut(&mut self, id: EdgeId) -> Option<&mut GraphEdge> {
+        self.edges.get_mut(&id)
+    }
+
     /// Iterates over all nodes in the graph.
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, &GraphNode)> {
         self.nodes.iter().map(|(id, node)| (*id, node))

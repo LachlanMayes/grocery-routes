@@ -22,15 +22,28 @@ pub struct MatrixEntry {
     pub duration_minutes: i64,
 }
 
+/// How shortest paths are computed when a matrix is built.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub enum MatrixStrategy {
+    /// One Dijkstra per source (distance-optimal, the default).
+    #[default]
+    Dijkstra,
+    /// One contraction-hierarchy preparation plus `n²` fast queries
+    /// (time-optimal; see [`crate::ch`]).
+    ContractionHierarchy,
+}
+
 /// Key for caching: a problem's node set plus a truck profile.
 ///
-/// The matrix depends on which nodes exist and which truck profile is used
-/// (different profiles may be forbidden from different edges).
+/// The matrix depends on which nodes exist, which truck profile is used
+/// (different profiles may be forbidden from different edges) and how paths
+/// are computed (see [`MatrixStrategy`]).
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct MatrixKey {
     /// Sorted list of node ids (depots then stores) that define the matrix.
     pub node_ids: Vec<NodeId>,
     pub profile: TruckProfile,
+    pub strategy: MatrixStrategy,
 }
 
 /// Builds and caches road-network distance/duration matrices.
@@ -104,7 +117,7 @@ impl CachedMatrix {
     }
 
     /// Computes (or retrieves from cache) the distance/duration matrix for
-    /// `problem` using `profile` truck constraints.
+    /// `problem` using `profile` truck constraints and [`MatrixStrategy::Dijkstra`].
     ///
     /// The matrix is row-major over `problem` nodes: depots first (in vector
     /// order), then stores (in vector order). Entry `[i][j]` is the
@@ -116,6 +129,17 @@ impl CachedMatrix {
         problem: &Problem,
         profile: TruckProfile,
     ) -> anyhow::Result<Option<Vec<Vec<Option<MatrixEntry>>>>> {
+        self.matrix_for_with(problem, profile, MatrixStrategy::Dijkstra)
+    }
+
+    /// [`CachedMatrix::matrix_for`] with an explicit path-computation
+    /// strategy. Results are cached per strategy.
+    pub fn matrix_for_with(
+        &mut self,
+        problem: &Problem,
+        profile: TruckProfile,
+        strategy: MatrixStrategy,
+    ) -> anyhow::Result<Option<Vec<Vec<Option<MatrixEntry>>>>> {
         let graph = self
             .graph
             .as_ref()
@@ -126,6 +150,7 @@ impl CachedMatrix {
         let key = MatrixKey {
             node_ids: node_ids.clone(),
             profile,
+            strategy,
         };
 
         if let Some(cached) = self.matrices.get(&key) {
@@ -134,6 +159,17 @@ impl CachedMatrix {
 
         let n = node_ids.len();
         let mut matrix: Vec<Vec<Option<MatrixEntry>>> = vec![vec![None; n]; n];
+
+        // For the CH strategy the hierarchy is prepared once and answers
+        // every pair; for Dijkstra each pair runs its own search (one-way
+        // roads mean i->j and j->i are not symmetric).
+        let mut hierarchy = match strategy {
+            MatrixStrategy::Dijkstra => None,
+            MatrixStrategy::ContractionHierarchy => Some(
+                crate::ch::ContractionHierarchy::build(graph, profile)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+            ),
+        };
 
         for i in 0..n {
             matrix[i][i] = Some(MatrixEntry {
@@ -144,10 +180,10 @@ impl CachedMatrix {
                 if i == j {
                     continue;
                 }
-                // Run Dijkstra separately for each direction — one-way roads
-                // mean i->j and j->i can have different distances or one may
-                // be unreachable. Do not assume symmetry.
-                let result = Router::shortest_path(graph, node_ids[i], node_ids[j], profile);
+                let result = match &mut hierarchy {
+                    Some(hierarchy) => hierarchy.shortest_path(node_ids[i], node_ids[j]),
+                    None => Router::shortest_path(graph, node_ids[i], node_ids[j], profile),
+                };
                 matrix[i][j] = result.map(|r| MatrixEntry {
                     distance_km: r.distance_km,
                     duration_minutes: r.duration_minutes,
@@ -479,6 +515,30 @@ mod tests {
             hgv_matrix[0][1], None,
             "HGV should find no path when edge is hgv=no"
         );
+    }
+
+    #[test]
+    fn contraction_hierarchy_matrix_matches_dijkstra_on_a_line_graph() {
+        let graph = build_line_graph();
+        let problem = test_problem_with_nodes(vec![
+            LatLon::new(-33.87, 151.21),
+            LatLon::new(-33.87, 151.30),
+        ]);
+        let profile = TruckProfile::default();
+
+        let mut cache = CachedMatrix::new();
+        cache.graph = Some(graph.clone());
+        let dijkstra = cache
+            .matrix_for_with(&problem, profile, MatrixStrategy::Dijkstra)
+            .expect("dijkstra matrix builds")
+            .expect("graph loaded");
+        let hierarchy = cache
+            .matrix_for_with(&problem, profile, MatrixStrategy::ContractionHierarchy)
+            .expect("ch matrix builds")
+            .expect("graph loaded");
+        assert_eq!(dijkstra, hierarchy);
+        // Both strategies are cached separately.
+        assert_eq!(cache.cached_count(), 2);
     }
 
     #[test]

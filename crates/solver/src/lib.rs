@@ -40,7 +40,7 @@ pub use matrix::{
 };
 pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
 #[allow(unused_imports)]
-pub use routing::{CachedMatrix, TruckProfile};
+pub use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
 
 use anyhow;
 use domain::{Problem, Solution};
@@ -149,8 +149,26 @@ pub fn solve_with_lns_routing(
     cached_matrix: &mut CachedMatrix,
     profile: TruckProfile,
 ) -> anyhow::Result<Solution> {
+    solve_with_lns_routing_with(
+        problem,
+        config,
+        cached_matrix,
+        profile,
+        MatrixStrategy::Dijkstra,
+    )
+}
+
+/// [`solve_with_lns_routing`] with an explicit matrix strategy; see
+/// [`routing::MatrixStrategy`].
+pub fn solve_with_lns_routing_with(
+    problem: &Problem,
+    config: LNSConfig,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+    strategy: MatrixStrategy,
+) -> anyhow::Result<Solution> {
     let entries = cached_matrix
-        .matrix_for(problem, profile)?
+        .matrix_for_with(problem, profile, strategy)?
         .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
     let node_count = problem.depots.len() + problem.stores.len();
     let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
@@ -231,8 +249,27 @@ pub fn solve_with_lns_routing_multistart(
     profile: TruckProfile,
     repeats: usize,
 ) -> anyhow::Result<Solution> {
+    solve_with_lns_routing_multistart_with(
+        problem,
+        config,
+        cached_matrix,
+        profile,
+        MatrixStrategy::Dijkstra,
+        repeats,
+    )
+}
+
+/// [`solve_with_lns_routing_multistart`] with an explicit matrix strategy.
+pub fn solve_with_lns_routing_multistart_with(
+    problem: &Problem,
+    config: LNSConfig,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+    strategy: MatrixStrategy,
+    repeats: usize,
+) -> anyhow::Result<Solution> {
     let entries = cached_matrix
-        .matrix_for(problem, profile)?
+        .matrix_for_with(problem, profile, strategy)?
         .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
     let node_count = problem.depots.len() + problem.stores.len();
     let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
@@ -250,8 +287,18 @@ pub fn solve_greedy_routing(
     cached_matrix: &mut CachedMatrix,
     profile: TruckProfile,
 ) -> anyhow::Result<Solution> {
+    solve_greedy_routing_with(problem, cached_matrix, profile, MatrixStrategy::Dijkstra)
+}
+
+/// [`solve_greedy_routing`] with an explicit matrix strategy.
+pub fn solve_greedy_routing_with(
+    problem: &Problem,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+    strategy: MatrixStrategy,
+) -> anyhow::Result<Solution> {
     let entries = cached_matrix
-        .matrix_for(problem, profile)?
+        .matrix_for_with(problem, profile, strategy)?
         .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
     let node_count = problem.depots.len() + problem.stores.len();
     let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
