@@ -100,6 +100,7 @@ fn metro_problem() -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

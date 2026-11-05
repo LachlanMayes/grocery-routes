@@ -120,6 +120,7 @@ fn build_problem(raw_stores: Vec<(f64, f64, u32, u32, u32, i64)>, vehicle_count:
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

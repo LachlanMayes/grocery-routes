@@ -74,6 +74,7 @@ fn tiny_fixture() -> (Problem, Solution) {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     };
 
     let solution = Solution {
@@ -222,4 +223,52 @@ fn routes_geojson_has_route_lines_and_store_points() {
     assert_eq!(point_coordinates.len(), 2);
     assert!((point_coordinates[0].as_f64().expect("lon") - 151.00).abs() < 1e-9);
     assert!((point_coordinates[1].as_f64().expect("lat") - -33.85).abs() < 1e-9);
+}
+
+#[test]
+fn route_sheet_html_links_nodes_to_openstreetmap() {
+    let (problem, solution) = tiny_fixture();
+    let html = route_sheet_html(&problem, &solution);
+
+    // The depot name is wrapped in a self-contained OSM deep link.
+    assert!(
+        html.contains(
+            "https://www.openstreetmap.org/?mlat=-33.79&amp;mlon=150.9#map=18/-33.79/150.9"
+        )
+    );
+    assert!(html.contains(">Depot &amp; Co &lt;North&gt;</a>"));
+    // Steps without a known location would render plain text; the fixture
+    // has locations for all of them.
+    assert!(html.contains("#map=18/"));
+    assert!(html.contains("OpenStreetMap"));
+}
+
+#[test]
+fn route_sheet_html_without_anchor_has_no_local_column() {
+    let (problem, solution) = tiny_fixture();
+    let html = route_sheet_html(&problem, &solution);
+
+    assert!(!html.contains("Local (arrive)"));
+    assert!(!html.contains("<p class=\"holiday-note\">"));
+}
+
+#[test]
+fn route_sheet_html_with_anchor_renders_local_times_and_holidays() {
+    let (mut problem, solution) = tiny_fixture();
+    // Horizon minute zero is 2026-04-03T00:00:00Z; 08:00 horizon is 19:00
+    // AEDT (UTC+11) on Good Friday.
+    problem.horizon_start = Some(
+        "2026-04-03T00:00:00Z"
+            .parse()
+            .expect("RFC 3339 timestamp parses"),
+    );
+    problem.depots[0].timezone = Some("Australia/Sydney".into());
+    problem.stores[0].timezone = Some("Australia/Sydney".into());
+
+    let html = route_sheet_html(&problem, &solution);
+
+    assert!(html.contains("<th>Local (arrive)</th>"));
+    assert!(html.contains("Fri 03 Apr 19:00"));
+    assert!(html.contains("Fri 03 Apr 20:00"));
+    assert!(html.contains("2026-04-03 (Good Friday)"));
 }

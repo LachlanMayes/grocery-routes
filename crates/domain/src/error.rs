@@ -72,6 +72,8 @@ pub enum Violation {
     DuplicateStore { store: StoreId, count: u32 },
     #[error("store {store} is neither served nor listed as unassigned")]
     MissingStore { store: StoreId },
+    #[error("invalid IANA timezone name: {timezone}")]
+    InvalidTimezone { timezone: String },
     #[error("store {store} is both served and listed as unassigned")]
     ServedAndUnassigned { store: StoreId },
 }

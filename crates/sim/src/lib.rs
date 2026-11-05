@@ -55,6 +55,17 @@ impl City {
             Self::Adelaide => "adelaide",
         }
     }
+
+    /// IANA timezone for the city (Brisbane and Perth do not observe DST).
+    pub fn iana_timezone(self) -> &'static str {
+        match self {
+            Self::Sydney => "Australia/Sydney",
+            Self::Melbourne => "Australia/Melbourne",
+            Self::Brisbane => "Australia/Brisbane",
+            Self::Perth => "Australia/Perth",
+            Self::Adelaide => "Australia/Adelaide",
+        }
+    }
 }
 
 /// Knobs for [`generate`].
@@ -129,6 +140,7 @@ pub fn generate(options: &SimOptions) -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

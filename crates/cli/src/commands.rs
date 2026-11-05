@@ -59,6 +59,16 @@ pub struct GenSimArgs {
     /// Random seed: the same seed always yields the same problem.
     #[arg(long, default_value_t = 42)]
     pub seed: u64,
+    /// Absolute instant of horizon minute zero (RFC 3339, e.g.
+    /// `2026-11-05T00:00:00Z`). When set, depot/store `timezone` names
+    /// resolve to local civil times and public holidays are flagged in the
+    /// route sheet.
+    #[arg(long)]
+    pub horizon_start: Option<String>,
+    /// Stamp the city's IANA timezone on every depot and store. Pair with
+    /// `--horizon-start` to resolve local civil times in the export.
+    #[arg(long)]
+    pub timezones: bool,
     /// File the problem JSON is written to.
     #[arg(long)]
     pub out: PathBuf,
@@ -125,7 +135,23 @@ pub fn run_gen_sim(args: &GenSimArgs) -> anyhow::Result<()> {
         vehicles: args.vehicles,
         seed: args.seed,
     };
-    let problem = sim::generate(&options);
+    let mut problem = sim::generate(&options);
+    if args.timezones {
+        let tz = options.city.iana_timezone();
+        for depot in &mut problem.depots {
+            depot.timezone = Some(tz.to_string());
+        }
+        for store in &mut problem.stores {
+            store.timezone = Some(tz.to_string());
+        }
+    }
+    if let Some(raw) = &args.horizon_start {
+        problem.horizon_start = Some(domain::parse_horizon_start(raw).with_context(|| {
+            format!(
+                "invalid --horizon-start '{raw}' (expected RFC 3339, e.g. 2026-11-05T00:00:00Z)"
+            )
+        })?);
+    }
     write_problem_json(&args.out, &problem)?;
 
     let demand = sum_load(problem.stores.iter().map(|store| store.demand));
@@ -478,6 +504,7 @@ mod tests {
             },
             chain_rules: ChainRules::default(),
             curfews: CurfewRules::default(),
+            horizon_start: None,
         }
     }
 

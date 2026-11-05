@@ -11,15 +11,25 @@
 //!   look-ups go through the accessor methods, which are bounds-checked.
 //! - Shifts and receiving windows use half-open `[start, end)` semantics.
 //! - All money values are Australian cents; all distances are kilometres.
+//! - Every timestamp is horizon-relative. When [`Problem::horizon_start`] is
+//!   set, [`clock`] converts horizon minutes to local civil time at each
+//!   depot/store using its IANA `timezone`.
 
+pub mod clock;
 pub mod error;
 pub mod geo;
+pub mod holidays;
 pub mod ids;
 pub mod model;
 pub mod time;
 
+pub use clock::{
+    ClockError, is_valid_timezone, local_date, local_time, local_time_short, local_zoned,
+    parse_horizon_start,
+};
 pub use error::Violation;
 pub use geo::{LatLon, haversine_km};
+pub use holidays::{Holiday, holidays_in_year, is_public_holiday, national_public_holidays};
 pub use ids::{DepotId, DriverId, StoreId, VehicleId};
 pub use model::{
     Chain, ChainRules, CostModel, CurfewRules, Depot, Driver, FatigueRules, Load, Node,

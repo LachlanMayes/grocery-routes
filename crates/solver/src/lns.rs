@@ -1676,6 +1676,7 @@ mod tests {
             },
             chain_rules: ChainRules::default(),
             curfews: CurfewRules::default(),
+            horizon_start: None,
         }
     }
 

@@ -92,6 +92,7 @@ fn small_problem() -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 
@@ -191,6 +192,7 @@ fn multi_day_problem() -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 
@@ -460,6 +462,7 @@ fn single_vehicle_problem(capacity: Load, stores: Vec<Store>) -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

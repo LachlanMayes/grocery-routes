@@ -85,6 +85,7 @@ fn relay_fixture() -> (Problem, Solution) {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     };
 
     let solution = Solution {
@@ -259,6 +260,39 @@ fn problems_and_solutions_round_trip_through_json() {
     assert_eq!(parsed_solution.validate(&parsed_problem), Ok(()));
 }
 
+#[test]
+fn problem_with_horizon_start_round_trips_through_json() {
+    let (mut problem, _) = relay_fixture();
+    problem.horizon_start = Some(
+        "2026-11-05T00:00:00Z"
+            .parse()
+            .expect("RFC 3339 timestamp parses"),
+    );
+    problem.depots[0].timezone = Some("Australia/Sydney".into());
+    problem.stores[0].timezone = Some("Australia/Melbourne".into());
+    let json = serde_json::to_string(&problem).expect("serialize problem");
+    assert!(json.contains("2026-11-05T00:00:00Z"), "got {json}");
+    let parsed: Problem = serde_json::from_str(&json).expect("parse problem");
+    assert_eq!(parsed, problem);
+    // A problem without an anchor omits the field entirely.
+    let (bare, _) = relay_fixture();
+    let bare_json = serde_json::to_string(&bare).expect("serialize problem");
+    assert!(!bare_json.contains("horizon_start"), "got {bare_json}");
+}
+
+#[test]
+fn an_invalid_iana_timezone_is_rejected() {
+    let (mut problem, solution) = relay_fixture();
+    problem.stores[0].timezone = Some("Australia/Sydnee".into());
+    let violations = violations_of(&problem, &solution);
+    assert!(
+        violations.contains(&Violation::InvalidTimezone {
+            timezone: "Australia/Sydnee".to_string(),
+        }),
+        "got {violations:?}"
+    );
+}
+
 /// One depot, two vehicles, one driver — the base for occupancy fixtures.
 fn two_vehicle_problem() -> Problem {
     Problem {
@@ -302,6 +336,7 @@ fn two_vehicle_problem() -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 
@@ -404,6 +439,7 @@ fn handover_dwell_problem(shifts: Vec<Shift>) -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

@@ -73,6 +73,13 @@ pub fn route_sheet_html(problem: &Problem, solution: &Solution) -> String {
     if !solution.unassigned.is_empty() {
         blocks.push(unassigned_section_html(problem, &solution.unassigned));
     }
+    if let Some(note) = holiday_note(problem, solution) {
+        blocks.insert(1, note);
+    }
+    blocks.push(
+        "<p class=\"attribution\">Map links open OpenStreetMap (&copy; OpenStreetMap contributors)</p>"
+            .to_string(),
+    );
     format!(
         "<!DOCTYPE html>\n\
          <html lang=\"en\">\n\
@@ -151,6 +158,7 @@ pub fn routes_geojson(problem: &Problem, solution: &Solution) -> String {
 
 /// Renders one route as a section with a per-step table.
 fn route_section_html(problem: &Problem, index: usize, route: &RoutePlan) -> String {
+    let show_local = problem.horizon_start.is_some();
     let vehicle = problem
         .vehicle(route.vehicle)
         .map_or("unknown vehicle", |vehicle| vehicle.name.as_str());
@@ -177,15 +185,32 @@ fn route_section_html(problem: &Problem, index: usize, route: &RoutePlan) -> Str
                 None => (format!("store {id}"), "store", String::new()),
             },
         };
+        let node_cell = node_map_cell(problem, step.node, &node_name);
+        let local_cell = if show_local {
+            domain::local_time_short(problem, node_timezone(problem, step.node), step.arrive)
+                .unwrap_or_else(|| "&mdash;".to_string())
+        } else {
+            String::new()
+        };
         rows.push(format!(
             "<tr><td>{}</td><td>{}</td><td class=\"tag\">{tag}</td>\
-             <td>{}</td><td>{}</td><td>{demand}</td></tr>",
+             <td>{}</td><td>{}</td><td>{demand}</td>{}</tr>",
             sequence + 1,
-            escape_html(&node_name),
+            node_cell,
             step.arrive,
             step.depart,
+            if show_local {
+                format!("<td>{local_cell}</td>")
+            } else {
+                String::new()
+            }
         ));
     }
+    let local_header = if show_local {
+        "<th>Local (arrive)</th>"
+    } else {
+        ""
+    };
 
     format!(
         "<section class=\"route\">\n\
@@ -194,7 +219,7 @@ fn route_section_html(problem: &Problem, index: usize, route: &RoutePlan) -> Str
          Duration: {} &middot; Cost: {}</p>\n\
          <table>\n\
          <thead><tr><th>#</th><th>Node</th><th>Type</th><th>Arrive</th><th>Depart</th>\
-         <th>Demand (amb / chl / frz)</th></tr></thead>\n\
+         <th>Demand (amb / chl / frz)</th>{local_header}</tr></thead>\n\
          <tbody>\n{}\n</tbody>\n\
          </table>\n\
          </section>",
@@ -237,6 +262,68 @@ fn driver_name(problem: &Problem, driver: DriverId) -> String {
         .map_or_else(|| format!("driver {driver}"), |driver| driver.name.clone())
 }
 
+/// The IANA timezone of a node's owner, if any.
+fn node_timezone(problem: &Problem, node: Node) -> Option<&str> {
+    match node {
+        Node::Depot(id) => problem
+            .depot(id)
+            .and_then(|depot| depot.timezone.as_deref()),
+        Node::Store(id) => problem
+            .store(id)
+            .and_then(|store| store.timezone.as_deref()),
+    }
+}
+
+/// Renders the node name, wrapped in an OpenStreetMap deep link when the
+/// node has a known location.
+fn node_map_cell(problem: &Problem, node: Node, name: &str) -> String {
+    match problem.node_location(node) {
+        Some(location) => format!(
+            "<a href=\"https://www.openstreetmap.org/?mlat={lat}&amp;mlon={lon}#map=18/{lat}/{lon}\">{}</a>",
+            escape_html(name),
+            lat = location.lat,
+            lon = location.lon,
+        ),
+        None => escape_html(name),
+    }
+}
+
+/// Lists national public holidays falling inside the plan's horizon, when
+/// the problem declares an anchor and the steps' dates resolve.
+///
+/// Returns `None` when no holiday falls inside the horizon. This is a
+/// scheduling aid, not legal advice — see `docs/PLAN.md`.
+fn holiday_note(problem: &Problem, solution: &Solution) -> Option<String> {
+    problem.horizon_start?;
+    let mut dates = std::collections::BTreeSet::new();
+    for route in &solution.routes {
+        for step in &route.steps {
+            let timezone = node_timezone(problem, step.node);
+            for at in [step.arrive, step.depart] {
+                if let Some(date) = domain::local_date(problem, timezone, at) {
+                    dates.insert(date);
+                }
+            }
+        }
+    }
+    let holidays: Vec<String> = dates
+        .into_iter()
+        .filter(|&date| domain::is_public_holiday(date))
+        .map(|date| {
+            let names = domain::national_public_holidays(date).join(" / ");
+            format!("{date} ({names})")
+        })
+        .collect();
+    if holidays.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<p class=\"holiday-note\">National public holidays in this plan: {}. \
+         Deliveries may not be accepted; check each store's receiving rules.</p>",
+        escape_html(&holidays.join("; "))
+    ))
+}
+
 /// Inline stylesheet for the route sheet.
 const STYLES: &str = "\
 body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 64rem; padding: 0 1rem; color: #222; }
@@ -244,6 +331,8 @@ h1 { margin-bottom: 0.25rem; }
 h2 { border-bottom: 2px solid #b3001b; padding-bottom: 0.25rem; }
 p.totals { color: #444; margin-top: 0; }
 p.meta { color: #444; }
+p.holiday-note { background: #fff3cd; border: 1px solid #e0c878; padding: 0.5rem 0.75rem; border-radius: 4px; }
+p.attribution { color: #666; font-size: 0.85rem; margin-top: 2rem; }
 section.route { margin-top: 2rem; }
 section.unassigned { margin-top: 2rem; }
 table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }

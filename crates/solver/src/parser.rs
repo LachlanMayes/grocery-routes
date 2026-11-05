@@ -282,6 +282,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
         },
         chain_rules: ChainRules::default(),
         curfews: CurfewRules::default(),
+        horizon_start: None,
     }
 }
 

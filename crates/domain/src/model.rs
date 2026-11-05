@@ -474,6 +474,29 @@ impl Solution {
     /// re-derived here.
     pub fn validate(&self, problem: &Problem) -> Result<(), Vec<Violation>> {
         let mut violations = Vec::new();
+
+        // Problem-level timezone check: IANA names must parse, whether or
+        // not the horizon has an absolute anchor. A typo is a config error,
+        // not inert data.
+        for depot in &problem.depots {
+            if let Some(name) = &depot.timezone
+                && !crate::clock::is_valid_timezone(name)
+            {
+                violations.push(Violation::InvalidTimezone {
+                    timezone: name.clone(),
+                });
+            }
+        }
+        for store in &problem.stores {
+            if let Some(name) = &store.timezone
+                && !crate::clock::is_valid_timezone(name)
+            {
+                violations.push(Violation::InvalidTimezone {
+                    timezone: name.clone(),
+                });
+            }
+        }
+
         let mut served: Vec<u32> = vec![0; problem.stores.len()];
         let mut vehicle_used: Vec<bool> = vec![false; problem.vehicles.len()];
         let mut driver_spans: Vec<Vec<(Minutes, Minutes)>> =
@@ -726,10 +749,20 @@ pub struct Problem {
     pub chain_rules: ChainRules,
     /// Truck curfew rules for certain road classes. Stored for API
     /// import/export and analysis; not enforced by the solver/validator yet
-    /// because route segments do not carry a road class or absolute clock
-    /// time in this model.
+    /// because route segments do not carry a road class. When
+    /// [`Problem::horizon_start`] is set, the local weekday of a horizon
+    /// minute can be resolved via [`crate::clock`], but curfew enforcement
+    /// still requires road-class-tagged edges.
     #[serde(default)]
     pub curfews: CurfewRules,
+    /// Absolute instant corresponding to horizon minute zero (RFC 3339).
+    ///
+    /// When set, `Depot::timezone`/`Store::timezone` IANA names resolve to
+    /// local civil times via [`crate::clock`]; when `None` every timestamp is
+    /// horizon-relative and timezones stay inert data. `None` also keeps
+    /// existing fixtures valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_start: Option<jiff::Timestamp>,
 }
 
 impl Default for Problem {
@@ -743,6 +776,7 @@ impl Default for Problem {
             cost: CostModel::default(),
             chain_rules: ChainRules::default(),
             curfews: CurfewRules::default(),
+            horizon_start: None,
         }
     }
 }
@@ -866,6 +900,7 @@ mod tests {
             },
             chain_rules: ChainRules::default(),
             curfews: CurfewRules::default(),
+            horizon_start: None,
         }
     }
 
