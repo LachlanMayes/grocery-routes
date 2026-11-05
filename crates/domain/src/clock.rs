@@ -7,9 +7,12 @@
 //! When either is absent, every timestamp stays horizon-relative and the
 //! timezone fields remain inert import/export data.
 //!
-//! Ambiguous civil times during a DST fallback resolve to the earlier
-//! (standard-time) reading; nonexistent times fall forward, matching jiff's
-//! `Compatible` disambiguation.
+//! Conversions go *instant → local civil time*: the anchor is an absolute
+//! instant and each horizon minute is a fixed offset from it, so the result
+//! is always unambiguous — DST transitions simply show up in the rendered
+//! offset. (The ambiguous direction, civil → instant, would only arise if
+//! callers entered wall-clock times; the model stores only horizon offsets,
+//! so it is not offered.)
 
 use jiff::{SignedDuration, Timestamp, Zoned, tz::TimeZone};
 use thiserror::Error;
@@ -89,7 +92,7 @@ pub fn parse_horizon_start(raw: &str) -> Result<Timestamp, ClockError> {
 ///
 /// Returns `None` when the problem has no anchor, the node has no timezone,
 /// or the name fails to resolve; bad names are reported separately by
-/// [`crate::Solution::validate`] via `InvalidTimezone` violations.
+/// [`crate::Problem::validate_timezones`] at the system boundary.
 #[must_use]
 pub fn local_time(problem: &Problem, timezone: Option<&str>, at: Minutes) -> Option<Zoned> {
     let anchor = problem.horizon_start?;

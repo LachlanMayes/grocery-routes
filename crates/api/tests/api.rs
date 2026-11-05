@@ -165,6 +165,19 @@ async fn invalid_import_returns_bad_request() {
 }
 
 #[tokio::test]
+async fn invalid_timezone_import_returns_bad_request() {
+    let (base_url, handle, _db_path) = spawn_app().await;
+    let client = reqwest::Client::new();
+    let mut problem = test_problem();
+    problem.stores[0].timezone = Some("Australia/Sydnee".into());
+
+    let response = import_problem(&client, &base_url, &problem).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn unknown_ids_return_not_found() {
     let (base_url, handle, _db_path) = spawn_app().await;
     let client = reqwest::Client::new();

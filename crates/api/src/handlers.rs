@@ -185,6 +185,12 @@ fn validate_problem(problem: &Problem) -> Result<(), StatusCode> {
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Problem-level configuration (invalid IANA timezone names) cannot be
+    // repaired by the solver; reject at the boundary.
+    if !problem.validate_timezones().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     Ok(())
 }
 

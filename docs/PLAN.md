@@ -13,7 +13,8 @@ DST-aware via jiff) and **computed Australian national public holidays**
 (Easter via Gregorian computus, weekend observance with the Christmas/Boxing
 cascade, and the 2011-style coincident-holiday substitute; state/
 territory-specific holidays are not modelled). Invalid IANA timezone names
-are rejected by `Solution::validate`. The route sheet renders local (arrive)
+are rejected by `Problem::validate_timezones` at the CLI/API boundaries
+(not by `Solution::validate`, which solvers assert on). The route sheet renders local (arrive)
 times when anchored, deep links every node to OpenStreetMap and flags
 deliveries falling on a national holiday. M6 driver-side scope is settled:
 the route sheet (with OSM deep links) is the deliverable — there is no live

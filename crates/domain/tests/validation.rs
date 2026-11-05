@@ -281,16 +281,23 @@ fn problem_with_horizon_start_round_trips_through_json() {
 }
 
 #[test]
-fn an_invalid_iana_timezone_is_rejected() {
+fn an_invalid_iana_timezone_is_reported_by_problem_validation() {
     let (mut problem, solution) = relay_fixture();
+    assert_eq!(problem.validate_timezones(), Vec::new());
+
     problem.stores[0].timezone = Some("Australia/Sydnee".into());
-    let violations = violations_of(&problem, &solution);
-    assert!(
-        violations.contains(&Violation::InvalidTimezone {
+    assert_eq!(
+        problem.validate_timezones(),
+        vec![Violation::InvalidTimezone {
             timezone: "Australia/Sydnee".to_string(),
-        }),
-        "got {violations:?}"
+        }]
     );
+
+    // Timezone names are problem configuration, not a solution property: a
+    // solver must still be able to plan (and its output must validate) for a
+    // problem whose timezone spelling is wrong, so that boundaries can
+    // report the violation instead of solvers panicking on it.
+    assert_eq!(solution.validate(&problem), Ok(()));
 }
 
 /// One depot, two vehicles, one driver — the base for occupancy fixtures.

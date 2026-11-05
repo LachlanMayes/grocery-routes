@@ -1870,4 +1870,84 @@ mod tests {
             "round-tripped solution should be valid"
         );
     }
+
+    #[test]
+    fn stores_partition_valid_accepts_intact_solutions() {
+        let problem = small_problem();
+        let matrix = DistanceMatrix::new(&problem);
+        let solution = lns_solution(&problem, &matrix);
+        assert!(stores_partition_valid(&problem, &solution));
+    }
+
+    #[test]
+    fn stores_partition_valid_rejects_dropped_store() {
+        let problem = small_problem();
+        let matrix = DistanceMatrix::new(&problem);
+        let mut solution = lns_solution(&problem, &matrix);
+        // Delete a store from a route without listing it as unassigned —
+        // exactly the corruption class the acceptance gate must reject.
+        let mut dropped = false;
+        for route in &mut solution.routes {
+            let before = route.scheduled.steps.len();
+            route
+                .scheduled
+                .steps
+                .retain(|step| !matches!(step.node, Node::Store(_)));
+            if route.scheduled.steps.len() < before {
+                dropped = true;
+                break;
+            }
+        }
+        assert!(dropped, "fixture should have a store to drop");
+        assert!(!stores_partition_valid(&problem, &solution));
+    }
+
+    #[test]
+    fn stores_partition_valid_rejects_duplicate_store() {
+        let problem = small_problem();
+        let matrix = DistanceMatrix::new(&problem);
+        let mut solution = lns_solution(&problem, &matrix);
+        let duplicate = solution
+            .routes
+            .iter()
+            .flat_map(|route| route.scheduled.steps.iter())
+            .find(|step| matches!(step.node, Node::Store(_)))
+            .copied()
+            .expect("fixture should have a store step");
+        solution.routes[0].scheduled.steps.insert(1, duplicate);
+        assert!(!stores_partition_valid(&problem, &solution));
+    }
+
+    #[test]
+    fn remove_stores_by_id_removes_exactly_the_selection_and_drops_empty_routes() {
+        let problem = small_problem();
+        let matrix = DistanceMatrix::new(&problem);
+        let mut solution = lns_solution(&problem, &matrix);
+        let selected: HashSet<StoreId> = solution
+            .routes
+            .iter()
+            .flat_map(|route| route.scheduled.steps.iter())
+            .filter_map(|step| match step.node {
+                Node::Store(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(!selected.is_empty());
+
+        let removed = remove_stores_by_id(&mut solution, &selected);
+        assert_eq!(removed.len(), selected.len());
+        for id in &removed {
+            assert!(selected.contains(id));
+        }
+        // Every route that lost its stores is dropped entirely: no
+        // depot-only husks are left behind, and no store remains in a route.
+        // (Moving `removed` into `unassigned` is the caller's job.)
+        assert!(solution.routes.iter().all(|route| {
+            route
+                .scheduled
+                .steps
+                .iter()
+                .any(|step| matches!(step.node, Node::Store(_)))
+        }));
+    }
 }

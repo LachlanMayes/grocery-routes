@@ -474,29 +474,6 @@ impl Solution {
     /// re-derived here.
     pub fn validate(&self, problem: &Problem) -> Result<(), Vec<Violation>> {
         let mut violations = Vec::new();
-
-        // Problem-level timezone check: IANA names must parse, whether or
-        // not the horizon has an absolute anchor. A typo is a config error,
-        // not inert data.
-        for depot in &problem.depots {
-            if let Some(name) = &depot.timezone
-                && !crate::clock::is_valid_timezone(name)
-            {
-                violations.push(Violation::InvalidTimezone {
-                    timezone: name.clone(),
-                });
-            }
-        }
-        for store in &problem.stores {
-            if let Some(name) = &store.timezone
-                && !crate::clock::is_valid_timezone(name)
-            {
-                violations.push(Violation::InvalidTimezone {
-                    timezone: name.clone(),
-                });
-            }
-        }
-
         let mut served: Vec<u32> = vec![0; problem.stores.len()];
         let mut vehicle_used: Vec<bool> = vec![false; problem.vehicles.len()];
         let mut driver_spans: Vec<Vec<(Minutes, Minutes)>> =
@@ -808,6 +785,35 @@ impl Problem {
             Node::Depot(id) => self.depot(id).map(|depot| depot.location),
             Node::Store(id) => self.store(id).map(|store| store.location),
         }
+    }
+
+    /// Validates problem-level configuration that no solution can repair.
+    ///
+    /// Currently: `Depot::timezone`/`Store::timezone` must be known IANA
+    /// names when set. This deliberately lives here and **not** in
+    /// [`Solution::validate`] — solvers assert that their output validates,
+    /// and a bad timezone in the input is not something a solver can fix.
+    /// Report these violations at the boundary (CLI/API) before solving.
+    #[must_use]
+    pub fn validate_timezones(&self) -> Vec<Violation> {
+        let mut violations = Vec::new();
+        for name in self
+            .depots
+            .iter()
+            .filter_map(|depot| depot.timezone.as_ref())
+            .chain(
+                self.stores
+                    .iter()
+                    .filter_map(|store| store.timezone.as_ref()),
+            )
+        {
+            if !crate::clock::is_valid_timezone(name) {
+                violations.push(Violation::InvalidTimezone {
+                    timezone: name.clone(),
+                });
+            }
+        }
+        violations
     }
 }
 

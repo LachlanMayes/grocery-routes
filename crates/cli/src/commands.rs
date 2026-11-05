@@ -194,6 +194,7 @@ const MAX_SOLVE_NODES: usize = 5_000;
 /// the result.
 pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     let problem = read_problem_json(&args.problem)?;
+    check_problem(&problem)?;
     ensure_solvable_size(&problem)?;
     if args.constraints.is_some() && args.osm.is_none() {
         anyhow::bail!("--constraints requires --osm (constraints are folded onto the OSM graph)");
@@ -311,6 +312,23 @@ fn check_solution(problem: &Problem, solution: &Solution) -> anyhow::Result<()> 
         }
         anyhow::bail!(
             "solution failed validation ({} violation(s))",
+            violations.len()
+        );
+    }
+    Ok(())
+}
+
+/// Validates problem-level configuration no solver can repair (timezone
+/// names). Called before solving so bad input fails gracefully instead of
+/// tripping a solver invariant.
+fn check_problem(problem: &Problem) -> anyhow::Result<()> {
+    let violations = problem.validate_timezones();
+    if !violations.is_empty() {
+        for violation in &violations {
+            eprintln!("problem: {violation}");
+        }
+        anyhow::bail!(
+            "problem has invalid configuration ({} issue(s))",
             violations.len()
         );
     }

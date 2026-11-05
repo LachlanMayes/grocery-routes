@@ -108,3 +108,117 @@ fn gen_sim_solve_and_export_round_trip() {
     let features = document["features"].as_array().expect("features array");
     assert_eq!(features.len(), solution.routes.len() + problem.stores.len());
 }
+
+#[test]
+fn solve_rejects_invalid_timezone_without_panicking() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let problem_path = dir.path().join("problem.json");
+    let solution_path = dir.path().join("solution.json");
+
+    let mut gen_sim = Command::new(BIN);
+    gen_sim.args([
+        "gen-sim",
+        "--stores",
+        "4",
+        "--depots",
+        "1",
+        "--vehicles",
+        "2",
+        "--seed",
+        "3",
+        "--timezones",
+    ]);
+    gen_sim.arg("--out").arg(&problem_path);
+    expect_success(gen_sim);
+
+    // Corrupt every stamped timezone.
+    let text = read_text(&problem_path).replace("Australia/Sydney", "Australia/Sydnee");
+    fs::write(&problem_path, text).expect("write corrupted problem");
+
+    let output = Command::new(BIN)
+        .arg("solve")
+        .arg("--problem")
+        .arg(&problem_path)
+        .arg("--out")
+        .arg(&solution_path)
+        .output()
+        .expect("spawning grocery-routes");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "solve should fail for an invalid timezone"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "invalid input must fail gracefully, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("invalid IANA timezone"),
+        "stderr should name the problem, got: {stderr}"
+    );
+    assert!(
+        !solution_path.exists(),
+        "no solution should be written for invalid input"
+    );
+}
+
+#[test]
+fn anchored_pipeline_renders_local_times_and_map_links() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let problem_path = dir.path().join("problem.json");
+    let solution_path = dir.path().join("solution.json");
+    let out_dir = dir.path().join("report");
+
+    let mut gen_sim = Command::new(BIN);
+    gen_sim.args([
+        "gen-sim",
+        "--stores",
+        "6",
+        "--depots",
+        "1",
+        "--vehicles",
+        "2",
+        "--seed",
+        "11",
+        "--timezones",
+        "--horizon-start",
+        "2026-11-05T00:00:00Z",
+    ]);
+    gen_sim.arg("--out").arg(&problem_path);
+    expect_success(gen_sim);
+
+    let problem: Problem =
+        serde_json::from_str(&read_text(&problem_path)).expect("problem JSON parses");
+    assert!(problem.horizon_start.is_some());
+    assert!(problem.stores.iter().all(|store| store.timezone.is_some()));
+
+    let mut solve = Command::new(BIN);
+    solve
+        .arg("solve")
+        .arg("--problem")
+        .arg(&problem_path)
+        .arg("--out")
+        .arg(&solution_path);
+    expect_success(solve);
+
+    let mut export = Command::new(BIN);
+    export
+        .arg("export")
+        .arg("--problem")
+        .arg(&problem_path)
+        .arg("--solution")
+        .arg(&solution_path)
+        .arg("--out-dir")
+        .arg(&out_dir);
+    expect_success(export);
+
+    let sheet = read_text(&out_dir.join("route-sheet.html"));
+    assert!(
+        sheet.contains("Local (arrive)"),
+        "anchored route sheet should render local times"
+    );
+    assert!(
+        sheet.contains("https://www.openstreetmap.org/?mlat="),
+        "route sheet should deep-link nodes to OpenStreetMap"
+    );
+}

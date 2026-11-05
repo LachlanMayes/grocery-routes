@@ -394,6 +394,13 @@ fn c101_calibration_lns() {
     };
     // C101 uses Euclidean coordinates, not lat/lon
     let matrix = euclidean_matrix(&problem);
+
+    // The greedy baseline, computed the same way LNS computes it. Asserting
+    // that LNS beats it (strictly) is what distinguishes a genuine LNS
+    // result from the greedy fallback: the fallback returns exactly this
+    // distance, so equality fails loudly instead of passing silently.
+    let greedy = solver::solve_greedy_euclidean(&problem);
+
     let solution = solve_with_lns(&problem, config, matrix);
 
     // Validate
@@ -408,17 +415,25 @@ fn c101_calibration_lns() {
     let served = problem.stores.len() - solution.unassigned.len();
 
     eprintln!(
-        "C101 LNS: routes={}, distance={:.2}, served={}/{}",
+        "C101 LNS: routes={}, distance={:.2}, served={}/{} (greedy baseline {:.2})",
         routes_used,
         total_dist,
         served,
-        problem.stores.len()
+        problem.stores.len(),
+        greedy.total_distance_km
     );
 
     // C101 best known: 10 routes, 828.94 km, 100 served.
     // M2 gate: ≤5% gap → distance ≤ 870.39, all stores served.
-    // LNS starts from the greedy solution, so it must be ≥ greedy quality.
     assert_eq!(served, 100, "must serve all 100 stores: {}", served);
+    assert!(
+        total_dist < greedy.total_distance_km,
+        "LNS ({:.2}) must strictly beat the greedy baseline ({:.2}); \
+         equality means the greedy fallback fired and LNS returned no plan \
+         of its own",
+        total_dist,
+        greedy.total_distance_km
+    );
     assert!(
         total_dist <= 870.39,
         "distance {:.2} exceeds 5% gap to best-known 828.94 (limit 870.39)",
