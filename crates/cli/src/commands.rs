@@ -103,6 +103,17 @@ pub struct SolveArgs {
     /// only). Requires `--osm`. See `constraints/README.md`.
     #[arg(long)]
     pub constraints: Option<PathBuf>,
+    /// Re-schedule the solved plan with time-dependent (curfew-aware) leg
+    /// times: a truck waits before entering a road class banned during its
+    /// traversal window, and stores whose waits no longer fit move to
+    /// `unassigned`. Requires `--osm`, curfew rules and a horizon anchor.
+    #[arg(long)]
+    pub enforce_curfews: bool,
+    /// IANA timezone the road network operates in, used to resolve curfew
+    /// days/times (e.g. `Australia/Sydney`). Defaults to the first depot's
+    /// timezone.
+    #[arg(long)]
+    pub network_timezone: Option<String>,
 }
 
 /// Arguments of `export`.
@@ -199,7 +210,18 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     if args.constraints.is_some() && args.osm.is_none() {
         anyhow::bail!("--constraints requires --osm (constraints are folded onto the OSM graph)");
     }
+    let curfew_timezone = if args.enforce_curfews {
+        Some(resolve_curfew_timezone(args, &problem)?)
+    } else {
+        None
+    };
 
+    let profile = routing::TruckProfile {
+        maxweight_tonnes: args.maxweight,
+        maxheight_m: args.maxheight,
+        hgv: args.hgv,
+    };
+    let mut cache: Option<routing::CachedMatrix> = None;
     let solution = if let Some(osm_path) = &args.osm {
         // M3: road-network distances/durations from OSM PBF.
         let mut cached = routing::CachedMatrix::new();
@@ -222,12 +244,7 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
                 constraints_path.display()
             );
         }
-        let profile = routing::TruckProfile {
-            maxweight_tonnes: args.maxweight,
-            maxheight_m: args.maxheight,
-            hgv: args.hgv,
-        };
-        if args.ls {
+        let solved = if args.ls {
             solver::solve_with_lns_routing(
                 &problem,
                 solver::LNSConfig::default(),
@@ -236,11 +253,50 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
             )?
         } else {
             solver::solve_greedy_routing(&problem, &mut cached, profile)?
-        }
+        };
+        cache = Some(cached);
+        solved
     } else if args.ls {
         solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
     } else {
         solver::solve(&problem)
+    };
+
+    let solution = if let Some(timezone) = curfew_timezone {
+        let cache = cache
+            .as_ref()
+            .context("--enforce-curfews requires --osm (curfews need the road graph)")?;
+        let anchor = problem
+            .horizon_start
+            .context("--enforce-curfews requires a horizon anchor (--horizon-start)")?;
+        let node_ids = cache.problem_node_ids(&problem)?;
+        let graph = cache
+            .graph()
+            .context("curfew enforcement requires a loaded OSM graph")?;
+        let context = routing::CurfewContext::new(problem.curfews.clone(), anchor, timezone);
+        let mut provider = GraphLegs {
+            graph,
+            node_ids,
+            profile,
+            context,
+            depot_count: problem.depots.len(),
+        };
+        let (enforced, report) = solver::enforce_curfews(&problem, &solution, &mut provider);
+        println!(
+            "  curfew enforcement: {} route(s) adjusted, {} minute(s) waiting, {} store(s) dropped",
+            report.routes_adjusted,
+            report.total_wait_minutes,
+            report.dropped.len()
+        );
+        for drop in &report.dropped {
+            println!(
+                "    dropped store {} from route {}: {}",
+                drop.store, drop.route, drop.kind
+            );
+        }
+        enforced
+    } else {
+        solution
     };
     check_solution(&problem, &solution)?;
     write_solution_json(&args.out, &solution)?;
@@ -271,6 +327,76 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     println!("  cost: {}", format_aud_cents(solution.total_cost_cents));
     println!("wrote {}", args.out.display());
     Ok(())
+}
+
+/// Resolves the network timezone for curfew enforcement, failing loudly when
+/// enforcement is requested without the data it needs.
+fn resolve_curfew_timezone(
+    args: &SolveArgs,
+    problem: &Problem,
+) -> anyhow::Result<jiff::tz::TimeZone> {
+    anyhow::ensure!(
+        args.osm.is_some(),
+        "--enforce-curfews requires --osm: curfew enforcement needs the road graph"
+    );
+    anyhow::ensure!(
+        !problem.curfews.rules.is_empty(),
+        "--enforce-curfews: problem has no curfew rules to enforce"
+    );
+    anyhow::ensure!(
+        problem.horizon_start.is_some(),
+        "--enforce-curfews requires a horizon anchor: curfew windows are local day/time rules"
+    );
+    let name = args
+        .network_timezone
+        .clone()
+        .or_else(|| {
+            problem
+                .depots
+                .iter()
+                .find_map(|depot| depot.timezone.clone())
+        })
+        .context(
+            "--enforce-curfews needs a network timezone: pass --network-timezone <IANA> \
+             or set a depot timezone",
+        )?;
+    domain::clock::parse_timezone(&name)
+        .map_err(|err| anyhow::anyhow!("invalid network timezone '{name}': {err}"))
+}
+
+/// Maps problem nodes onto the graph node ids of a loaded extract and asks
+/// the curfew-aware router for each leg.
+struct GraphLegs<'a> {
+    graph: &'a routing::Graph,
+    /// Graph node per problem node: depots first, then stores.
+    node_ids: Vec<routing::NodeId>,
+    profile: routing::TruckProfile,
+    context: routing::CurfewContext,
+    depot_count: usize,
+}
+
+impl GraphLegs<'_> {
+    fn index_of(&self, node: Node) -> Option<usize> {
+        match node {
+            Node::Depot(id) => Some(id.0 as usize),
+            Node::Store(id) => Some(self.depot_count + id.0 as usize),
+        }
+    }
+}
+
+impl solver::LegTimes for GraphLegs<'_> {
+    fn leg(&mut self, from: Node, to: Node, depart: domain::Minutes) -> Option<routing::TimedLeg> {
+        let from_id = self.node_ids.get(self.index_of(from)?).copied()?;
+        let to_id = self.node_ids.get(self.index_of(to)?).copied()?;
+        routing::earliest_leg(
+            self.graph,
+            from_id,
+            to_id,
+            depart,
+            self.profile,
+            &self.context,
+        )
+    }
 }
 
 /// Refuses problems whose node count exceeds the M0 solver's memory budget.

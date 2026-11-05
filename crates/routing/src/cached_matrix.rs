@@ -83,6 +83,26 @@ impl CachedMatrix {
         self.graph.as_ref().map_or(0, |g| g.node_count())
     }
 
+    /// Maps each problem node (depots first, then stores, in vector order) to
+    /// its nearest graph node — the same mapping [`CachedMatrix::matrix_for`]
+    /// uses.
+    pub fn problem_node_ids(&self, problem: &Problem) -> anyhow::Result<Vec<NodeId>> {
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+        let node_locations: Vec<LatLon> = problem
+            .depots
+            .iter()
+            .map(|d| d.location)
+            .chain(problem.stores.iter().map(|s| s.location))
+            .collect();
+        node_locations
+            .iter()
+            .map(|loc| nearest_graph_node(graph, *loc))
+            .collect::<anyhow::Result<_>>()
+    }
+
     /// Computes (or retrieves from cache) the distance/duration matrix for
     /// `problem` using `profile` truck constraints.
     ///
@@ -101,19 +121,7 @@ impl CachedMatrix {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
 
-        // Map each problem node to a graph node id. Problem nodes are lat/lon
-        // coordinates; we need to find the nearest graph node for each.
-        let node_locations: Vec<LatLon> = problem
-            .depots
-            .iter()
-            .map(|d| d.location)
-            .chain(problem.stores.iter().map(|s| s.location))
-            .collect();
-
-        let node_ids: Vec<NodeId> = node_locations
-            .iter()
-            .map(|loc| nearest_graph_node(graph, *loc))
-            .collect::<anyhow::Result<_>>()?;
+        let node_ids: Vec<NodeId> = self.problem_node_ids(problem)?;
 
         let key = MatrixKey {
             node_ids: node_ids.clone(),

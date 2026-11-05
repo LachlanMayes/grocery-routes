@@ -110,6 +110,72 @@ fn gen_sim_solve_and_export_round_trip() {
 }
 
 #[test]
+fn enforce_curfews_fails_gracefully_without_osm() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let problem_path = dir.path().join("problem.json");
+    let solution_path = dir.path().join("solution.json");
+
+    let mut gen_sim = Command::new(BIN);
+    gen_sim.args([
+        "gen-sim",
+        "--stores",
+        "4",
+        "--depots",
+        "1",
+        "--vehicles",
+        "2",
+        "--seed",
+        "5",
+        "--timezones",
+        "--horizon-start",
+        "2026-11-05T00:00:00Z",
+    ]);
+    gen_sim.arg("--out").arg(&problem_path);
+    expect_success(gen_sim);
+
+    // Inject a curfew rule (only the CLI path is under test here; the router
+    // itself is covered by unit tests).
+    let mut value: serde_json::Value =
+        serde_json::from_str(&read_text(&problem_path)).expect("problem JSON parses");
+    value["curfews"] = serde_json::json!({
+        "rules": [{
+            "road_class": "residential",
+            "start": 1320,
+            "end": 360,
+            "days_of_week": null
+        }]
+    });
+    fs::write(
+        &problem_path,
+        serde_json::to_string_pretty(&value).expect("re-serialise problem"),
+    )
+    .expect("write problem with curfews");
+
+    let output = Command::new(BIN)
+        .arg("solve")
+        .arg("--problem")
+        .arg(&problem_path)
+        .arg("--out")
+        .arg(&solution_path)
+        .arg("--enforce-curfews")
+        .output()
+        .expect("spawning grocery-routes");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "solve must fail without --osm when enforcing curfews"
+    );
+    assert!(
+        stderr.contains("requires --osm"),
+        "stderr should explain the missing extract, got: {stderr}"
+    );
+    assert!(
+        !solution_path.exists(),
+        "no solution should be written when enforcement cannot run"
+    );
+}
+
+#[test]
 fn solve_rejects_invalid_timezone_without_panicking() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let problem_path = dir.path().join("problem.json");

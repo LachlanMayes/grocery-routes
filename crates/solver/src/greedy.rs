@@ -459,7 +459,7 @@ pub fn schedule_route_simple(
 /// With several windows the earliest feasible one (by start) wins: it also
 /// yields the earliest departure, which keeps every downstream timestamp as
 /// small as possible.
-fn next_service_start(store: &Store, arrival: Minutes) -> Option<Minutes> {
+pub(crate) fn next_service_start(store: &Store, arrival: Minutes) -> Option<Minutes> {
     store
         .receiving
         .iter()
@@ -471,7 +471,7 @@ fn next_service_start(store: &Store, arrival: Minutes) -> Option<Minutes> {
 }
 
 /// Adds two loads, or `None` on overflow (which no capacity can absorb).
-fn add_load(load: Load, demand: Load) -> Option<Load> {
+pub(crate) fn add_load(load: Load, demand: Load) -> Option<Load> {
     Some(Load {
         ambient: load.ambient.checked_add(demand.ambient)?,
         chilled: load.chilled.checked_add(demand.chilled)?,
@@ -481,7 +481,7 @@ fn add_load(load: Load, demand: Load) -> Option<Load> {
 
 /// Route cost in cents: fixed charge plus distance and duration components,
 /// each rounded to the nearest cent using integer arithmetic.
-fn route_cost(model: CostModel, distance_km: f64, duration: Minutes) -> i64 {
+pub(crate) fn route_cost(model: CostModel, distance_km: f64, duration: Minutes) -> i64 {
     // Distance: round(distance_km * per_km_cents) = round(distance_km * 100) * per_km_cents / 100
     // Avoid float rounding drift by scaling to millikm.
     let distance_millikm = (distance_km * 1000.0).round() as i64;

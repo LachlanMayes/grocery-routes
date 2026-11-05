@@ -16,10 +16,12 @@ pub mod curated;
 pub mod graph;
 pub mod osm_ingest;
 pub mod router;
+pub mod timed;
 pub mod truck_constraints;
 
 pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey};
 pub use curated::{CuratedConstraints, CuratedEntry, CuratedError};
 pub use graph::{EdgeId, Graph, NodeId};
 pub use router::{RouteResult, Router};
+pub use timed::{CurfewContext, LegStep, TimedLeg, earliest_leg, plain_leg};
 pub use truck_constraints::TruckProfile;

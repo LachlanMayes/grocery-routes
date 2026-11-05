@@ -32,7 +32,7 @@ pub use geo::{LatLon, haversine_km};
 pub use holidays::{Holiday, holidays_in_year, is_public_holiday, national_public_holidays};
 pub use ids::{DepotId, DriverId, StoreId, VehicleId};
 pub use model::{
-    Chain, ChainRules, CostModel, CurfewRules, Depot, Driver, FatigueRules, Load, Node,
+    Chain, ChainRules, CostModel, CurfewRule, CurfewRules, Depot, Driver, FatigueRules, Load, Node,
     PlannedStop, Problem, RoutePlan, Shift, Solution, Store, TimeWindow, Vehicle,
 };
 pub use time::Minutes;

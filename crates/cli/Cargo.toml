@@ -19,6 +19,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 domain = { path = "../domain" }
+jiff.workspace = true
 routing = { path = "../routing" }
 serde_json.workspace = true
 sim = { path = "../sim" }

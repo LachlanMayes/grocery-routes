@@ -75,36 +75,106 @@ impl ChainRules {
 
 /// Curfew rules restrict when trucks may traverse certain road segments.
 /// Each entry forbids travel during a time window on a specific road class.
+///
+/// `start`/`end` are **minutes of the local day** (midnight = 0) that the
+/// window applies, recurring on every weekday selected by `days_of_week`.
+/// A rule with `start > end` wraps through midnight; `start == end` is an
+/// empty window that never applies. `days_of_week` selects the local day the
+/// window *starts* on, so a `Friday 22:00 → 06:00` rule covers Saturday
+/// morning when only Friday is selected.
+///
+/// Enforcement requires an absolute anchor ([`Problem::horizon_start`]) to
+/// resolve each traversal instant to a local day and time; without an anchor
+/// the fields are inert import/export data (the same rule applies to
+/// [`CurfewRules`] as a whole).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurfewRule {
-    /// Road class this curfew applies to (e.g. "residential", "arterial").
+    /// Road class this curfew applies to (an OSM `highway` value, e.g.
+    /// `"residential"`, `"primary"`).
     pub road_class: String,
-    /// Start of the curfew window (minutes from horizon start).
+    /// Minute of the local day the curfew starts (0 = midnight).
     pub start: Minutes,
-    /// End of the curfew window (minutes from horizon start).
+    /// Minute of the local day the curfew ends (exclusive).
     pub end: Minutes,
-    /// Days of week this curfew applies (0=Sunday, 6=Saturday). `None` = all days.
+    /// Days of week the window starts on (0=Sunday, 6=Saturday).
+    /// `None` = every day.
     pub days_of_week: Option<[bool; 7]>,
 }
 
-/// Curfew rules for the road network. The solver/validator do not currently
-/// apply these because edges carry no road class and horizon timestamps are
-/// not absolute clock times.
+impl CurfewRule {
+    /// True when this rule curtails `road_class` at `minute_of_day` on local
+    /// weekday `day` (0 = Sunday).
+    #[must_use]
+    pub fn applies_at(&self, road_class: &str, minute_of_day: i64, day: usize) -> bool {
+        if self.road_class != road_class {
+            return false;
+        }
+        let day = day % 7;
+        let selected = |index: usize| self.days_of_week.is_none_or(|days| days[index % 7]);
+        let minute = minute_of_day.rem_euclid(1440);
+        if self.start.minutes() < self.end.minutes() {
+            // Same-day window.
+            selected(day) && self.start.minutes() <= minute && minute < self.end.minutes()
+        } else if self.start.minutes() > self.end.minutes() {
+            // Wrap-midnight window: the evening part belongs to the start
+            // day, the morning part to the day after it.
+            (selected(day) && minute >= self.start.minutes())
+                || (selected((day + 6) % 7) && minute < self.end.minutes())
+        } else {
+            false
+        }
+    }
+
+    /// Minutes from `minute_of_day` until this rule next releases, assuming
+    /// it currently applies.
+    fn minutes_until_release(&self, minute_of_day: i64) -> i64 {
+        let minute = minute_of_day.rem_euclid(1440);
+        if self.start.minutes() < self.end.minutes() {
+            self.end.minutes() - minute
+        } else if minute >= self.start.minutes() {
+            // Evening part: release at `end` on the next day.
+            (1440 - minute) + self.end.minutes()
+        } else {
+            // Morning part: release at `end` today.
+            self.end.minutes() - minute
+        }
+    }
+}
+
+/// Curfew rules for the road network. Enforcement resolves each traversal
+/// instant to a local weekday/time via [`crate::clock`] and evaluates
+/// [`CurfewRule::applies_at`]; see `routing::timed` for the time-aware router
+/// that consumes these rules.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurfewRules {
     pub rules: Vec<CurfewRule>,
 }
 
 impl CurfewRules {
-    /// Returns true if `road_class` is under curfew at `time` (minutes from
-    /// horizon start) on the given `day_of_week` (0=Sunday).
+    /// True when `road_class` is under curfew at `time` on `day_of_week`
+    /// (0=Sunday). Without an anchor, `time` is taken as minutes from the
+    /// horizon start of a single-day horizon.
+    #[must_use]
     pub fn is_curtailed(&self, road_class: &str, time: Minutes, day_of_week: usize) -> bool {
-        self.rules.iter().any(|r| {
-            r.road_class == road_class
-                && r.start <= time
-                && time < r.end
-                && r.days_of_week.map_or(true, |days| days[day_of_week])
-        })
+        self.rules
+            .iter()
+            .any(|rule| rule.applies_at(road_class, time.minutes(), day_of_week))
+    }
+
+    /// Minutes to wait before `road_class` may be traversed again, given the
+    /// current local `minute_of_day` and weekday. Returns `0` when traversal
+    /// is already allowed; otherwise the wait lands on the next window
+    /// boundary, which the caller must re-check (and re-localise) because
+    /// another rule may still apply.
+    #[must_use]
+    pub fn next_allowed_delta(&self, road_class: &str, minute_of_day: i64, day: usize) -> i64 {
+        self.rules
+            .iter()
+            .filter(|rule| rule.applies_at(road_class, minute_of_day, day))
+            .map(|rule| rule.minutes_until_release(minute_of_day))
+            .min()
+            .unwrap_or(0)
+            .max(0)
     }
 }
 
@@ -724,12 +794,16 @@ pub struct Problem {
     /// receiving windows inherit from their chain's defaults.
     #[serde(default)]
     pub chain_rules: ChainRules,
-    /// Truck curfew rules for certain road classes. Stored for API
-    /// import/export and analysis; not enforced by the solver/validator yet
-    /// because route segments do not carry a road class. When
-    /// [`Problem::horizon_start`] is set, the local weekday of a horizon
-    /// minute can be resolved via [`crate::clock`], but curfew enforcement
-    /// still requires road-class-tagged edges.
+    /// Truck curfew rules for certain road classes.
+    ///
+    /// Enforced by `solve --enforce-curfews`: `routing::timed` computes each
+    /// traversal's presence interval against the rules (a truck waits at the
+    /// previous node until its traversal is clear) and
+    /// `solver::enforce_curfews` re-schedules the plan, dropping stores whose
+    /// waits no longer fit their receiving windows. Enforcement requires
+    /// [`Problem::horizon_start`] (to resolve local days/times) and an OSM
+    /// graph (edges carry the road class); without an anchor the rules are
+    /// inert import/export data.
     #[serde(default)]
     pub curfews: CurfewRules,
     /// Absolute instant corresponding to horizon minute zero (RFC 3339).
@@ -1365,7 +1439,8 @@ mod tests {
                     road_class: "arterial".to_string(),
                     start: Minutes::from_minutes(1080), // 18:00
                     end: Minutes::from_minutes(1200),   // 20:00
-                    days_of_week: Some([true, true, true, true, true, false, false]), // Mon-Fri
+                    // Monday-Friday (0 = Sunday, 6 = Saturday).
+                    days_of_week: Some([false, true, true, true, true, true, false]),
                 },
             ],
         };
@@ -1394,5 +1469,98 @@ mod tests {
         let rules = CurfewRules::default();
         assert!(!rules.is_curtailed("residential", Minutes::ZERO, 0));
         assert!(!rules.is_curtailed("arterial", Minutes::from_minutes(1440), 0));
+    }
+
+    #[test]
+    fn curfew_window_wrapping_midnight_covers_the_next_morning() {
+        // Friday 22:00 -> 06:00, Friday only (day 5).
+        let rules = CurfewRules {
+            rules: vec![CurfewRule {
+                road_class: "residential".to_string(),
+                start: Minutes::from_minutes(22 * 60),
+                end: Minutes::from_minutes(6 * 60),
+                days_of_week: Some([false, false, false, false, false, true, false]),
+            }],
+        };
+        let friday = 5;
+        let saturday = 6;
+
+        // Friday evening: covered.
+        assert!(rules.is_curtailed("residential", Minutes::from_minutes(22 * 60 + 30), friday));
+        // Saturday 02:00: still covered (morning part of Friday's window).
+        assert!(rules.is_curtailed("residential", Minutes::from_minutes(120), saturday));
+        // Saturday morning after release: not covered.
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(360), saturday));
+        // Saturday evening: Saturday is not selected.
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(22 * 60 + 30), saturday));
+        // Sunday 02:00: Friday's window has long released.
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(120), 0));
+        // Friday 05:00: the morning part would belong to Thursday,
+        // which is not selected.
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(300), friday));
+    }
+
+    #[test]
+    fn next_allowed_delta_lands_on_window_boundaries() {
+        let rules = CurfewRules {
+            rules: vec![CurfewRule {
+                road_class: "residential".to_string(),
+                start: Minutes::from_minutes(22 * 60),
+                end: Minutes::from_minutes(6 * 60),
+                days_of_week: None,
+            }],
+        };
+        // Not curtailed: no wait.
+        assert_eq!(rules.next_allowed_delta("residential", 12 * 60, 3), 0);
+        // Friday 22:30: wait until 06:00 tomorrow = 90 + 360 = 450 minutes.
+        assert_eq!(
+            rules.next_allowed_delta("residential", 22 * 60 + 30, 5),
+            450
+        );
+        // Saturday 02:00: wait until 06:00 = 240 minutes.
+        assert_eq!(rules.next_allowed_delta("residential", 120, 6), 240);
+    }
+
+    #[test]
+    fn next_allowed_delta_steps_past_overlapping_windows() {
+        // Two back-to-back windows: 10:00-12:00 and 11:30-13:00.
+        let rules = CurfewRules {
+            rules: vec![
+                CurfewRule {
+                    road_class: "primary".to_string(),
+                    start: Minutes::from_minutes(600),
+                    end: Minutes::from_minutes(720),
+                    days_of_week: None,
+                },
+                CurfewRule {
+                    road_class: "primary".to_string(),
+                    start: Minutes::from_minutes(690),
+                    end: Minutes::from_minutes(780),
+                    days_of_week: None,
+                },
+            ],
+        };
+        // At 10:00 the first release is 12:00 (120 minutes); the caller must
+        // re-check and then wait to 13:00.
+        let first = rules.next_allowed_delta("primary", 600, 1);
+        assert_eq!(first, 120);
+        assert!(rules.is_curtailed("primary", Minutes::from_minutes(600 + first), 1));
+        let second = rules.next_allowed_delta("primary", 600 + first, 1);
+        assert_eq!(second, 60);
+        assert!(!rules.is_curtailed("primary", Minutes::from_minutes(600 + first + second), 1));
+    }
+
+    #[test]
+    fn empty_curfew_window_never_applies() {
+        let rules = CurfewRules {
+            rules: vec![CurfewRule {
+                road_class: "residential".to_string(),
+                start: Minutes::from_minutes(600),
+                end: Minutes::from_minutes(600),
+                days_of_week: None,
+            }],
+        };
+        assert!(!rules.is_curtailed("residential", Minutes::from_minutes(600), 1));
+        assert_eq!(rules.next_allowed_delta("residential", 600, 1), 0);
     }
 }

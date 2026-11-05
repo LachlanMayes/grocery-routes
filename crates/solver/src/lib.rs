@@ -24,6 +24,7 @@
 //! [`FALLBACK_SPEED_KMH`]. Every step of the search is deterministic: the
 //! same problem always yields the same plan.
 
+pub mod curfew;
 pub mod greedy;
 pub mod lns;
 pub mod local_search;
@@ -31,6 +32,7 @@ mod matrix;
 pub mod parser;
 mod savings; // Solomon/VRPLib parser (vendored for M1)
 
+pub use curfew::{BreachKind, CurfewDrop, CurfewReport, LegTimes, StaticLegs, enforce_curfews};
 pub use lns::{LNSConfig, solve_lns};
 pub use local_search::{LSConfig, improve};
 pub use matrix::{
