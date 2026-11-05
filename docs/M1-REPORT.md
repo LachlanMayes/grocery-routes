@@ -50,7 +50,7 @@ quality baseline.
 
 ```console
 cargo test --workspace
-# all 166 tests pass (as of 2026-11-05)
+# all 173 tests pass (as of 2026-11-05)
 
 cargo clippy --workspace --all-targets
 # exits 0 with warnings; clippy is not enforced with -D warnings

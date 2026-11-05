@@ -22,10 +22,12 @@ tracking or proof of delivery, and no further console UI is planned for it.
 
 Current checks:
 
-- `cargo test --workspace`: all **166** tests pass.
+- `cargo test --workspace`: all **173** tests pass.
 - `cargo clippy --workspace --all-targets`: exits 0 with warnings (no errors).
 - Latest commits: `4f6d16f` (review fixes), `75345aa` (LNS validity fix),
-  `a11f6c8` (anchor/local time/holidays), `6d73dae` (curated constraints).
+  `a11f6c8` (anchor/local time/holidays), `6d73dae` (curated constraints),
+  `4adf89e` (docs refresh), `4903eba` (review fixes: boundary timezone
+  validation, LNS test discrimination, clock docs).
 - `data/solomon/C101.txt` is tracked, so the calibration gates fail loudly
   rather than silently skipping if the dataset is missing.
 
