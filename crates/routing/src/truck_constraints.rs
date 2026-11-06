@@ -63,16 +63,16 @@ pub fn edge_allowed_for(edge: &GraphEdge, profile: TruckProfile) -> Result<(), E
         return Err(EdgeForbidden::NoAccess);
     }
 
-    if let (Some(limit), Some(weight)) = (edge.maxweight_tonnes, profile.maxweight_tonnes) {
-        if weight > limit {
-            return Err(EdgeForbidden::WeightLimitExceeded);
-        }
+    if let (Some(limit), Some(weight)) = (edge.maxweight_tonnes, profile.maxweight_tonnes)
+        && weight > limit
+    {
+        return Err(EdgeForbidden::WeightLimitExceeded);
     }
 
-    if let (Some(limit), Some(height)) = (edge.maxheight_m, profile.maxheight_m) {
-        if height > limit {
-            return Err(EdgeForbidden::HeightLimitExceeded);
-        }
+    if let (Some(limit), Some(height)) = (edge.maxheight_m, profile.maxheight_m)
+        && height > limit
+    {
+        return Err(EdgeForbidden::HeightLimitExceeded);
     }
 
     if profile.hgv

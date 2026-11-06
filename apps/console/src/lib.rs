@@ -4,7 +4,7 @@
 //! LNS/ALNS, with optional OSM routing), viewing solutions and KPIs, and
 //! watching live solve events via SSE.
 
-mod app;
 mod api_client;
+mod app;
 
 pub use app::ConsoleApp;

@@ -13,7 +13,7 @@ use domain::{
     DriverId, Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId, Vehicle,
 };
 
-use super::greedy::{Scheduled, plan, plan_with_matrix, schedule_shift, spans_overlap};
+use super::greedy::{Scheduled, plan_with_matrix, schedule_shift, spans_overlap};
 use crate::matrix::DistanceMatrix;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
@@ -75,7 +75,7 @@ pub fn improve(
 
     // Multi-start loop
     let base_seed = if config.seed == 0 {
-        hash_problem(problem) as u64
+        hash_problem(problem)
     } else {
         config.seed
     };
@@ -100,18 +100,11 @@ pub fn improve(
                 break;
             }
 
-            let mut improved = false;
-
             // Try moves in order: 2-opt (fastest), then relocate, exchange, cross-exchange
-            if two_opt(problem, matrix, &mut current) {
-                improved = true;
-            } else if relocate(problem, matrix, &mut current, &mut rng) {
-                improved = true;
-            } else if exchange(problem, matrix, &mut current, &mut rng) {
-                improved = true;
-            } else if cross_exchange(problem, matrix, &mut current, &mut rng) {
-                improved = true;
-            }
+            let improved = two_opt(problem, matrix, &mut current)
+                || relocate(problem, matrix, &mut current, &mut rng)
+                || exchange(problem, matrix, &mut current, &mut rng)
+                || cross_exchange(problem, matrix, &mut current, &mut rng);
 
             if improved {
                 no_improve = 0;
@@ -149,7 +142,7 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
         .routes
         .into_iter()
         .map(|route| {
-            let vehicle = &problem
+            let _vehicle = &problem
                 .vehicles
                 .iter()
                 .find(|v| v.id == route.vehicle)
@@ -283,7 +276,7 @@ fn perturb_solution(
     }
 
     // Randomly select up to 3 stores to relocate
-    let num_perturb = solution.routes.len().min(3).max(1);
+    let num_perturb = solution.routes.len().clamp(1, 3);
     let mut all_stores: Vec<(usize, usize, StoreId)> = Vec::new(); // (route_idx, pos_in_route, store_id)
 
     for (r_idx, route) in solution.routes.iter().enumerate() {
@@ -683,7 +676,7 @@ fn cross_exchange(
     problem: &Problem,
     matrix: &DistanceMatrix,
     solution: &mut LSSolution,
-    rng: &mut StdRng,
+    _rng: &mut StdRng,
 ) -> bool {
     if solution.routes.len() < 2 {
         return false;
@@ -800,6 +793,7 @@ fn schedule_shift_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::greedy::plan;
     use domain::{
         Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
         LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,

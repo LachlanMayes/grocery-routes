@@ -3,6 +3,10 @@
 //! Wraps reqwest to talk to the axum backend (M4 API).
 //! All methods return [`anyhow::Result`] so the UI can display errors.
 
+// Mirrors the API surface: some endpoints and payload fields are not yet
+// consumed by the console UI, so dead-code warnings are expected here.
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

@@ -211,12 +211,15 @@ fn import_localities(
     Ok(localities)
 }
 
-/// STREET_LOCALITY_PID -> (street name, street type, LOCALITY_PID).
+/// STREET_LOCALITY_PID -> (street name, street type code, LOCALITY_PID).
+type StreetLocalities = HashMap<String, (String, Option<String>, String)>;
+
+/// Imports STREET_LOCALITY rows for every locality already known.
 fn import_street_localities(
     paths: &[PathBuf],
     localities: &HashMap<String, (String, String)>,
     stats: &mut ImportStats,
-) -> anyhow::Result<HashMap<String, (String, Option<String>, String)>> {
+) -> anyhow::Result<StreetLocalities> {
     let mut streets = HashMap::new();
     for path in paths {
         let mut reader = PsvReader::open(path)?;

@@ -5,14 +5,17 @@
 //! better starting solutions than sequential insertion, giving the local
 //! search a stronger baseline.
 
+// The Clarke-Wright prototype is documented as unwired dead code in
+// docs/M1-REPORT.md; it is retained deliberately. See that report before
+// wiring it in or deleting it.
+#![allow(dead_code)]
+
 use std::cmp::Reverse;
 
-use domain::{
-    DepotId, Load, Minutes, Node, Problem, RoutePlan, Shift, Solution, StoreId, VehicleId,
-};
+use domain::{DepotId, Minutes, Node, Problem, RoutePlan, Solution, StoreId};
 
 use crate::greedy::{ActiveRoute, Scheduled, plan_with_matrix, schedule_route_simple};
-use crate::matrix::{DistanceMatrix, travel_minutes};
+use crate::matrix::DistanceMatrix;
 use domain::PlannedStop;
 
 /// Runs Clarke–Wright savings and then polishes with local search.
@@ -51,7 +54,7 @@ fn build_savings_routes(
     // We'll merge them greedily.
     let mut active = init_singleton_routes(
         problem,
-        &matrix,
+        matrix,
         driver_indices,
         &vehicle_indices,
         driver_busy,
@@ -116,14 +119,12 @@ fn build_savings_routes(
         // Try to merge: concatenate the two routes in the orientation that fits.
         if let Some(merged) = try_merge_routes(
             problem,
-            &matrix,
+            matrix,
             driver_indices,
             &active,
             driver_busy,
             route_i_idx,
-            pos_i,
             route_j_idx,
-            pos_j,
         ) {
             // Remove old driver bookings for the two routes being merged.
             let old_driver_i = active[route_i_idx].scheduled.driver.0 as usize;
@@ -280,9 +281,7 @@ fn try_merge_routes(
     active: &[ActiveRoute],
     driver_busy: &[Vec<(Minutes, Minutes)>],
     ri: usize,
-    pos_i: usize,
     rj: usize,
-    pos_j: usize,
 ) -> Option<Scheduled> {
     let route_i = &active[ri];
     let route_j = &active[rj];
@@ -391,7 +390,7 @@ fn local_search(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
-    routes: &mut Vec<ActiveRoute>,
+    routes: &mut [ActiveRoute],
     driver_busy: &mut [Vec<(Minutes, Minutes)>],
 ) {
     let mut improved = true;
@@ -455,16 +454,15 @@ fn two_opt(
                 &candidate,
                 driver_busy,
                 exempt,
-            ) {
-                if scheduled.cost_cents < best_cost {
-                    best_cost = scheduled.cost_cents;
-                    best_nodes = candidate;
-                }
+            ) && scheduled.cost_cents < best_cost
+            {
+                best_cost = scheduled.cost_cents;
+                best_nodes = candidate;
             }
         }
     }
-    if best_cost < route.scheduled.cost_cents {
-        if let Some(scheduled) = schedule_route_simple(
+    if best_cost < route.scheduled.cost_cents
+        && let Some(scheduled) = schedule_route_simple(
             problem,
             matrix,
             driver_indices,
@@ -472,23 +470,23 @@ fn two_opt(
             &best_nodes,
             driver_busy,
             exempt,
-        ) {
-            // Update driver busy: remove old span, add new span.
-            let old_driver = route.scheduled.driver.0 as usize;
-            let old_span = route.scheduled.span;
-            if let Some(spans) = driver_busy.get_mut(old_driver)
-                && let Some(pos) = spans.iter().position(|&s| s == old_span)
-            {
-                spans.remove(pos);
-            }
-            let new_driver = scheduled.driver.0 as usize;
-            let new_span = scheduled.span;
-            if let Some(spans) = driver_busy.get_mut(new_driver) {
-                spans.push(new_span);
-            }
-            route.scheduled = scheduled;
-            return true;
+        )
+    {
+        // Update driver busy: remove old span, add new span.
+        let old_driver = route.scheduled.driver.0 as usize;
+        let old_span = route.scheduled.span;
+        if let Some(spans) = driver_busy.get_mut(old_driver)
+            && let Some(pos) = spans.iter().position(|&s| s == old_span)
+        {
+            spans.remove(pos);
         }
+        let new_driver = scheduled.driver.0 as usize;
+        let new_span = scheduled.span;
+        if let Some(spans) = driver_busy.get_mut(new_driver) {
+            spans.push(new_span);
+        }
+        route.scheduled = scheduled;
+        return true;
     }
     false
 }
@@ -497,7 +495,7 @@ fn relocate(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
-    routes: &mut Vec<ActiveRoute>,
+    routes: &mut [ActiveRoute],
     driver_busy: &mut [Vec<(Minutes, Minutes)>],
 ) -> bool {
     // For each route, try removing each interior store and inserting it into another route.
@@ -607,7 +605,7 @@ fn exchange(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
-    routes: &mut Vec<ActiveRoute>,
+    routes: &mut [ActiveRoute],
     driver_busy: &mut [Vec<(Minutes, Minutes)>],
 ) -> bool {
     for i in 0..routes.len() {
@@ -709,7 +707,7 @@ fn cross_exchange(
     problem: &Problem,
     matrix: &DistanceMatrix,
     driver_indices: &[usize],
-    routes: &mut Vec<ActiveRoute>,
+    routes: &mut [ActiveRoute],
     driver_busy: &mut [Vec<(Minutes, Minutes)>],
 ) -> bool {
     // Swap contiguous subsequences (length 1..2 for now) between two routes.

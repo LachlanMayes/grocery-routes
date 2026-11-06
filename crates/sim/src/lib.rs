@@ -20,8 +20,6 @@ use domain::{
     Vehicle, VehicleId,
 };
 
-use solver::{parse_solomon_file, solomon_to_problem};
-
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -405,65 +403,5 @@ fn build_drivers(count: usize) -> Vec<Driver> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    const C101_SAMPLE: &str = r#"C101
-
-VEHICLE
-NUMBER     CAPACITY
-25         200
-
-CUSTOMER
-CUST NO.  XCOORD.   YCOORD.  DEMAND  READY TIME  DUE DATE  SERVICE TIME
-0         40        50       0       0           1236      0
-1         22        22       18      128         250       10
-2         36        26       26      284         386       10
-3         22        42       16      246         378       10
-4         18        46       20      128         250       10
-"#;
-
-    #[test]
-    fn parses_c101_sample() {
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(C101_SAMPLE.as_bytes()).unwrap();
-        f.flush().unwrap();
-
-        let inst = parse_solomon_file(f.path()).unwrap();
-        assert_eq!(inst.name, "C101");
-        assert_eq!(inst.vehicle_count, 25);
-        assert_eq!(inst.vehicle_capacity, 200);
-        assert_eq!(inst.depot, LatLon::new(40.0, 50.0));
-        assert_eq!(inst.customers.len(), 5); // 0=depot + 4 customers
-        assert_eq!(inst.customers[0].id, 0);
-        assert_eq!(inst.customers[1].id, 1);
-        assert_eq!(inst.customers[1].demand, 18);
-        assert_eq!(inst.customers[1].ready, 128);
-        assert_eq!(inst.customers[1].due, 250);
-        assert_eq!(inst.customers[1].service, 10);
-    }
-
-    #[test]
-    fn converts_to_problem() {
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(C101_SAMPLE.as_bytes()).unwrap();
-        f.flush().unwrap();
-
-        let inst = parse_solomon_file(f.path()).unwrap();
-        let problem = solomon_to_problem(inst, 1.0);
-
-        assert_eq!(problem.depots.len(), 1);
-        assert_eq!(problem.vehicles.len(), 25);
-        assert_eq!(problem.drivers.len(), 25);
-        assert_eq!(problem.stores.len(), 4); // 4 customers
-        assert_eq!(problem.vehicles[0].capacity, Load::new(200, 0, 0));
-        // First customer has window 128..250
-        assert_eq!(
-            problem.stores[0].receiving[0],
-            TimeWindow::new(Minutes::from_minutes(128), Minutes::from_minutes(250))
-        );
-    }
-}
+// The parser tests for `parse_solomon_file` / `solomon_to_problem` live in
+// `solver::parser`, the crate that owns them; they are not duplicated here.

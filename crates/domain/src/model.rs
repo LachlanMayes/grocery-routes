@@ -499,7 +499,7 @@ pub struct Driver {
 }
 
 /// Global cost policy, in Australian cents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CostModel {
     /// Per-route fixed cost (vehicle standing charge, depot overhead).
     pub fixed_per_route_cents: i64,
@@ -508,17 +508,6 @@ pub struct CostModel {
     /// Lateness penalty for soft windows; reserved for M2 — M0 windows are
     /// hard.
     pub late_per_min_cents: i64,
-}
-
-impl Default for CostModel {
-    fn default() -> Self {
-        Self {
-            fixed_per_route_cents: 0,
-            per_km_cents: 0,
-            per_hour_cents: 0,
-            late_per_min_cents: 0,
-        }
-    }
 }
 
 /// One node on a route: a depot visit or a store delivery.
@@ -686,7 +675,7 @@ impl Solution {
                         }
                         served[store_id.0 as usize] += 1;
                         let effective_windows = problem.chain_rules.windows_for_store(store);
-                        let window_ok = effective_windows.map_or(false, |windows| {
+                        let window_ok = effective_windows.is_some_and(|windows| {
                             windows.iter().any(|window| {
                                 window.start <= step.arrive && step.depart <= window.end
                             })
@@ -775,7 +764,7 @@ impl Solution {
 
             // Check rolling 24-hour work limit.
             let day_minutes: i64 = 24 * 60;
-            let work_in_window = max_work_in_fixed_window(&spans, day_minutes);
+            let work_in_window = max_work_in_fixed_window(spans, day_minutes);
             if work_in_window > max_work_24h {
                 violations.push(Violation::DriverWorkHoursExceeded {
                     driver: driver_id,
@@ -786,7 +775,7 @@ impl Solution {
 
             // Check rolling 7-day work limit.
             let week_minutes = 7 * day_minutes;
-            let work_in_window = max_work_in_fixed_window(&spans, week_minutes);
+            let work_in_window = max_work_in_fixed_window(spans, week_minutes);
             if work_in_window > max_work_7d {
                 violations.push(Violation::DriverWeeklyHoursExceeded {
                     driver: driver_id,
@@ -823,7 +812,7 @@ impl Solution {
 }
 
 /// The problem instance.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Problem {
     pub name: String,
     pub depots: Vec<Depot>,
@@ -855,22 +844,6 @@ pub struct Problem {
     /// existing fixtures valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon_start: Option<jiff::Timestamp>,
-}
-
-impl Default for Problem {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            depots: Vec::new(),
-            stores: Vec::new(),
-            vehicles: Vec::new(),
-            drivers: Vec::new(),
-            cost: CostModel::default(),
-            chain_rules: ChainRules::default(),
-            curfews: CurfewRules::default(),
-            horizon_start: None,
-        }
-    }
 }
 
 impl Problem {

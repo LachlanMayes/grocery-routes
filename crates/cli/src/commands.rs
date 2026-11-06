@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use domain::{Chain, Load, Node, Problem, Solution};
-use sim::{SimOptions, generate};
 
 use crate::export::{format_aud_cents, returnables_csv, route_sheet_html, routes_geojson};
 

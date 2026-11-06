@@ -125,7 +125,7 @@ impl PrimalIntegralTracker {
         if initial_cost == best_cost {
             return 0.0;
         }
-        self.integral / (initial_cost - best_cost) as f64
+        self.integral / (initial_cost - best_cost)
     }
 }
 
@@ -496,14 +496,15 @@ fn apply_conflict_penalties(weights: &mut HashMap<&'static str, OperatorStats>) 
             .map(|s| s.conflicting_ops.iter().copied().collect())
             .unwrap_or_default();
         for op2 in &conflicting {
-            if let (Some(s1), Some(s2)) = (weights.get(op1), weights.get(op2)) {
-                if s1.usage_count > 10 && s2.usage_count > 10 {
-                    let avg1 = s1.score_sum / s1.usage_count as f64;
-                    let avg2 = s2.score_sum / s2.usage_count as f64;
-                    if avg1 < 1.0 && avg2 < 1.0 {
-                        adjustments.push((*op1, 0.95));
-                        adjustments.push((*op2, 0.95));
-                    }
+            if let (Some(s1), Some(s2)) = (weights.get(op1), weights.get(op2))
+                && s1.usage_count > 10
+                && s2.usage_count > 10
+            {
+                let avg1 = s1.score_sum / s1.usage_count as f64;
+                let avg2 = s2.score_sum / s2.usage_count as f64;
+                if avg1 < 1.0 && avg2 < 1.0 {
+                    adjustments.push((*op1, 0.95));
+                    adjustments.push((*op2, 0.95));
                 }
             }
         }
@@ -600,10 +601,10 @@ fn stores_partition_valid(problem: &Problem, solution: &LNSSolution) -> bool {
     };
     for route in &solution.routes {
         for step in &route.scheduled.steps {
-            if let Node::Store(id) = step.node {
-                if !claim(id) {
-                    return false;
-                }
+            if let Node::Store(id) = step.node
+                && !claim(id)
+            {
+                return false;
             }
         }
     }
@@ -615,9 +616,28 @@ fn stores_partition_valid(problem: &Problem, solution: &LNSSolution) -> bool {
     seen.iter().all(|&claimed| claimed)
 }
 
-/// -----------------------------------------------------------------------
-/// Ruin operators
-/// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Ruin operators
+// -----------------------------------------------------------------------
+
+/// Iterates every interior store stop across the solution's routes:
+/// `(route index, position, store)`. Routes shorter than three steps have no
+/// interior stops.
+fn interior_store_stops(
+    solution: &LNSSolution,
+) -> impl Iterator<Item = (usize, usize, StoreId)> + '_ {
+    solution
+        .routes
+        .iter()
+        .enumerate()
+        .flat_map(|(r_idx, route)| {
+            let interior = route.scheduled.steps.len().saturating_sub(1);
+            (1..interior).filter_map(move |pos| match route.scheduled.steps[pos].node {
+                Node::Store(id) => Some((r_idx, pos, id)),
+                _ => None,
+            })
+        })
+}
 
 /// Randomly removes `k` stores from the solution.
 fn random_removal(
@@ -647,18 +667,7 @@ fn random_removal(
         };
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
-    let mut all_stores: Vec<(usize, usize, StoreId)> = Vec::new();
-    for (r_idx, route) in current.routes.iter().enumerate() {
-        let route_len = route.scheduled.steps.len();
-        if route_len < 3 {
-            continue;
-        }
-        for pos in 1..route_len - 1 {
-            if let Node::Store(id) = route.scheduled.steps[pos].node {
-                all_stores.push((r_idx, pos, id));
-            }
-        }
-    }
+    let mut all_stores: Vec<(usize, usize, StoreId)> = interior_store_stops(&current).collect();
     all_stores.shuffle(rng);
     let selected: HashSet<StoreId> = all_stores
         .into_iter()
@@ -721,7 +730,7 @@ fn worst_removal(
             modified_solution: current,
         };
     }
-    store_costs.sort_by(|a, b| b.0.cmp(&a.0));
+    store_costs.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let max_k = ruin_size_range.1.min(store_costs.len());
     if ruin_size_range.0 > max_k {
         return RuinResult {
@@ -939,32 +948,24 @@ fn time_window_removal(
 ) -> RuinResult {
     let mut current = solution.clone();
     let mut store_tw_scores: Vec<(i64, usize, usize, StoreId)> = Vec::new();
-    for (r_idx, route) in current.routes.iter().enumerate() {
-        let route_len = route.scheduled.steps.len();
-        if route_len < 3 {
+    for (r_idx, pos, id) in interior_store_stops(&current) {
+        let Some(store) = problem.store(id) else {
             continue;
-        }
-        for pos in 1..route_len - 1 {
-            if let Node::Store(id) = route.scheduled.steps[pos].node {
-                if let Some(store) = problem.store(id) {
-                    let min_width = store
-                        .receiving
-                        .iter()
-                        .map(|w| (w.end - w.start).minutes())
-                        .min()
-                        .unwrap_or(i64::MAX);
-                    let earliest_start = store
-                        .receiving
-                        .iter()
-                        .map(|w| w.start.minutes())
-                        .min()
-                        .unwrap_or(i64::MAX);
-                    let score =
-                        i64::MAX.saturating_sub(min_width).min(i64::MAX / 2) + earliest_start / 10;
-                    store_tw_scores.push((score, r_idx, pos, id));
-                }
-            }
-        }
+        };
+        let min_width = store
+            .receiving
+            .iter()
+            .map(|w| (w.end - w.start).minutes())
+            .min()
+            .unwrap_or(i64::MAX);
+        let earliest_start = store
+            .receiving
+            .iter()
+            .map(|w| w.start.minutes())
+            .min()
+            .unwrap_or(i64::MAX);
+        let score = i64::MAX.saturating_sub(min_width).min(i64::MAX / 2) + earliest_start / 10;
+        store_tw_scores.push((score, r_idx, pos, id));
     }
     if store_tw_scores.is_empty() {
         return RuinResult {
@@ -980,7 +981,7 @@ fn time_window_removal(
         };
     }
     let k = rng.random_range(ruin_size_range.0..=max_k);
-    store_tw_scores.sort_by(|a, b| b.0.cmp(&a.0));
+    store_tw_scores.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     let selected: HashSet<StoreId> = store_tw_scores
         .into_iter()
         .take(k)
@@ -1015,8 +1016,7 @@ fn route_removal(
     let mut route_indices: Vec<usize> = (0..current.routes.len()).collect();
     route_indices.shuffle(rng);
     let mut selected: HashSet<StoreId> = HashSet::new();
-    for i in 0..num_routes {
-        let route_idx = route_indices[i];
+    for &route_idx in &route_indices[..num_routes] {
         if let Some(route) = current.routes.get(route_idx) {
             selected.extend(
                 route
@@ -1119,9 +1119,9 @@ fn cluster_removal(
     }
 }
 
-/// -----------------------------------------------------------------------
-/// Repair operators
-/// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Repair operators
+// -----------------------------------------------------------------------
 
 /// Repairs by greedily inserting unassigned stores (sorted by time-window tightness).
 fn greedy_repair(
@@ -1226,7 +1226,7 @@ fn regret_k_repair(
             candidates.push((regret, store_id, insertions[0].clone()));
         }
         if candidates.is_empty() {
-            current.unassigned.extend(unassigned.drain(..));
+            current.unassigned.append(&mut unassigned);
             break;
         }
         // Probabilistic selection proportional to regret value (Finding 4/6)
@@ -1254,16 +1254,16 @@ fn regret_k_repair(
             apply_insertion(&mut current, problem, matrix, insertion);
             unassigned.retain(|id| *id != store_id);
         } else {
-            current.unassigned.extend(unassigned.drain(..));
+            current.unassigned.append(&mut unassigned);
             break;
         }
     }
     current
 }
 
-/// -----------------------------------------------------------------------
-/// Repair utilities
-/// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Repair utilities
+// -----------------------------------------------------------------------
 
 /// Re-schedules all routes in the solution after ruin.
 fn re_schedule_routes(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LNSSolution) {
@@ -1493,10 +1493,10 @@ fn apply_insertion(
     } else {
         let old_d = solution.routes[insertion.route_idx].scheduled.driver.0 as usize;
         let old_s = solution.routes[insertion.route_idx].scheduled.span;
-        if let Some(spans) = solution.driver_busy.get_mut(old_d) {
-            if let Some(p) = spans.iter().position(|&s| s == old_s) {
-                spans.remove(p);
-            }
+        if let Some(spans) = solution.driver_busy.get_mut(old_d)
+            && let Some(p) = spans.iter().position(|&s| s == old_s)
+        {
+            spans.remove(p);
         }
         solution.driver_busy[d_idx].push(span);
         solution.routes[insertion.route_idx].scheduled = sched;
@@ -1504,9 +1504,9 @@ fn apply_insertion(
     solution.total_cost_cents = solution.routes.iter().map(|r| r.scheduled.cost_cents).sum();
 }
 
-/// -----------------------------------------------------------------------
-/// Internal helpers
-/// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Internal helpers
+// -----------------------------------------------------------------------
 
 fn driver_order(problem: &Problem) -> Vec<usize> {
     let mut o: Vec<usize> = (0..problem.drivers.len()).collect();
@@ -1549,10 +1549,10 @@ fn greedy_to_lns(problem: &Problem, solution: Solution) -> Option<LNSSolution> {
     let mut driver_busy: Vec<Vec<(Minutes, Minutes)>> = vec![Vec::new(); problem.drivers.len()];
     let mut routes = Vec::new();
     for route in solution.routes {
-        let Some(vehicle_index) = problem.vehicles.iter().position(|v| v.id == route.vehicle)
-        else {
-            return None;
-        };
+        let vehicle_index = problem
+            .vehicles
+            .iter()
+            .position(|v| v.id == route.vehicle)?;
         total_cost += route.cost_cents;
         let Some(driver) = route.drivers.first().copied() else {
             eprintln!("greedy_to_lns: route {} has no drivers", route.vehicle);
@@ -1779,7 +1779,7 @@ mod tests {
         let result = worst_removal(&problem, &matrix, &solution, &mut rng, (1, 2));
         assert!(!result._removed_stores.is_empty());
         assert!(
-            result.modified_solution.unassigned.len() >= 1,
+            !result.modified_solution.unassigned.is_empty(),
             "unassigned should grow"
         );
     }

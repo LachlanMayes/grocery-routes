@@ -95,6 +95,7 @@ impl Graph {
     /// Adds a directed edge from `from` to `to`. Returns the edge id.
     ///
     /// Panics if either endpoint node does not exist.
+    #[allow(clippy::too_many_arguments)] // edge geometry + tags; a params struct would obscure every call site
     pub fn add_edge(
         &mut self,
         from: NodeId,

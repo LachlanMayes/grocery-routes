@@ -192,8 +192,10 @@ mod tests {
 
     #[test]
     fn local_time_follows_node_timezone() {
-        let mut problem = Problem::default();
-        problem.horizon_start = Some(anchor());
+        let problem = Problem {
+            horizon_start: Some(anchor()),
+            ..Problem::default()
+        };
         let zoned = local_time(
             &problem,
             Some("Australia/Sydney"),

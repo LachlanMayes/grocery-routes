@@ -500,29 +500,26 @@ async fn sse_loop(tx: mpsc::Sender<Msg>) {
     let mut backoff = Duration::from_secs(1);
 
     loop {
-        match client.events_stream().await {
-            Ok(resp) => {
-                let mut stream = resp.bytes_stream();
-                let mut buf = String::new();
-                while let Some(chunk) = stream.next().await {
-                    let Ok(bytes) = chunk else {
-                        break;
-                    };
-                    buf.push_str(&String::from_utf8_lossy(&bytes));
-                    while let Some(pos) = buf.find('\n') {
-                        let line = buf[..pos].trim_end_matches('\r').to_string();
-                        buf.drain(..=pos);
-                        if let Some(data) = line.strip_prefix("data: ")
-                            && let Ok(event) =
-                                serde_json::from_str::<crate::api_client::SolveEvent>(data)
-                        {
-                            let _ = tx.send(Msg::SolveEvent(event));
-                        }
+        if let Ok(resp) = client.events_stream().await {
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            while let Some(chunk) = stream.next().await {
+                let Ok(bytes) = chunk else {
+                    break;
+                };
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim_end_matches('\r').to_string();
+                    buf.drain(..=pos);
+                    if let Some(data) = line.strip_prefix("data: ")
+                        && let Ok(event) =
+                            serde_json::from_str::<crate::api_client::SolveEvent>(data)
+                    {
+                        let _ = tx.send(Msg::SolveEvent(event));
                     }
                 }
-                backoff = Duration::from_secs(1);
             }
-            Err(_) => {}
+            backoff = Duration::from_secs(1);
         }
 
         tokio::time::sleep(backoff).await;

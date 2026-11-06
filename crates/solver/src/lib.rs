@@ -42,7 +42,6 @@ pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
 #[allow(unused_imports)]
 pub use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
 
-use anyhow;
 use domain::{Problem, Solution};
 
 /// Solves `problem` and returns a validated plan using greedy insertion (M0/M1).

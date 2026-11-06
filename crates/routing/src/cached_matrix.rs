@@ -205,19 +205,13 @@ impl CachedMatrix {
     }
 }
 
-/// Converts a flat cache entry list back into a 2D matrix.
+/// Converts a flat cache entry list back into a 2D matrix; rows are padded
+/// with `None` when the flat list is shorter than the full grid.
 fn entries_to_matrix(flat: &[Option<MatrixEntry>], n: usize) -> Vec<Vec<Option<MatrixEntry>>> {
-    let mut matrix: Vec<Vec<Option<MatrixEntry>>> = vec![vec![None; n]; n];
-    let mut idx = 0;
-    for i in 0..n {
-        for j in 0..n {
-            if idx < flat.len() {
-                matrix[i][j] = flat[idx];
-            }
-            idx += 1;
-        }
-    }
-    matrix
+    let mut entries = flat.iter().copied();
+    (0..n)
+        .map(|_| (0..n).map(|_| entries.next().flatten()).collect())
+        .collect()
 }
 
 /// Finds the nearest graph node to `location` using haversine distance.

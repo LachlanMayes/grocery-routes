@@ -74,9 +74,8 @@ pub async fn load_problem(pool: &SqlitePool, id: &str) -> Result<Option<Problem>
         .bind(id)
         .fetch_optional(pool)
         .await?;
-    Ok(row
-        .map(|(json,)| serde_json::from_str(&json).context("deserializing problem"))
-        .transpose()?)
+    row.map(|(json,)| serde_json::from_str(&json).context("deserializing problem"))
+        .transpose()
 }
 
 /// Store a solved solution in the database, returning its assigned id.
@@ -122,14 +121,13 @@ pub async fn load_solution_with_problem(
             .bind(id)
             .fetch_optional(pool)
             .await?;
-    Ok(row
-        .map(
-            |(problem_id, json): (String, String)| -> Result<(String, Solution), anyhow::Error> {
-                let solution = serde_json::from_str(&json).context("deserializing solution")?;
-                Ok((problem_id, solution))
-            },
-        )
-        .transpose()?)
+    row.map(
+        |(problem_id, json): (String, String)| -> Result<(String, Solution), anyhow::Error> {
+            let solution = serde_json::from_str(&json).context("deserializing solution")?;
+            Ok((problem_id, solution))
+        },
+    )
+    .transpose()
 }
 
 /// Return the number of stores in the referenced problem.

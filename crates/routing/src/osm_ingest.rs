@@ -36,10 +36,10 @@ pub fn ingest_pbf(path: &Path) -> anyhow::Result<Graph> {
 
     let reader = ElementReader::from_path(path)?;
     reader.for_each(|element| {
-        if let Element::Way(w) = element {
-            if let Some(way) = drivable_way(&w) {
-                add_way_to_graph(&mut graph, &nodes, way);
-            }
+        if let Element::Way(w) = element
+            && let Some(way) = drivable_way(&w)
+        {
+            add_way_to_graph(&mut graph, &nodes, way);
         }
     })?;
 
