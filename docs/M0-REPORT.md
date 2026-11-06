@@ -149,5 +149,5 @@ cargo run -q -p cli -- gen-sim --chain woolworths --city melbourne --stores 200 
 cargo run -q -p cli -- solve --problem data/demo/stress-problem.json --out data/demo/stress-solution.json
 ```
 
-Commits: `c061cf2` (scaffold) → `42913d1` (M0 implementation: generator, solver,
+Commits: `e29fc82` (scaffold) → `f27b20a` (M0 implementation: generator, solver,
 CLI, review fixes and this report).

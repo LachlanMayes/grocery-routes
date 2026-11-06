@@ -14,7 +14,7 @@ Original date: 2026-11-04. Updated: 2026-11-06. Scope per
 | C101 instance | ✅ | `data/solomon/C101.txt` is tracked in git (6391 bytes). The calibration gate can no longer silently skip. |
 | C101 greedy test | ✅ | `c101_calibration_greedy` — **11 routes, 841.68 distance, 100/100 served**. |
 | C101 local search test | ✅ | `c101_calibration_local_search` — **11 routes, 621.42 distance, 100/100 served**. |
-| C101 LNS test | ✅ | `c101_calibration_lns` — **11 routes, 709.10 distance, 100/100 served** (since commit `75345aa`). LNS is opt-in and is not the production default. |
+| C101 LNS test | ✅ | `c101_calibration_lns` — **11 routes, 709.10 distance, 100/100 served** (since commit `fbca088`). LNS is opt-in and is not the production default. |
 | Claims checked by the calibration gates | ✅ | `served == 100` is asserted and `distance <= 870.39` (≤5% gap to the 828.94 best-known instance). |
 | Local search | ✅ | `crates/solver/src/local_search.rs` — 2-opt, relocate, exchange, cross-exchange, multi-start, driver-occupancy tracking. |
 | Benchmark | ✅ | `greedy_insertion/metro_40` (historical measurement only; see `docs/PLAN.md` for current verification). |
@@ -27,13 +27,13 @@ Original date: 2026-11-04. Updated: 2026-11-06. Scope per
 ```
 greedy calibration:  routes=11, distance=841.68, served=100/100
 local search:        routes=11, distance=621.42, served=100/100
-LNS (commit 75345aa): routes=11, distance=709.10, served=100/100
+LNS (commit fbca088): routes=11, distance=709.10, served=100/100
 ```
 
 Greedy, local search and LNS all satisfy the ≤5% gap gate to best-known
 (828.94, limit 870.39) and serve every store. The current local search
 result is 621.42 distance units on the Euclidean C101 instance. LNS was
-fixed on 2026-11-05 (`75345aa`): its ruin operators had removed steps by
+fixed on 2026-11-05 (`fbca088`): its ruin operators had removed steps by
 stale positions and could delete a route's end depot or stores outright,
 so every calibration run failed validation and silently fell back to
 greedy. LNS now returns validated solutions itself.
@@ -71,7 +71,7 @@ See [PLAN.md](PLAN.md) for the current milestone state, known gaps and next
 priorities. As of 2026-11-05:
 
 - M0 and M1 are complete.
-- M2 passes the C101 gate via greedy, local search and LNS (commit `75345aa`).
+- M2 passes the C101 gate via greedy, local search and LNS (commit `fbca088`).
 - M3 (OSM routing), M4 (API + console) are implemented; M5 has timezone
   conversion and national holidays implemented; M6's driver-side
   deliverable is the route sheet with OSM deep links (no tracking/POD).

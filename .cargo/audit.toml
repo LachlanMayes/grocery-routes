@@ -1,16 +1,10 @@
 # cargo-audit configuration. Run `cargo audit` from the repository root.
-#
-# Every ignore below is justified in docs/SECURITY.md. Remove an entry as
-# soon as its fix ships (egui/eframe for quick-xml); the goal is an empty
-# ignore list.
+# This cargo-audit build reads the config from `.cargo/audit.toml` (a
+# repository-root audit.toml is silently ignored). Every ignore below is
+# justified in docs/SECURITY.md; the goal is an empty ignore list.
 [advisories]
 ignore = [
-    # quick-xml 0.30 via zbus -> zbus_xml on the Linux-only accessibility
-    # path (eframe -> accesskit_unix). Not compiled for the Windows target;
-    # cleared by an egui/eframe upgrade.
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
-    # rsa: upstream has no fixed release, and no workspace target reaches
-    # it (feature-gated lockfile entry only).
+    # rsa: upstream has no fixed release, and no workspace target reaches it
+    # (feature-gated lockfile entry only).
     "RUSTSEC-2023-0071",
 ]

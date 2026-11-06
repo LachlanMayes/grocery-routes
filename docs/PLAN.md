@@ -5,10 +5,10 @@ Woolworths, ALDI and IGA/Metcash store networks. Rust, built from scratch as a
 passion project; designed to hold up at 10+ trucks across states, executed
 one-chain-one-metro at a time.
 
-## Status (2026-11-06)
+## Status (2026-11-07)
 
 M0–M4 are implemented and verified. The seven gaps listed in the previous
-status were closed in software (commits `3b71be7` … `95eb982`):
+status were closed in software (commits `98a3f96` … `aded0ee`):
 
 - **Curfew enforcement** — `routing::timed` computes time-dependent legs
   (a truck waits at the previous node until a traversal is clear of every
@@ -49,14 +49,16 @@ proof of delivery, no further console UI.
 Current checks:
 
 - `cargo test --workspace`: all **239** tests pass.
-- `cargo clippy --workspace --all-targets`: exits 0 with warnings (no errors).
-- Latest commits: `bbdaff7` (maintenance: clippy sweep 91 -> 0, dependency
-  patch updates), `0483981` (quality + review pass: complexity refactors,
-  shared helpers, strategy-aware audit), `d8cb599` (review fixes), `52982d9`
-  (docs refresh), `95eb982` (G-NAF), `2905f93` (corridor audit), `86a5321`
-  (contraction hierarchy), `200d446` (LNS multi-start), `db79960` (state
-  holidays), `1cd22cd` (Christmas peak + returnables), `3b71be7` (curfew
-  enforcement).
+- `cargo clippy --workspace --all-targets`: exits 0 with **zero warnings**
+  (whole-tree sweep, 2026-11-06).
+- Latest commits: `fc88c9b` (console: eframe/egui 0.37 upgrade, glow
+  renderer), `decd8cd` (dependency-audit record), `91f9abf` (maintenance:
+  clippy sweep 91 -> 0, dependency patch updates), `497ac2b` (quality +
+  review pass: complexity refactors, shared helpers, strategy-aware audit),
+  `ce8039e` (review fixes), `4445fc0` (docs refresh), `aded0ee` (G-NAF),
+  `37e5925` (corridor audit), `c9eaa8f` (contraction hierarchy), `2b88822`
+  (LNS multi-start), `a9f5a75` (state holidays), `8f11f8a` (Christmas peak
+  + returnables), `98a3f96` (curfew enforcement).
 - `data/solomon/C101.txt` is tracked, so the calibration gates fail loudly
   rather than silently skipping if the dataset is missing.
 
@@ -107,7 +109,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented and fixture-tested; not yet validated against a real G-NAF release (operator step, see `docs/GNAF.md`). |
 | `crates/cli` | `gen-sim` / `solve` / `export` plus `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented; C101 dataset is tracked. |
 | `crates/api` | axum + SQLite; SSE events; import/solve/solution/KPIs | M4 | Implemented; endpoint integration tests pass; OSM matrices default to Dijkstra (CH is CLI-only for now). |
-| `apps/console` | egui desktop ops console | M4 | Implemented operator console; no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
+| `apps/console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
 
 ## Milestones
 
@@ -116,8 +118,8 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 - **M1 — Solver v1** — **done**. Vendored Solomon/VRPLib parser, C101 gate
   wired, greedy and local search validated, C101 dataset tracked.
   [docs/M1-REPORT.md](M1-REPORT.md) is current as of 2026-11-06.
-- **M2 — Solver v2** — **done**. LNS validity fixed (`75345aa`); multi-start
-  added and measured (`200d446`); local search remains the quality path and
+- **M2 — Solver v2** — **done**. LNS validity fixed (`fbca088`); multi-start
+  added and measured (`2b88822`); local search remains the quality path and
   LNS stays opt-in. `rayon` was not added — scoped threads are used.
 - **M3 — Road reality** — **done in software, with operator-verified data
   outstanding**. `osmpbf` → graph → CachedMatrix, directed edges,
@@ -168,12 +170,14 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 7. **LNS remains behind local search** on C101 (679.85 vs 621.42 even with
    multi-start); keep LS as the quality path, revisit only with a measured
    win.
-8. **Dependency advisories**: `cargo audit` exits 0 for reachable code under
-   `.cargo/audit.toml`; three advisories are ignored with dated reasons in
-   [SECURITY.md](SECURITY.md) (quick-xml via the Linux-only egui
-   accessibility stack — cleared by an egui/eframe upgrade; rsa, which no
-   workspace target reaches and upstream never fixed). `memmap2` 0.5.10
-   (unsound warning) via `osmpbf` 0.3.8 has no fixed release upstream yet.
+8. **Dependency advisories**: `cargo audit` exits 0. One advisory is ignored
+   with a dated reason in [SECURITY.md](SECURITY.md): rsa, which no
+   workspace target reaches and upstream never fixed. The eframe/egui 0.37
+   upgrade (2026-11-07; the console builds eframe with the glow renderer —
+   see the workspace `Cargo.toml`) cleared the quick-xml advisories.
+   Remaining informational warnings: the zbus family on the Linux-only
+   accessibility path, and `memmap2` 0.5.10 (unsound) via `osmpbf` 0.3.8,
+   which has no fixed release upstream yet.
 
 ## Data & licences
 
@@ -195,9 +199,10 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
   MSVC linker. `rustfmt` and `clippy` components are wired; the local
   toolchain reports Rust 1.99.1.
 - Workspace lints: `unsafe_code = "forbid"`; `clippy::all` at warn level.
-- Latest local verification (2026-11-06): `cargo test --workspace` passes
+- Latest local verification (2026-11-07): `cargo test --workspace` passes
   (239 tests); `cargo clippy --workspace --all-targets` exits 0 with **zero
-  warnings** (whole-tree sweep, 2026-11-06); `cargo audit` exits 0 — see
-  [SECURITY.md](SECURITY.md). `-D warnings` is still not enforced.
+  warnings**; `cargo audit` exits 0 — see [SECURITY.md](SECURITY.md); the
+  console starts and renders under eframe 0.37 (glow) in a manual smoke
+  run. `-D warnings` is still not enforced.
 - `Cargo.lock` is checked in and is the source of truth for dependency
   resolution.
