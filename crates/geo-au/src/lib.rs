@@ -87,16 +87,3 @@ impl Address {
         )
     }
 }
-
-/// Great-circle distance in kilometres (local copy keeps this crate
-/// independent of the routing model).
-pub(crate) fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const EARTH_RADIUS_KM: f64 = 6371.0088;
-    let phi1 = lat1.to_radians();
-    let phi2 = lat2.to_radians();
-    let delta_phi = (lat2 - lat1).to_radians();
-    let delta_lambda = (lon2 - lon1).to_radians();
-    let h = (delta_phi / 2.0).sin().powi(2)
-        + phi1.cos() * phi2.cos() * (delta_lambda / 2.0).sin().powi(2);
-    2.0 * EARTH_RADIUS_KM * h.sqrt().atan2((1.0 - h).sqrt())
-}

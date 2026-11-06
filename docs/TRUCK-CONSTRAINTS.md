@@ -17,7 +17,7 @@ plans out of the system.
 | Curfew enforcement | A curfew names a road class (OSM `highway` value) and a local day/time window. After solving, each leg is recomputed time-dependently: a truck **waits at the previous node** until its traversal would be clear of every window, and a store whose waits no longer fit its receiving windows, shift, duration limit or driver occupancy moves to `unassigned` with a recorded reason. CLI: `solve --enforce-curfews --network-timezone <IANA>` (needs `--osm` and `Problem.horizon_start`). | `crates/routing/src/timed.rs`, `crates/solver/src/curfew.rs` |
 | Corridor audit | Reports every OSM way a solved plan traverses with its limit tags, and explicitly flags ways with **no limit data**. CLI: `audit`. This is reporting, not enforcement. | `crates/routing/src/audit.rs` |
 
-Two curfew modelling choices are worth knowing:
+Curfew modelling choices worth knowing:
 
 - **Presence-interval semantics.** A traversal is blocked when the interval
   `[enter, enter + duration)` overlaps a window; the truck waits before
@@ -27,6 +27,10 @@ Two curfew modelling choices are worth knowing:
   selected weekdays, resolved through the horizon anchor and the network
   timezone (`--network-timezone` or the first depot's timezone). Without an
   anchor the rules stay inert data.
+- **Route shapes.** Enforcement re-schedules one shift at a time; a route
+  with a mid-route depot (a relay hand-over) has no single-shift schedule and
+  is dropped with every store marked `InvalidRoute`. Current solver output
+  never produces that shape.
 
 ## What is NOT enforced
 
@@ -78,7 +82,8 @@ rejects entries without provenance (`source`, `verified_by`,
 
 ## Operator responsibilities
 
-1. Run `audit` against the same extract and profile used to solve. It lists
+1. Run `audit` against the same extract, profile and matrix strategy used to
+   solve (`audit --ch` when the plan was solved with `solve --ch`). It lists
    every traversed way, its limit tags and the ways with **no** limit data;
    start verification with those.
 2. Before dispatching on a plan produced with `--osm`, verify each

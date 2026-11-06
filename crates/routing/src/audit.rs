@@ -7,17 +7,33 @@
 //! are the corridors a human has to verify against the authoritative source
 //! (see `docs/TRUCK-CONSTRAINTS.md`).
 //!
-//! Legs follow [`crate::timed::plain_leg`] — the same distance-optimal path
-//! the static matrix was built from — so the report describes the roads the
-//! planner actually priced.
+//! Legs are replayed with the same matrix objective the plan was solved
+//! with ([`AuditStrategy`]): the distance-optimal Dijkstra path for a plain
+//! solve, the time-optimal contraction-hierarchy path for a `solve --ch`
+//! plan — so the report describes the roads the planner actually priced.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use domain::{Node, Problem, Solution};
+use domain::{Minutes, Node, Problem, Solution};
 
 use crate::graph::{EdgeId, Graph, NodeId};
 use crate::truck_constraints::TruckProfile;
+
+/// How each leg is replayed when auditing a plan.
+///
+/// The planner's matrix strategy decides which path was priced: Dijkstra
+/// matrices price the distance-optimal path, contraction hierarchies the
+/// time-optimal one. The audit must replay the same objective or it reports
+/// corridors the plan never uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuditStrategy {
+    /// Distance-optimal Dijkstra paths; matches a plan solved without `--ch`.
+    #[default]
+    Dijkstra,
+    /// Time-optimal contraction-hierarchy paths; matches `solve --ch`.
+    ContractionHierarchy,
+}
 
 /// Aggregation key: a real way, or one synthetic edge (which has no way id).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -112,7 +128,7 @@ impl CorridorAudit {
     }
 }
 
-/// Audits `solution` against `graph`.
+/// Audits `solution` against `graph`, replaying each leg with `strategy`.
 ///
 /// `node_ids` maps problem nodes (depots first, then stores) to graph nodes,
 /// as returned by [`crate::CachedMatrix::problem_node_ids`].
@@ -123,9 +139,17 @@ pub fn audit_solution(
     graph: &Graph,
     node_ids: &[NodeId],
     profile: TruckProfile,
+    strategy: AuditStrategy,
 ) -> CorridorAudit {
     let mut audit = CorridorAudit::default();
     let mut all_way_ids: std::collections::BTreeSet<WayKey> = std::collections::BTreeSet::new();
+    // Prepared once when the plan was solved through a hierarchy.
+    let mut hierarchy = match strategy {
+        AuditStrategy::Dijkstra => None,
+        AuditStrategy::ContractionHierarchy => {
+            crate::ch::ContractionHierarchy::build(graph, profile).ok()
+        }
+    };
 
     for (route_index, route) in solution.routes.iter().enumerate() {
         // (way key) -> aggregate for this route. Synthetic edges (no way id)
@@ -140,40 +164,19 @@ pub fn audit_solution(
                 audit.legs_without_path += 1;
                 continue;
             };
-            let Some(leg) =
-                crate::timed::plain_leg(graph, from_graph, to_graph, pair[0].depart, profile)
-            else {
+            let leg = match strategy {
+                AuditStrategy::Dijkstra => {
+                    crate::timed::plain_leg(graph, from_graph, to_graph, pair[0].depart, profile)
+                }
+                AuditStrategy::ContractionHierarchy => hierarchy.as_mut().and_then(|hierarchy| {
+                    hierarchy_leg(hierarchy, graph, from_graph, to_graph, pair[0].depart)
+                }),
+            };
+            let Some(leg) = leg else {
                 audit.legs_without_path += 1;
                 continue;
             };
-            for step in &leg.steps {
-                let Some(edge) = graph.edge(step.edge) else {
-                    continue;
-                };
-                let has_limit_data = edge.maxweight_tonnes.is_some()
-                    || edge.maxheight_m.is_some()
-                    || edge.hgv.is_some()
-                    || edge.access.is_some();
-                let key = match edge.way_id {
-                    Some(way) => WayKey::Way(way),
-                    None => WayKey::Synthetic(step.edge),
-                };
-                let entry = per_route.entry(key).or_insert_with(|| CorridorRow {
-                    route: route_index,
-                    way_id: edge.way_id,
-                    edge_id: step.edge,
-                    highway: edge.highway.clone(),
-                    maxweight_tonnes: edge.maxweight_tonnes,
-                    maxheight_m: edge.maxheight_m,
-                    hgv: edge.hgv.clone(),
-                    access: edge.access.clone(),
-                    traversals: 0,
-                    length_km: 0.0,
-                    has_limit_data,
-                });
-                entry.traversals += 1;
-                entry.length_km += edge.distance_km;
-            }
+            accumulate_leg(&mut per_route, graph, route_index, &leg);
         }
         for (key, row) in per_route {
             all_way_ids.insert(key);
@@ -195,6 +198,62 @@ pub fn audit_solution(
     audit
 }
 
+/// A leg along the hierarchy's time-optimal path: the node sequence comes
+/// from the query, the exact per-hop edges from the prepared hierarchy.
+fn hierarchy_leg(
+    hierarchy: &mut crate::ch::ContractionHierarchy,
+    graph: &Graph,
+    from: NodeId,
+    to: NodeId,
+    depart: Minutes,
+) -> Option<crate::timed::TimedLeg> {
+    let route = hierarchy.shortest_path(from, to)?;
+    let edges: Option<Vec<EdgeId>> = route
+        .nodes
+        .windows(2)
+        .map(|pair| hierarchy.edge_between(pair[0], pair[1]))
+        .collect();
+    crate::timed::leg_from_edges(graph, &route.nodes, &edges?, depart)
+}
+
+/// Aggregates one computed leg into a route's way map, keyed per way (or per
+/// synthetic edge when the graph carries no OSM way ids).
+fn accumulate_leg(
+    per_route: &mut BTreeMap<WayKey, CorridorRow>,
+    graph: &Graph,
+    route_index: usize,
+    leg: &crate::timed::TimedLeg,
+) {
+    for step in &leg.steps {
+        let Some(edge) = graph.edge(step.edge) else {
+            continue;
+        };
+        let has_limit_data = edge.maxweight_tonnes.is_some()
+            || edge.maxheight_m.is_some()
+            || edge.hgv.is_some()
+            || edge.access.is_some();
+        let key = match edge.way_id {
+            Some(way) => WayKey::Way(way),
+            None => WayKey::Synthetic(step.edge),
+        };
+        let entry = per_route.entry(key).or_insert_with(|| CorridorRow {
+            route: route_index,
+            way_id: edge.way_id,
+            edge_id: step.edge,
+            highway: edge.highway.clone(),
+            maxweight_tonnes: edge.maxweight_tonnes,
+            maxheight_m: edge.maxheight_m,
+            hgv: edge.hgv.clone(),
+            access: edge.access.clone(),
+            traversals: 0,
+            length_km: 0.0,
+            has_limit_data,
+        });
+        entry.traversals += 1;
+        entry.length_km += edge.distance_km;
+    }
+}
+
 /// Index of a problem node in the depot-then-store ordering.
 fn node_index(problem: &Problem, node: Node) -> Option<usize> {
     match node {
@@ -211,7 +270,10 @@ fn node_index(problem: &Problem, node: Node) -> Option<usize> {
 
 /// Quotes a CSV field when it contains a comma, quote or line break, and
 /// neutralises spreadsheet formula prefixes (`=`, `+`, `-`, `@`).
-fn csv_field(value: &str) -> String {
+///
+/// Shared with the CLI route-sheet export (`cli::export`) so both CSVs
+/// escape identically.
+pub fn csv_field(value: &str) -> String {
     let prefixed = if matches!(value.chars().next(), Some('=' | '+' | '-' | '@')) {
         format!("'{value}")
     } else {
@@ -407,6 +469,7 @@ mod tests {
             &graph,
             &node_ids,
             TruckProfile::default(),
+            AuditStrategy::default(),
         );
 
         assert_eq!(audit.legs_without_path, 0);
@@ -449,6 +512,7 @@ mod tests {
             &graph,
             &node_ids,
             TruckProfile::default(),
+            AuditStrategy::default(),
         );
         let csv = audit.to_csv();
         let lines: Vec<&str> = csv.lines().collect();
@@ -468,19 +532,107 @@ mod tests {
 
     #[test]
     fn audit_counts_legs_with_no_path() {
-        let (mut problem, solution, graph, _) = fixture();
-        // Map both stores onto disconnected synthetic nodes far away: no
-        // graph node near them and no path.
-        problem.stores.clear();
+        let (problem, solution, _, node_ids) = fixture();
+        // A graph with the depot->A and B->depot ways but nothing linking A
+        // and B: exactly the middle leg has no path, and it is excluded from
+        // the rows.
+        let mut graph = Graph::new();
+        for (node, lon) in [(0u64, 151.21), (1, 151.30), (2, 151.39)] {
+            graph.add_node(NodeId(node), LatLon::new(-33.87, lon));
+        }
+        graph.add_edge_with_way(
+            NodeId(0),
+            NodeId(1),
+            9.0,
+            9,
+            Some("primary".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(10),
+        );
+        graph.add_edge_with_way(
+            NodeId(2),
+            NodeId(0),
+            18.0,
+            18,
+            Some("motorway".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some(12),
+        );
         let audit = audit_solution(
             &problem,
             &solution,
             &graph,
-            &[NodeId(0), NodeId(1)],
+            &node_ids,
             TruckProfile::default(),
+            AuditStrategy::default(),
         );
-        // Store ids reference stores that no longer exist, so the store legs
-        // cannot be resolved and are counted as missing paths.
-        assert!(audit.legs_without_path >= 2, "{}", audit.legs_without_path);
+        assert_eq!(audit.legs_without_path, 1);
+        assert_eq!(audit.distinct_ways, 2);
+        assert!(audit.rows.iter().all(|row| row.way_id != Some(11)));
+    }
+
+    #[test]
+    fn audit_can_replay_time_optimal_hierarchy_paths() {
+        let (problem, solution, _, node_ids) = fixture();
+        // Two parallel ways between the depot and store A: a short slow one
+        // (way 10, distance-optimal) and a long fast one (way 20,
+        // time-optimal). The audit must replay the objective the plan was
+        // solved with, or it verifies corridors the plan never uses.
+        let mut graph = Graph::new();
+        for (node, lon) in [(0u64, 151.21), (1, 151.30), (2, 151.39)] {
+            graph.add_node(NodeId(node), LatLon::new(-33.87, lon));
+        }
+        for (from, to, way, km, minutes) in [
+            (0u64, 1u64, 10i64, 4.0, 20),
+            (1, 0, 10, 4.0, 20),
+            (0, 1, 20, 5.0, 10),
+            (1, 0, 20, 5.0, 10),
+            (1, 2, 11, 9.0, 9),
+            (2, 1, 11, 9.0, 9),
+            (2, 0, 12, 18.0, 18),
+        ] {
+            graph.add_edge_with_way(
+                NodeId(from),
+                NodeId(to),
+                km,
+                minutes,
+                Some("primary".to_string()),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some(way),
+            );
+        }
+        let dijkstra = audit_solution(
+            &problem,
+            &solution,
+            &graph,
+            &node_ids,
+            TruckProfile::default(),
+            AuditStrategy::Dijkstra,
+        );
+        assert!(dijkstra.rows.iter().any(|row| row.way_id == Some(10)));
+        assert!(!dijkstra.rows.iter().any(|row| row.way_id == Some(20)));
+
+        let hierarchy = audit_solution(
+            &problem,
+            &solution,
+            &graph,
+            &node_ids,
+            TruckProfile::default(),
+            AuditStrategy::ContractionHierarchy,
+        );
+        assert!(hierarchy.rows.iter().any(|row| row.way_id == Some(20)));
+        assert!(!hierarchy.rows.iter().any(|row| row.way_id == Some(10)));
     }
 }

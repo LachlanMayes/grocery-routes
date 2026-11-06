@@ -271,55 +271,73 @@ impl fmt::Display for Jurisdiction {
 /// See the module docs for sources and what is deliberately excluded.
 #[must_use]
 pub fn state_holidays_in_year(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
-    use Jurisdiction::{Act, Nsw, Nt, Qld, Sa, Tas, Vic, Wa};
+    let mut holidays = national_fixed_for(year, jurisdiction);
+    holidays.extend(easter_for(year, jurisdiction));
+    holidays.extend(anzac_for(year, jurisdiction));
+    holidays.extend(state_specific_for(year, jurisdiction));
+    holidays.sort_by_key(|holiday| holiday.date);
+    substitute_for_coincidences(holidays)
+}
 
-    let mut holidays: Vec<Holiday> = Vec::new();
-
-    // Fixed national dates with observed shifts; SA calls 26 December
-    // Proclamation Day.
-    for holiday in fixed_holidays(year) {
-        let name = if jurisdiction == Sa && holiday.name == "Boxing Day" {
-            "Proclamation Day"
-        } else {
-            holiday.name
-        };
-        holidays.push(Holiday {
+/// Fixed national dates with the jurisdiction's observed shifts, under the
+/// local name (SA calls 26 December Proclamation Day).
+fn national_fixed_for(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
+    fixed_holidays(year)
+        .into_iter()
+        .map(|holiday| Holiday {
             date: holiday.date,
-            name,
-        });
-    }
+            name: if jurisdiction == Jurisdiction::Sa && holiday.name == "Boxing Day" {
+                "Proclamation Day"
+            } else {
+                holiday.name
+            },
+        })
+        .collect()
+}
 
-    holidays.push(Holiday {
-        date: shift_days(easter_sunday(year), -2),
-        name: "Good Friday",
-    });
-    holidays.push(Holiday {
-        date: shift_days(easter_sunday(year), 1),
-        name: "Easter Monday",
-    });
+/// Easter days the jurisdiction observes: Saturday excludes TAS and WA,
+/// Sunday excludes TAS.
+fn easter_for(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
+    use Jurisdiction::{Act, Nsw, Nt, Qld, Sa, Vic, Wa};
+
+    let sunday = easter_sunday(year);
+    let mut holidays = vec![
+        Holiday {
+            date: shift_days(sunday, -2),
+            name: "Good Friday",
+        },
+        Holiday {
+            date: shift_days(sunday, 1),
+            name: "Easter Monday",
+        },
+    ];
     if matches!(jurisdiction, Act | Nsw | Nt | Qld | Sa | Vic) {
         holidays.push(Holiday {
-            date: shift_days(easter_sunday(year), -1),
+            date: shift_days(sunday, -1),
             name: "Easter Saturday",
         });
     }
     if matches!(jurisdiction, Act | Nsw | Nt | Qld | Sa | Vic | Wa) {
         holidays.push(Holiday {
-            date: easter_sunday(year),
+            date: sunday,
             name: "Easter Sunday",
         });
     }
+    holidays
+}
 
-    // ANZAC Day, with jurisdiction-specific substitution.
+/// ANZAC Day with the jurisdiction's substitution rule: ACT, NSW and WA
+/// shift a weekend date, QLD and NT only a Sunday, and SA, TAS and VIC never.
+fn anzac_for(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
+    use Jurisdiction::{Act, Nsw, Nt, Qld, Sa, Tas, Vic, Wa};
+
     let anzac = date(year, 4, 25);
-    holidays.push(Holiday {
+    let mut holidays = vec![Holiday {
         date: anzac,
         name: "ANZAC Day",
-    });
+    }];
     let weekend_shift = match jurisdiction {
-        Act | Nsw | Wa => {
-            anzac.weekday() == Weekday::Saturday || anzac.weekday() == Weekday::Sunday
-        }
+        Act | Nsw | Wa => matches!(anzac.weekday(), Weekday::Saturday | Weekday::Sunday),
         Qld | Nt => anzac.weekday() == Weekday::Sunday,
         Sa | Tas | Vic => false,
     };
@@ -333,6 +351,15 @@ pub fn state_holidays_in_year(year: i16, jurisdiction: Jurisdiction) -> Vec<Holi
             name: "ANZAC Day (observed)",
         });
     }
+    holidays
+}
+
+/// King's Birthday, Labour Day (under its local name) and the remaining
+/// jurisdiction-specific dates.
+fn state_specific_for(year: i16, jurisdiction: Jurisdiction) -> Vec<Holiday> {
+    use Jurisdiction::{Act, Nsw, Nt, Qld, Sa, Tas, Vic, Wa};
+
+    let mut holidays = Vec::new();
 
     // King's Birthday: 2nd Monday in June for most jurisdictions, 1st Monday
     // in October for QLD, and the proclaimed (recently: last) Monday in
@@ -407,8 +434,7 @@ pub fn state_holidays_in_year(year: i16, jurisdiction: Jurisdiction) -> Vec<Holi
         }),
     }
 
-    holidays.sort_by_key(|holiday| holiday.date);
-    substitute_for_coincidences(holidays)
+    holidays
 }
 
 /// AFL Grand Final Fridays in Victoria, which the league fixes too late to
@@ -423,8 +449,8 @@ fn victoria_afl_grand_final_friday(year: i16) -> Option<Date> {
     }
 }
 
-/// Sunday-zero weekday number.
-fn weekday_number(weekday: Weekday) -> u8 {
+/// Sunday-zero weekday number, shared with the curfew router's day masks.
+pub fn weekday_number(weekday: Weekday) -> u8 {
     match weekday {
         Weekday::Sunday => 0,
         Weekday::Monday => 1,

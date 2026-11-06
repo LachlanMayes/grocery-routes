@@ -110,6 +110,10 @@ pub struct AuditArgs {
     /// Classify the vehicle as an HGV, for context in the report.
     #[arg(long)]
     pub hgv: bool,
+    /// Replay contraction-hierarchy (time-optimal) paths; pass when the plan
+    /// was solved with `solve --ch`.
+    #[arg(long)]
+    pub ch: bool,
     /// Directory `corridor-audit.csv` is written to.
     #[arg(long, alias = "out")]
     pub out_dir: PathBuf,
@@ -180,8 +184,8 @@ pub struct SolveArgs {
     #[arg(long)]
     pub ls: bool,
     /// Run N independent LNS searches in parallel and keep the best plan
-    /// (only used with `--ls`; default 1).
-    #[arg(long, default_value_t = 1)]
+    /// (requires `--ls`; default 1).
+    #[arg(long, default_value_t = 1, requires = "ls")]
     pub repeat: usize,
     /// OSM PBF extract for road-network distances/durations (M3). When set,
     /// the solver uses real road travel times instead of haversine/speed.
@@ -214,7 +218,7 @@ pub struct SolveArgs {
     /// IANA timezone the road network operates in, used to resolve curfew
     /// days/times (e.g. `Australia/Sydney`). Defaults to the first depot's
     /// timezone.
-    #[arg(long)]
+    #[arg(long, requires = "enforce_curfews")]
     pub network_timezone: Option<String>,
 }
 
@@ -324,7 +328,12 @@ pub fn run_audit(args: &AuditArgs) -> anyhow::Result<()> {
         maxheight_m: args.maxheight,
         hgv: args.hgv,
     };
-    let audit = routing::audit_solution(&problem, &solution, graph, &node_ids, profile);
+    let strategy = if args.ch {
+        routing::AuditStrategy::ContractionHierarchy
+    } else {
+        routing::AuditStrategy::Dijkstra
+    };
+    let audit = routing::audit_solution(&problem, &solution, graph, &node_ids, profile, strategy);
 
     std::fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("creating output directory {}", args.out_dir.display()))?;
@@ -457,116 +466,151 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     } else {
         None
     };
-
     let profile = routing::TruckProfile {
         maxweight_tonnes: args.maxweight,
         maxheight_m: args.maxheight,
         hgv: args.hgv,
     };
-    let mut cache: Option<routing::CachedMatrix> = None;
-    let solution = if let Some(osm_path) = &args.osm {
-        // M3: road-network distances/durations from OSM PBF.
-        let mut cached = routing::CachedMatrix::new();
-        cached.load_pbf(osm_path)?;
-        if let Some(constraints_path) = &args.constraints {
-            let raw = std::fs::read_to_string(constraints_path).with_context(|| {
-                format!("read curated constraints {}", constraints_path.display())
-            })?;
-            let curated = routing::CuratedConstraints::from_json_str(&raw).with_context(|| {
-                format!("parse curated constraints {}", constraints_path.display())
-            })?;
-            let tightened = curated.apply(
-                cached
-                    .graph_mut()
-                    .context("curated constraints require a loaded OSM graph")?,
-            );
-            println!(
-                "  curated constraints: {} entries from {}, {tightened} edges tightened",
-                curated.len(),
-                constraints_path.display()
-            );
-        }
-        if args.ch {
-            println!("  matrix strategy: contraction hierarchy (time-optimal)");
-        }
-        let solved = if args.ls {
-            if args.repeat > 1 {
-                solver::solve_with_lns_routing_multistart_with(
-                    &problem,
-                    solver::LNSConfig::default(),
-                    &mut cached,
-                    profile,
-                    strategy,
-                    args.repeat,
-                )?
-            } else {
-                solver::solve_with_lns_routing_with(
-                    &problem,
-                    solver::LNSConfig::default(),
-                    &mut cached,
-                    profile,
-                    strategy,
-                )?
-            }
-        } else {
-            solver::solve_greedy_routing_with(&problem, &mut cached, profile, strategy)?
-        };
-        cache = Some(cached);
-        solved
-    } else if args.ls {
-        if args.repeat > 1 {
-            solver::solve_with_lns_multistart(
-                &problem,
-                solver::LNSConfig::default(),
-                solver::DistanceMatrix::new(&problem),
-                args.repeat,
-            )
-        } else {
-            solver::solve_with_lns_haversine(&problem, solver::LNSConfig::default())
-        }
-    } else {
-        solver::solve(&problem)
-    };
 
-    let solution = if let Some(timezone) = curfew_timezone {
-        let cache = cache
-            .as_ref()
-            .context("--enforce-curfews requires --osm (curfews need the road graph)")?;
-        let anchor = problem
-            .horizon_start
-            .context("--enforce-curfews requires a horizon anchor (--horizon-start)")?;
-        let node_ids = cache.problem_node_ids(&problem)?;
-        let graph = cache
-            .graph()
-            .context("curfew enforcement requires a loaded OSM graph")?;
-        let context = routing::CurfewContext::new(problem.curfews.clone(), anchor, timezone);
-        let mut provider = GraphLegs {
-            graph,
-            node_ids,
-            profile,
-            context,
-            depot_count: problem.depots.len(),
-        };
-        let (enforced, report) = solver::enforce_curfews(&problem, &solution, &mut provider);
-        println!(
-            "  curfew enforcement: {} route(s) adjusted, {} minute(s) waiting, {} store(s) dropped",
-            report.routes_adjusted,
-            report.total_wait_minutes,
-            report.dropped.len()
-        );
-        for drop in &report.dropped {
-            println!(
-                "    dropped store {} from route {}: {}",
-                drop.store, drop.route, drop.kind
-            );
+    let (solution, cache) = match &args.osm {
+        Some(osm_path) => {
+            let (solution, cache) = solve_with_osm(args, &problem, osm_path, profile, strategy)?;
+            (solution, Some(cache))
         }
-        enforced
-    } else {
-        solution
+        None => (solve_with_haversine(args, &problem), None),
     };
+    let solution =
+        enforce_curfews_for(&problem, solution, cache.as_ref(), curfew_timezone, profile)?;
+
     check_solution(&problem, &solution)?;
     write_solution_json(&args.out, &solution)?;
+    print_solve_summary(args, &problem, &solution);
+    Ok(())
+}
 
+/// Solves with road-network distances from an OSM extract, applying curated
+/// constraints first; returns the plan and the loaded matrix cache.
+fn solve_with_osm(
+    args: &SolveArgs,
+    problem: &Problem,
+    osm_path: &Path,
+    profile: routing::TruckProfile,
+    strategy: routing::MatrixStrategy,
+) -> anyhow::Result<(Solution, routing::CachedMatrix)> {
+    let mut cached = routing::CachedMatrix::new();
+    cached.load_pbf(osm_path)?;
+    if let Some(constraints_path) = &args.constraints {
+        let raw = std::fs::read_to_string(constraints_path)
+            .with_context(|| format!("read curated constraints {}", constraints_path.display()))?;
+        let curated = routing::CuratedConstraints::from_json_str(&raw)
+            .with_context(|| format!("parse curated constraints {}", constraints_path.display()))?;
+        let tightened = curated.apply(
+            cached
+                .graph_mut()
+                .context("curated constraints require a loaded OSM graph")?,
+        );
+        println!(
+            "  curated constraints: {} entries from {}, {tightened} edges tightened",
+            curated.len(),
+            constraints_path.display()
+        );
+    }
+    if args.ch {
+        println!("  matrix strategy: contraction hierarchy (time-optimal)");
+    }
+    let solution = solve_matrix_variant(args, problem, &mut cached, profile, strategy)?;
+    Ok((solution, cached))
+}
+
+/// Runs the requested solver over a loaded matrix cache.
+fn solve_matrix_variant(
+    args: &SolveArgs,
+    problem: &Problem,
+    cached: &mut routing::CachedMatrix,
+    profile: routing::TruckProfile,
+    strategy: routing::MatrixStrategy,
+) -> anyhow::Result<Solution> {
+    if !args.ls {
+        return solver::solve_greedy_routing_with(problem, cached, profile, strategy);
+    }
+    let config = solver::LNSConfig::default();
+    if args.repeat > 1 {
+        solver::solve_with_lns_routing_multistart_with(
+            problem,
+            config,
+            cached,
+            profile,
+            strategy,
+            args.repeat,
+        )
+    } else {
+        solver::solve_with_lns_routing_with(problem, config, cached, profile, strategy)
+    }
+}
+
+/// Solves with the haversine/speed model (no OSM extract).
+fn solve_with_haversine(args: &SolveArgs, problem: &Problem) -> Solution {
+    if !args.ls {
+        return solver::solve(problem);
+    }
+    let config = solver::LNSConfig::default();
+    if args.repeat > 1 {
+        solver::solve_with_lns_multistart(
+            problem,
+            config,
+            solver::DistanceMatrix::new(problem),
+            args.repeat,
+        )
+    } else {
+        solver::solve_with_lns_haversine(problem, config)
+    }
+}
+
+/// Re-schedules `solution` with curfew-aware leg times when requested.
+fn enforce_curfews_for(
+    problem: &Problem,
+    solution: Solution,
+    cache: Option<&routing::CachedMatrix>,
+    timezone: Option<jiff::tz::TimeZone>,
+    profile: routing::TruckProfile,
+) -> anyhow::Result<Solution> {
+    let Some(timezone) = timezone else {
+        return Ok(solution);
+    };
+    let cache = cache.context("--enforce-curfews requires --osm (curfews need the road graph)")?;
+    let anchor = problem
+        .horizon_start
+        .context("--enforce-curfews requires a horizon anchor (--horizon-start)")?;
+    let node_ids = cache.problem_node_ids(problem)?;
+    let graph = cache
+        .graph()
+        .context("curfew enforcement requires a loaded OSM graph")?;
+    let context = routing::CurfewContext::new(problem.curfews.clone(), anchor, timezone);
+    let mut provider = GraphLegs {
+        graph,
+        node_ids,
+        profile,
+        context,
+        depot_count: problem.depots.len(),
+    };
+    let (enforced, report) = solver::enforce_curfews(problem, &solution, &mut provider);
+    println!(
+        "  curfew enforcement: {} route(s) adjusted, {} minute(s) waiting, {} store(s) dropped",
+        report.routes_adjusted,
+        report.total_wait_minutes,
+        report.dropped.len()
+    );
+    for drop in &report.dropped {
+        println!(
+            "    dropped store {} from route {}: {}",
+            drop.store, drop.route, drop.kind
+        );
+    }
+    Ok(enforced)
+}
+
+/// Prints the solve summary (coverage, distance, duration, cost).
+fn print_solve_summary(args: &SolveArgs, problem: &Problem, solution: &Solution) {
     let served = solution
         .routes
         .iter()
@@ -601,7 +645,6 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     println!("  duration: {}", solution.total_duration);
     println!("  cost: {}", format_aud_cents(solution.total_cost_cents));
     println!("wrote {}", args.out.display());
-    Ok(())
 }
 
 /// Resolves the network timezone for curfew enforcement, failing loudly when

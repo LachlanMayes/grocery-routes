@@ -39,9 +39,10 @@ pub struct ContractionHierarchy {
     /// Reusable query buffers; one calculator per hierarchy is sufficient
     /// for the single-threaded matrix build.
     calculator: fast_paths::PathCalculator,
-    /// Best directed edge between an adjacent pair: `(distance_km, minutes)`.
-    /// Used to recover distance/duration from a CH path.
-    best_edges: HashMap<(NodeId, NodeId), (f64, i64)>,
+    /// Best directed edge between an adjacent pair: `(distance_km, minutes,
+    /// edge id)`. Used to recover distance/duration from a CH path and to
+    /// name the exact edge each hop traverses.
+    best_edges: HashMap<(NodeId, NodeId), (f64, i64, EdgeId)>,
 }
 
 impl std::fmt::Debug for ContractionHierarchy {
@@ -69,7 +70,10 @@ impl ContractionHierarchy {
             let mut out = graph.out_edges(node);
             out.sort_by_key(|(edge_id, _, _)| edge_id.0);
             for (_, target, edge) in out {
-                if edge_allowed_for(edge, profile).is_ok() {
+                // Self-loops can never lie on a path, and `fast_paths` drops
+                // them before inferring its node count — keeping one would
+                // assign a dense id beyond that count and trip its asserts.
+                if target != node && edge_allowed_for(edge, profile).is_ok() {
                     usable_edges.push((edge, node, target));
                 }
             }
@@ -113,10 +117,6 @@ impl ContractionHierarchy {
         input.freeze();
         let fast_graph = fast_paths::prepare(&input);
         let calculator = fast_paths::create_calculator(&fast_graph);
-        let best_edges = best_edges
-            .into_iter()
-            .map(|(pair, (distance, minutes, _))| (pair, (distance, minutes)))
-            .collect();
         Ok(Self {
             dense_nodes,
             to_dense,
@@ -161,7 +161,7 @@ impl ContractionHierarchy {
         let mut distance_km = 0.0;
         let mut duration_minutes = 0i64;
         for pair in nodes.windows(2) {
-            let (distance, minutes) = *self.best_edges.get(&(pair[0], pair[1]))?;
+            let (distance, minutes, _) = *self.best_edges.get(&(pair[0], pair[1]))?;
             distance_km += distance;
             duration_minutes += minutes;
         }
@@ -170,6 +170,16 @@ impl ContractionHierarchy {
             duration_minutes,
             nodes,
         })
+    }
+
+    /// The directed edge the hierarchy used between two adjacent nodes on a
+    /// returned path: the fastest one, ties by lower distance then edge id.
+    ///
+    /// For parallel edges of equal travel time the hierarchy's internal tie
+    /// break may differ, so the id is exact whenever durations differ.
+    #[must_use]
+    pub fn edge_between(&self, from: NodeId, to: NodeId) -> Option<EdgeId> {
+        self.best_edges.get(&(from, to)).map(|&(_, _, id)| id)
     }
 }
 
@@ -312,6 +322,27 @@ mod tests {
     #[ignore = "timing measurement, not a correctness gate"]
     fn grid_measurement() {
         let width = 15usize;
+        let graph = grid_graph(width);
+        let profile = TruckProfile::default();
+        let mut nodes: Vec<NodeId> = graph.nodes().map(|(id, _)| id).collect();
+        nodes.sort_unstable();
+
+        let (routed, dijkstra_elapsed) = time_all_pairs(&graph, &nodes, profile);
+        let started = std::time::Instant::now();
+        let mut ch = ContractionHierarchy::build(&graph, profile).expect("build");
+        let prepare_elapsed = started.elapsed();
+        let (ch_routed, query_elapsed) = time_ch_pairs(&mut ch, &nodes);
+
+        assert_eq!(routed, ch_routed);
+        eprintln!(
+            "grid {width}x{width} ({pairs} ordered pairs): Dijkstra {dijkstra_elapsed:?}; \
+             CH prepare {prepare_elapsed:?} + queries {query_elapsed:?}",
+            pairs = nodes.len() * nodes.len(),
+        );
+    }
+
+    /// A `width` x `width` grid of nodes with unit-cost bidirectional edges.
+    fn grid_graph(width: usize) -> Graph {
         let mut graph = Graph::new();
         for y in 0..width {
             for x in 0..width {
@@ -326,97 +357,61 @@ mod tests {
             for x in 0..width {
                 let node = (y * width + x) as u64;
                 if x + 1 < width {
-                    let east = node + 1;
-                    graph.add_edge(
-                        NodeId(node),
-                        NodeId(east),
-                        1.0,
-                        1,
-                        Some("primary".to_string()),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                    );
-                    graph.add_edge(
-                        NodeId(east),
-                        NodeId(node),
-                        1.0,
-                        1,
-                        Some("primary".to_string()),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                    );
+                    connect_both(&mut graph, node, node + 1);
                 }
                 if y + 1 < width {
-                    let south = node + width as u64;
-                    graph.add_edge(
-                        NodeId(node),
-                        NodeId(south),
-                        1.0,
-                        1,
-                        Some("primary".to_string()),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                    );
-                    graph.add_edge(
-                        NodeId(south),
-                        NodeId(node),
-                        1.0,
-                        1,
-                        Some("primary".to_string()),
-                        None,
-                        None,
-                        None,
-                        None,
-                        false,
-                    );
+                    connect_both(&mut graph, node, node + width as u64);
                 }
             }
         }
-        let profile = TruckProfile::default();
-        let mut nodes: Vec<NodeId> = graph.nodes().map(|(id, _)| id).collect();
-        nodes.sort_unstable();
+        graph
+    }
 
-        let started = std::time::Instant::now();
-        let mut routed = 0usize;
-        for &from in &nodes {
-            for &to in &nodes {
-                if Router::shortest_path(&graph, from, to, profile).is_some() {
-                    routed += 1;
-                }
-            }
+    /// Adds a unit-cost edge in both directions between two grid nodes.
+    fn connect_both(graph: &mut Graph, from: u64, to: u64) {
+        for (a, b) in [(from, to), (to, from)] {
+            graph.add_edge(
+                NodeId(a),
+                NodeId(b),
+                1.0,
+                1,
+                Some("primary".to_string()),
+                None,
+                None,
+                None,
+                None,
+                false,
+            );
         }
-        let dijkstra_elapsed = started.elapsed();
+    }
 
+    /// Times all-pairs Dijkstra and counts the reachable pairs.
+    fn time_all_pairs(
+        graph: &Graph,
+        nodes: &[NodeId],
+        profile: TruckProfile,
+    ) -> (usize, std::time::Duration) {
         let started = std::time::Instant::now();
-        let mut ch = ContractionHierarchy::build(&graph, profile).expect("build");
-        let prepare_elapsed = started.elapsed();
+        let routed = nodes
+            .iter()
+            .flat_map(|&from| nodes.iter().map(move |&to| (from, to)))
+            .filter(|&(from, to)| Router::shortest_path(graph, from, to, profile).is_some())
+            .count();
+        (routed, started.elapsed())
+    }
 
+    /// Times all-pairs CH queries and counts the reachable pairs.
+    fn time_ch_pairs(
+        ch: &mut ContractionHierarchy,
+        nodes: &[NodeId],
+    ) -> (usize, std::time::Duration) {
         let started = std::time::Instant::now();
-        let mut ch_routed = 0usize;
-        for &from in &nodes {
-            for &to in &nodes {
-                if ch.shortest_path(from, to).is_some() {
-                    ch_routed += 1;
-                }
-            }
-        }
-        let query_elapsed = started.elapsed();
-
-        assert_eq!(routed, ch_routed);
-        eprintln!(
-            "grid {width}x{width} ({pairs} ordered pairs): Dijkstra {dijkstra_elapsed:?}; \
-             CH prepare {prepare_elapsed:?} + queries {query_elapsed:?}",
-            pairs = nodes.len() * nodes.len(),
-        );
+        let routed = nodes
+            .iter()
+            .flat_map(|&from| nodes.iter().map(move |&to| (from, to)))
+            .filter(|&(from, to)| ch.shortest_path(from, to).is_some())
+            .count();
+        (routed, started.elapsed())
     }
 
     #[test]
@@ -436,5 +431,30 @@ mod tests {
             ContractionHierarchy::build(&graph, TruckProfile::default()).err(),
             Some(ChError::NoUsableEdges)
         );
+    }
+
+    #[test]
+    fn self_loop_edges_do_not_break_queries() {
+        // Node 2 has only a self-loop. `fast_paths` drops loops before
+        // inferring its node count, so keeping one used to assign a dense id
+        // beyond that count and panic inside `calc_path`.
+        let mut graph = graph_from(&[(0, 1, 10.0, 10, "primary")]);
+        graph.add_node(NodeId(2), LatLon::new(-33.9, 151.0));
+        graph.add_edge(
+            NodeId(2),
+            NodeId(2),
+            1.0,
+            1,
+            Some("primary".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        let mut ch = ContractionHierarchy::build(&graph, TruckProfile::default()).expect("build");
+        assert_eq!(ch.shortest_path(NodeId(2), NodeId(1)), None);
+        assert_eq!(ch.shortest_path(NodeId(0), NodeId(2)), None);
+        assert!(ch.shortest_path(NodeId(0), NodeId(1)).is_some());
     }
 }

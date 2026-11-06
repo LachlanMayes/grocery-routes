@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-use crate::{Address, haversine_km};
+use crate::Address;
 
 /// A parsed address query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,56 +35,69 @@ const STATE_CODES: [&str; 8] = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "
 #[must_use]
 pub fn parse_query(raw: &str) -> GeocodeQuery {
     let mut query = GeocodeQuery::default();
-    let mut cleaned: Vec<Vec<String>> = Vec::new();
+    let mut segments: Vec<Vec<String>> = Vec::new();
     for segment in raw.split(',') {
         let mut tokens = Vec::new();
         for token in segment.split_whitespace() {
-            let upper = token.to_ascii_uppercase();
-            if STATE_CODES.contains(&upper.as_str()) {
-                query.state = Some(upper);
-                continue;
+            if !classify_token(token, &mut query) {
+                tokens.push(token.to_string());
             }
-            if token.len() == 4 && token.chars().all(|c| c.is_ascii_digit()) {
-                query.postcode = Some(token.to_string());
-                continue;
-            }
-            tokens.push(token.to_string());
         }
         if !tokens.is_empty() {
-            cleaned.push(tokens);
+            segments.push(tokens);
         }
     }
 
-    if let Some(street_tokens) = cleaned.first() {
-        let mut words: Vec<String> = street_tokens.clone();
-        if let Some(first) = words.first()
-            && let Ok(number) = first.parse::<u32>()
-        {
-            query.number = Some(number);
-            words.remove(0);
-        }
-        // Find a street type anywhere after the first street word; words
-        // after it are treated as the locality when no comma was used.
-        let type_index = words
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find(|(_, word)| canonical_street_type(&word.to_ascii_uppercase()).is_some())
-            .map(|(index, _)| index);
-        if let Some(index) = type_index {
-            query.street_type = Some(words[index].to_ascii_uppercase());
-            query.street = words[..index].join(" ");
-            if cleaned.get(1).is_none() && index + 1 < words.len() {
-                query.locality = Some(words[index + 1..].join(" "));
-            }
-        } else {
-            query.street = words.join(" ");
-        }
+    if let Some(words) = segments.first() {
+        split_street_segment(&mut query, words, segments.len() > 1);
     }
-    if let Some(locality_tokens) = cleaned.get(1) {
+    if let Some(locality_tokens) = segments.get(1) {
         query.locality = Some(locality_tokens.join(" "));
     }
     query
+}
+
+/// True when `token` is a state code or a four-digit postcode, which are
+/// folded into `query` rather than kept as street or locality words.
+fn classify_token(token: &str, query: &mut GeocodeQuery) -> bool {
+    let upper = token.to_ascii_uppercase();
+    if STATE_CODES.contains(&upper.as_str()) {
+        query.state = Some(upper);
+        return true;
+    }
+    if token.len() == 4 && token.chars().all(|c| c.is_ascii_digit()) {
+        query.postcode = Some(token.to_string());
+        return true;
+    }
+    false
+}
+
+/// Splits the first segment into number, street, optional street type and
+/// (when no comma-separated locality followed) trailing locality words.
+fn split_street_segment(query: &mut GeocodeQuery, words: &[String], has_locality_segment: bool) {
+    let mut words = words.to_vec();
+    if let Some(first) = words.first()
+        && let Ok(number) = first.parse::<u32>()
+    {
+        query.number = Some(number);
+        words.remove(0);
+    }
+    // Find a street type anywhere after the first street word.
+    let type_index = words
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, word)| canonical_street_type(&word.to_ascii_uppercase()).is_some())
+        .map(|(index, _)| index);
+    let Some(index) = type_index else {
+        query.street = words.join(" ");
+        return;
+    };
+    query.street_type = Some(words[index].to_ascii_uppercase());
+    query.street = words[..index].join(" ");
+    if !has_locality_segment && index + 1 < words.len() {
+        query.locality = Some(words[index + 1..].join(" "));
+    }
 }
 
 /// Searches the database, best match first.
@@ -171,7 +184,10 @@ pub fn reverse(conn: &Connection, lat: f64, lon: f64, limit: usize) -> Result<Ve
     let mut results: Vec<(Address, f64)> = Vec::new();
     while let Some(row) = rows.next()? {
         let address = row_to_address(row)?;
-        let metres = haversine_km(lat, lon, address.lat, address.lon) * 1000.0;
+        let metres = domain::geo::haversine_km(
+            domain::LatLon::new(lat, lon),
+            domain::LatLon::new(address.lat, address.lon),
+        ) * 1000.0;
         results.push((address, metres));
     }
     results.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.pid.cmp(&b.0.pid)));
@@ -196,53 +212,81 @@ fn row_to_address(row: &rusqlite::Row<'_>) -> rusqlite::Result<Address> {
 
 /// Ranking heuristic: exact street and number matches dominate.
 fn rank(query: &GeocodeQuery, address: &Address) -> i32 {
-    let mut score = 0;
-    let wanted_street = normalise(&query.street);
-    let found_street = normalise(&address.street);
-    if !wanted_street.is_empty() {
-        if found_street == wanted_street {
-            score += 200;
-        } else if found_street.starts_with(&wanted_street) {
-            score += 120;
-        } else {
-            score += 60;
-        }
+    street_score(query, address)
+        + type_score(query, address)
+        + locality_score(query, address)
+        + state_score(query, address)
+        + postcode_score(query, address)
+        + number_score(query, address)
+}
+
+/// Street-name agreement: exact beats prefix beats partial.
+fn street_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    let wanted = normalise(&query.street);
+    if wanted.is_empty() {
+        return 0;
     }
-    if let Some(wanted_type) = &query.street_type {
+    let found = normalise(&address.street);
+    if found == wanted {
+        200
+    } else if found.starts_with(&wanted) {
+        120
+    } else {
+        60
+    }
+}
+
+/// Street-type agreement (`St` matches `Street`, anything else is penalised).
+fn type_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    query.street_type.as_ref().map_or(0, |wanted| {
         let found = address.street_type.as_deref().unwrap_or_default();
-        if types_equivalent(wanted_type, found) {
-            score += 40;
+        if types_equivalent(wanted, found) {
+            40
         } else {
-            score -= 20;
+            -20
         }
+    })
+}
+
+/// Locality agreement: exact beats substring.
+fn locality_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    let Some(locality) = &query.locality else {
+        return 0;
+    };
+    let wanted = normalise(locality);
+    let found = normalise(&address.locality);
+    if found == wanted {
+        120
+    } else if found.contains(&wanted) {
+        60
+    } else {
+        0
     }
-    if let Some(locality) = &query.locality {
-        let wanted = normalise(locality);
-        let found = normalise(&address.locality);
-        if found == wanted {
-            score += 120;
-        } else if found.contains(&wanted) {
-            score += 60;
-        }
+}
+
+/// Penalty when the result is in a different state than asked for.
+fn state_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    match &query.state {
+        Some(state) if !address.state.eq_ignore_ascii_case(state) => -40,
+        _ => 0,
     }
-    if let Some(state) = &query.state
-        && !address.state.eq_ignore_ascii_case(state)
-    {
-        score -= 40;
+}
+
+/// Penalty for a mismatched postcode; zero when unasked or matching.
+fn postcode_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    match &query.postcode {
+        Some(postcode) if address.postcode.as_deref() != Some(postcode.as_str()) => -40,
+        _ => 0,
     }
-    if let Some(postcode) = &query.postcode
-        && address.postcode.as_deref() != Some(postcode.as_str())
-    {
-        score -= 40;
+}
+
+/// Number-in-range bonus (or penalty) when the query named a number.
+fn number_score(query: &GeocodeQuery, address: &Address) -> i32 {
+    match query.number {
+        Some(number) if address.number_matches(number) => 150,
+        Some(_) => -60,
+        None => 0,
     }
-    if let Some(number) = query.number {
-        if address.number_matches(number) {
-            score += 150;
-        } else {
-            score -= 60;
-        }
-    }
-    score
 }
 
 /// Upper-cased, punctuation-stripped, whitespace-collapsed text.

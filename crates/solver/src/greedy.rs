@@ -73,6 +73,35 @@ pub(crate) fn spans_overlap(a: (Minutes, Minutes), b: (Minutes, Minutes)) -> boo
     a.0 < b.1 && b.0 < a.1
 }
 
+/// Mutable scheduling state at the start of a route: the stop list already
+/// holding the depot departure, plus the current time, previous node, load
+/// and accumulated distance.
+pub(crate) struct ScheduleStart {
+    pub(crate) steps: Vec<PlannedStop>,
+    pub(crate) time: Minutes,
+    pub(crate) previous: Node,
+    pub(crate) load: Load,
+    pub(crate) distance_km: f64,
+}
+
+/// Builds the initial scheduling state for a route leaving `home` at the
+/// start of `shift`; `step_capacity` sizes the stop list.
+pub(crate) fn schedule_start(home: Node, shift: Shift, step_capacity: usize) -> ScheduleStart {
+    let mut steps = Vec::with_capacity(step_capacity);
+    steps.push(PlannedStop {
+        node: home,
+        arrive: shift.start,
+        depart: shift.start,
+    });
+    ScheduleStart {
+        steps,
+        time: shift.start,
+        previous: home,
+        load: Load::ZERO,
+        distance_km: 0.0,
+    }
+}
+
 /// Builds a plan for `problem` with the M0 greedy insertion heuristic.
 ///
 /// Stores that no candidate can schedule feasibly are returned in
@@ -351,17 +380,13 @@ pub(crate) fn schedule_shift(
         return None;
     }
 
-    let mut steps = Vec::with_capacity(sequence.len());
-    steps.push(PlannedStop {
-        node: home,
-        arrive: shift.start,
-        depart: shift.start,
-    });
-
-    let mut time = shift.start;
-    let mut previous = home;
-    let mut load = Load::ZERO;
-    let mut distance_km = 0.0;
+    let ScheduleStart {
+        mut steps,
+        mut time,
+        mut previous,
+        mut load,
+        mut distance_km,
+    } = schedule_start(home, shift, sequence.len());
 
     for &node in store_nodes {
         let Node::Store(store_id) = node else {

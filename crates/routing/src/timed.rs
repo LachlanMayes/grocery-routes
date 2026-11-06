@@ -20,10 +20,9 @@ use std::collections::{BinaryHeap, HashMap};
 
 use domain::{CurfewRule, CurfewRules, Minutes};
 use jiff::Timestamp;
-use jiff::civil::Weekday;
 use jiff::tz::TimeZone;
 
-use crate::graph::{EdgeId, Graph, NodeId};
+use crate::graph::{EdgeId, Graph, GraphEdge, NodeId};
 use crate::router::Router;
 use crate::truck_constraints::{TruckProfile, edge_allowed_for};
 
@@ -113,7 +112,10 @@ impl CurfewContext {
             .ok()?;
         let zoned = instant.to_zoned(self.timezone.clone());
         let minute_of_day = i64::from(zoned.hour()) * 60 + i64::from(zoned.minute());
-        Some((minute_of_day, sunday_zero(zoned.weekday())))
+        Some((
+            minute_of_day,
+            usize::from(domain::holidays::weekday_number(zoned.weekday())),
+        ))
     }
 
     /// Minutes the truck must wait at a node before entering an edge of
@@ -242,18 +244,6 @@ fn occurrences(rule: &CurfewRule, day: usize) -> impl Iterator<Item = (i64, i64)
         .filter(|&(start, _end)| start >= 0)
 }
 
-fn sunday_zero(weekday: Weekday) -> usize {
-    match weekday {
-        Weekday::Sunday => 0,
-        Weekday::Monday => 1,
-        Weekday::Tuesday => 2,
-        Weekday::Wednesday => 3,
-        Weekday::Thursday => 4,
-        Weekday::Friday => 5,
-        Weekday::Saturday => 6,
-    }
-}
-
 /// Computes the time-optimal leg from `source` to `target`, holding at nodes
 /// until curfew-blocked edges become traversable.
 ///
@@ -291,24 +281,9 @@ pub fn earliest_leg(
             break;
         }
         for (edge_id, next, edge) in graph.out_edges(node) {
-            if edge_allowed_for(edge, profile).is_err() {
+            let Some((departure, wait, arrive)) = edge_times(edge, profile, curfews, time) else {
                 continue;
-            }
-            let mut departure = time;
-            let mut wait = 0i64;
-            if let Some(class) = edge.highway.as_deref() {
-                // An edge that cannot be localised, or a wait beyond the
-                // budget, is treated as unusable for this departure — the
-                // search simply tries other routes.
-                let Some(waited) =
-                    curfews.wait_before(class, Minutes::from_minutes(time), edge.duration_minutes)
-                else {
-                    continue;
-                };
-                departure = departure.checked_add(waited)?;
-                wait = waited;
-            }
-            let arrive = departure.checked_add(edge.duration_minutes)?;
+            };
             if best.get(&next).is_none_or(|&known| arrive < known) {
                 best.insert(next, arrive);
                 distance.insert(
@@ -324,11 +299,37 @@ pub fn earliest_leg(
     reconstruct_leg(graph, source, target, best, distance, prev)
 }
 
+/// The usable `(departure, wait, arrival)` for one edge entered at `time`, or
+/// `None` when the profile forbids it or it cannot be localised. A curfew
+/// wait beyond the budget also makes the edge unusable for this departure —
+/// the search simply tries other routes.
+fn edge_times(
+    edge: &GraphEdge,
+    profile: TruckProfile,
+    curfews: &CurfewContext,
+    time: i64,
+) -> Option<(i64, i64, i64)> {
+    if edge_allowed_for(edge, profile).is_err() {
+        return None;
+    }
+    let mut departure = time;
+    let mut wait = 0i64;
+    if let Some(class) = edge.highway.as_deref() {
+        let waited =
+            curfews.wait_before(class, Minutes::from_minutes(time), edge.duration_minutes)?;
+        departure = departure.checked_add(waited)?;
+        wait = waited;
+    }
+    let arrive = departure.checked_add(edge.duration_minutes)?;
+    Some((departure, wait, arrive))
+}
+
 /// Computes a leg following the distance-optimal path of
 /// [`crate::router::Router`] without applying curfews, with per-edge times.
 ///
 /// Used by corridor audits that must describe the same path the static matrix
-/// was built from.
+/// was built from: the edge sequence comes from the router itself, not a
+/// re-selection, so parallel edges are attributed exactly.
 #[must_use]
 pub fn plain_leg(
     graph: &Graph,
@@ -340,17 +341,33 @@ pub fn plain_leg(
     if source == target {
         return Some(TimedLeg::zero(depart));
     }
-    let route = Router::shortest_path(graph, source, target, profile)?;
-    let mut steps = Vec::with_capacity(route.nodes.len().saturating_sub(1));
+    let (route, edges) = Router::shortest_path_with_edges(graph, source, target, profile)?;
+    leg_from_edges(graph, &route.nodes, &edges, depart)
+}
+
+/// Computes a leg along an explicit edge sequence, with per-edge times.
+///
+/// `edges[i]` must connect `nodes[i]` to `nodes[i + 1]`; the series comes
+/// from [`Router::shortest_path_with_edges`] or a contraction hierarchy.
+/// Curfews are not applied: this replays the path a matrix was built from for
+/// corridor audits.
+#[must_use]
+pub fn leg_from_edges(
+    graph: &Graph,
+    nodes: &[NodeId],
+    edges: &[EdgeId],
+    depart: Minutes,
+) -> Option<TimedLeg> {
+    let mut steps = Vec::with_capacity(edges.len());
     let mut distance_km = 0.0;
     let mut time = depart.minutes();
-    for pair in route.nodes.windows(2) {
+    for (&edge_id, pair) in edges.iter().zip(nodes.windows(2)) {
         let (from, to) = (pair[0], pair[1]);
-        let edge = best_edge(graph, from, to, profile)?;
+        let edge = graph.edge(edge_id)?;
         let arrive = time.checked_add(edge.duration_minutes)?;
         distance_km += edge.distance_km;
         steps.push(LegStep {
-            edge: edge.id,
+            edge: edge_id,
             from,
             to,
             depart: Minutes::from_minutes(time),
@@ -364,34 +381,13 @@ pub fn plain_leg(
         .map(|step| step.arrive.minutes() - step.depart.minutes() - step.wait_minutes)
         .sum();
     Some(TimedLeg {
-        nodes: route.nodes,
+        nodes: nodes.to_vec(),
         steps,
         distance_km,
         drive_minutes,
         wait_minutes: 0,
         arrive: Minutes::from_minutes(time),
     })
-}
-
-/// The allowed edge with the shortest travel time between two adjacent nodes
-/// (ties broken by distance, then edge id for determinism).
-fn best_edge<'g>(
-    graph: &'g Graph,
-    from: NodeId,
-    to: NodeId,
-    profile: TruckProfile,
-) -> Option<&'g crate::graph::GraphEdge> {
-    graph
-        .out_edges(from)
-        .into_iter()
-        .filter(|(_, target, edge)| *target == to && edge_allowed_for(edge, profile).is_ok())
-        .map(|(_, _, edge)| edge)
-        .min_by(|a, b| {
-            a.duration_minutes
-                .cmp(&b.duration_minutes)
-                .then_with(|| a.distance_km.total_cmp(&b.distance_km))
-                .then_with(|| a.id.0.cmp(&b.id.0))
-        })
 }
 
 fn reconstruct_leg(
@@ -523,6 +519,52 @@ mod tests {
         assert_eq!(leg.arrive, Minutes::from_minutes(120));
         assert_eq!(leg.steps.len(), 2);
         assert_eq!(leg.steps[0].depart, Minutes::from_minutes(100));
+    }
+
+    #[test]
+    fn plain_leg_replays_the_routers_own_edge_choice_for_parallel_edges() {
+        // Two parallel edges 0 -> 1: a short slow one (the distance-optimal
+        // choice Router makes) and a long fast one. `plain_leg` must report
+        // the edge Router actually priced, not the fastest one.
+        let mut graph = Graph::new();
+        graph.add_node(NodeId(0), LatLon::new(-33.87, 151.21));
+        graph.add_node(NodeId(1), LatLon::new(-33.87, 151.30));
+        graph.add_edge(
+            NodeId(0),
+            NodeId(1),
+            4.0,
+            20,
+            Some("primary".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        graph.add_edge(
+            NodeId(0),
+            NodeId(1),
+            5.0,
+            10,
+            Some("motorway".to_string()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        let leg = plain_leg(
+            &graph,
+            NodeId(0),
+            NodeId(1),
+            Minutes::ZERO,
+            TruckProfile::default(),
+        )
+        .expect("path exists");
+        assert_eq!(leg.steps.len(), 1);
+        let edge = graph.edge(leg.steps[0].edge).expect("edge");
+        assert!((edge.distance_km - 4.0).abs() < 1e-9);
+        assert_eq!(edge.highway.as_deref(), Some("primary"));
     }
 
     #[test]

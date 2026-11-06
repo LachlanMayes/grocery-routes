@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+domain = { path = "../domain" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror.workspace = true
 

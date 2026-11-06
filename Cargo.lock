@@ -1827,6 +1827,7 @@ name = "geo-au"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "domain",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.21",

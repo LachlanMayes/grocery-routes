@@ -158,6 +158,25 @@ pub fn solve_with_lns_routing(
     )
 }
 
+/// Builds the road-network distance matrix for one solve call, naming the
+/// missing graph in the error.
+fn routing_matrix(
+    problem: &Problem,
+    cached_matrix: &mut CachedMatrix,
+    profile: TruckProfile,
+    strategy: MatrixStrategy,
+) -> anyhow::Result<DistanceMatrix> {
+    let entries = cached_matrix
+        .matrix_for_with(problem, profile, strategy)?
+        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+    let node_count = problem.depots.len() + problem.stores.len();
+    Ok(DistanceMatrix::from_routing(
+        problem.depots.len(),
+        node_count,
+        &entries,
+    ))
+}
+
 /// [`solve_with_lns_routing`] with an explicit matrix strategy; see
 /// [`routing::MatrixStrategy`].
 pub fn solve_with_lns_routing_with(
@@ -167,11 +186,7 @@ pub fn solve_with_lns_routing_with(
     profile: TruckProfile,
     strategy: MatrixStrategy,
 ) -> anyhow::Result<Solution> {
-    let entries = cached_matrix
-        .matrix_for_with(problem, profile, strategy)?
-        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
-    let node_count = problem.depots.len() + problem.stores.len();
-    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    let matrix = routing_matrix(problem, cached_matrix, profile, strategy)?;
     let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
     let solution = lns::solve_lns(problem, &matrix, greedy_solution, config);
     assert!(
@@ -268,11 +283,7 @@ pub fn solve_with_lns_routing_multistart_with(
     strategy: MatrixStrategy,
     repeats: usize,
 ) -> anyhow::Result<Solution> {
-    let entries = cached_matrix
-        .matrix_for_with(problem, profile, strategy)?
-        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
-    let node_count = problem.depots.len() + problem.stores.len();
-    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    let matrix = routing_matrix(problem, cached_matrix, profile, strategy)?;
     Ok(solve_with_lns_multistart(problem, config, matrix, repeats))
 }
 
@@ -297,11 +308,7 @@ pub fn solve_greedy_routing_with(
     profile: TruckProfile,
     strategy: MatrixStrategy,
 ) -> anyhow::Result<Solution> {
-    let entries = cached_matrix
-        .matrix_for_with(problem, profile, strategy)?
-        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
-    let node_count = problem.depots.len() + problem.stores.len();
-    let matrix = DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    let matrix = routing_matrix(problem, cached_matrix, profile, strategy)?;
     let solution = greedy::plan_with_matrix(problem, matrix);
     assert!(
         solution.validate(problem).is_ok(),

@@ -18,7 +18,9 @@ use std::fmt;
 
 use domain::{DriverId, Load, Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId};
 
-use crate::greedy::{add_load, next_service_start, route_cost, spans_overlap};
+use crate::greedy::{
+    ScheduleStart, add_load, next_service_start, route_cost, schedule_start, spans_overlap,
+};
 use crate::matrix::DistanceMatrix;
 
 /// Supplies time-dependent leg times, e.g. from `routing::timed`.
@@ -161,58 +163,12 @@ pub fn enforce_curfews(
 
     for (route_index, route) in solution.routes.iter().enumerate() {
         remaining.retain(|&(index, _, _)| index != route_index);
-        let mut candidate = route.clone();
-        let attempt = loop {
-            if route_stores(&candidate).is_empty() {
-                // Every store on this route has been dropped; remove it.
-                break None;
-            }
-            match try_reschedule(problem, &candidate, legs) {
-                Ok(attempt) => {
-                    if driver_conflicts(
-                        problem,
-                        &candidate.drivers,
-                        attempt.span,
-                        &committed,
-                        &remaining,
-                    ) {
-                        let Some(store) = last_store(&candidate) else {
-                            break None;
-                        };
-                        report.dropped.push(CurfewDrop {
-                            store,
-                            route: route_index,
-                            kind: BreachKind::DriverConflict,
-                        });
-                        drop_store(&mut candidate, store);
-                        continue;
-                    }
-                    break Some(attempt);
-                }
-                Err((kind, Some(store))) => {
-                    report.dropped.push(CurfewDrop {
-                        store,
-                        route: route_index,
-                        kind,
-                    });
-                    drop_store(&mut candidate, store);
-                }
-                Err((kind, None)) => {
-                    // The whole route is unusable: record its stores.
-                    for store in route_stores(&candidate) {
-                        report.dropped.push(CurfewDrop {
-                            store,
-                            route: route_index,
-                            kind,
-                        });
-                    }
-                    break None;
-                }
-            }
-        };
-        let Some(attempt) = attempt else {
+        let Some((attempt, drops)) =
+            reschedule_route(problem, route, route_index, legs, &committed, &remaining)
+        else {
             continue;
         };
+        report.dropped.extend(drops);
         for &driver in &attempt.route.drivers {
             if let Some(spans) = committed.get_mut(driver.0 as usize) {
                 spans.push(attempt.span);
@@ -248,6 +204,66 @@ pub fn enforce_curfews(
         "curfew enforcement produced an invalid solution"
     );
     (enforced, report)
+}
+
+/// Re-schedules one route, dropping stores until it fits the driver
+/// commitments; returns the final attempt and every drop it recorded.
+fn reschedule_route(
+    problem: &Problem,
+    route: &RoutePlan,
+    route_index: usize,
+    legs: &mut dyn LegTimes,
+    committed: &[Vec<(Minutes, Minutes)>],
+    remaining: &[(usize, DriverId, (Minutes, Minutes))],
+) -> Option<(Attempt, Vec<CurfewDrop>)> {
+    let mut candidate = route.clone();
+    let mut drops: Vec<CurfewDrop> = Vec::new();
+    loop {
+        if route_stores(&candidate).is_empty() {
+            // Every store on this route has been dropped; remove it.
+            return None;
+        }
+        match try_reschedule(problem, &candidate, legs) {
+            Ok(attempt) => {
+                if driver_conflicts(
+                    problem,
+                    &candidate.drivers,
+                    attempt.span,
+                    committed,
+                    remaining,
+                ) {
+                    let store = last_store(&candidate)?;
+                    drops.push(CurfewDrop {
+                        store,
+                        route: route_index,
+                        kind: BreachKind::DriverConflict,
+                    });
+                    drop_store(&mut candidate, store);
+                    continue;
+                }
+                return Some((attempt, drops));
+            }
+            Err((kind, Some(store))) => {
+                drops.push(CurfewDrop {
+                    store,
+                    route: route_index,
+                    kind,
+                });
+                drop_store(&mut candidate, store);
+            }
+            Err((kind, None)) => {
+                // The whole route is unusable: record its stores.
+                for store in route_stores(&candidate) {
+                    drops.push(CurfewDrop {
+                        store,
+                        route: route_index,
+                        kind,
+                    });
+                }
+                return None;
+            }
+        }
+    }
 }
 
 /// The solution span a route is booked for: first departure to last arrival.
@@ -342,27 +358,14 @@ fn try_reschedule(
     route: &RoutePlan,
     legs: &mut dyn LegTimes,
 ) -> Result<Attempt, Breach> {
-    let Some(vehicle) = problem.vehicle(route.vehicle) else {
-        return Err((BreachKind::InvalidRoute, None));
-    };
-    let sequence: Vec<Node> = route.steps.iter().map(|step| step.node).collect();
-    let Some((&home, rest)) = sequence.split_first() else {
-        return Err((BreachKind::InvalidRoute, None));
-    };
-    let Some((&end, store_nodes)) = rest.split_last() else {
-        return Err((BreachKind::InvalidRoute, None));
-    };
-    if !matches!(home, Node::Depot(_)) || !matches!(end, Node::Depot(_)) {
-        return Err((BreachKind::InvalidRoute, None));
-    }
-
+    let (vehicle, home, end, store_nodes) = route_shape(problem, route)?;
     let mut first_error: Option<Breach> = None;
     for &driver in &route.drivers {
         let Some(driver_record) = problem.driver(driver) else {
             continue;
         };
         for &shift in &driver_record.shifts {
-            match simulate_shift(problem, vehicle, shift, home, end, store_nodes, legs) {
+            match simulate_shift(problem, vehicle, shift, home, end, &store_nodes, legs) {
                 Ok(mut attempt) => {
                     // The re-scheduled route keeps its vehicle and driver
                     // list; only its times and metrics change.
@@ -381,6 +384,29 @@ fn try_reschedule(
     Err(first_error.unwrap_or((BreachKind::InvalidRoute, None)))
 }
 
+/// Extracts `(vehicle, home, end, store nodes)` from a route plan, or the
+/// `InvalidRoute` breach when the vehicle is unknown or the plan does not
+/// start and end at depots (mid-route depots fail later, in `simulate_shift`).
+fn route_shape<'a>(
+    problem: &'a Problem,
+    route: &RoutePlan,
+) -> Result<(&'a domain::Vehicle, Node, Node, Vec<Node>), Breach> {
+    let Some(vehicle) = problem.vehicle(route.vehicle) else {
+        return Err((BreachKind::InvalidRoute, None));
+    };
+    let sequence: Vec<Node> = route.steps.iter().map(|step| step.node).collect();
+    let Some((&home, rest)) = sequence.split_first() else {
+        return Err((BreachKind::InvalidRoute, None));
+    };
+    let Some((&end, store_nodes)) = rest.split_last() else {
+        return Err((BreachKind::InvalidRoute, None));
+    };
+    if !matches!(home, Node::Depot(_)) || !matches!(end, Node::Depot(_)) {
+        return Err((BreachKind::InvalidRoute, None));
+    }
+    Ok((vehicle, home, end, store_nodes.to_vec()))
+}
+
 /// Simulates the whole route against one shift, asking `legs` for every leg.
 fn simulate_shift(
     problem: &Problem,
@@ -391,55 +417,23 @@ fn simulate_shift(
     store_nodes: &[Node],
     legs: &mut dyn LegTimes,
 ) -> Result<Attempt, Breach> {
-    let mut steps = Vec::with_capacity(store_nodes.len() + 2);
-    steps.push(PlannedStop {
-        node: home,
-        arrive: shift.start,
-        depart: shift.start,
-    });
-    let mut time = shift.start;
-    let mut previous = home;
-    let mut load = Load::ZERO;
-    let mut distance_km = 0.0;
+    let ScheduleStart {
+        mut steps,
+        mut time,
+        mut previous,
+        mut load,
+        mut distance_km,
+    } = schedule_start(home, shift, store_nodes.len() + 2);
     let mut wait_minutes = 0i64;
 
     for &node in store_nodes {
-        let Node::Store(store_id) = node else {
-            return Err((BreachKind::InvalidRoute, None));
-        };
-        let Some(store) = problem.store(store_id) else {
-            return Err((BreachKind::InvalidRoute, Some(store_id)));
-        };
-        let Some(leg) = legs.leg(previous, node, time) else {
-            return Err((BreachKind::NoCurfewFeasiblePath, Some(store_id)));
-        };
-        distance_km += leg.distance_km;
-        wait_minutes += leg.wait_minutes;
-        let physical = time + Minutes::from_minutes(leg.total_minutes());
-        if leg.arrive > shift.end || physical > shift.end {
-            return Err((BreachKind::ShiftEndExceeded, Some(store_id)));
-        }
-        let Some(service_start) = next_service_start(store, physical) else {
-            return Err((BreachKind::ReceivingWindowMissed, Some(store_id)));
-        };
-        let depart = service_start + store.service;
-        if depart > shift.end {
-            return Err((BreachKind::ShiftEndExceeded, Some(store_id)));
-        }
-        let Some(next_load) = add_load(load, store.demand) else {
-            return Err((BreachKind::InvalidRoute, Some(store_id)));
-        };
-        if !next_load.fits_within(vehicle.capacity) {
-            return Err((BreachKind::InvalidRoute, Some(store_id)));
-        }
-        load = next_load;
-        steps.push(PlannedStop {
-            node,
-            arrive: service_start,
-            depart,
-        });
-        time = depart;
+        let visit = store_visit(problem, vehicle, shift, (previous, time), node, load, legs)?;
+        distance_km += visit.distance_km;
+        wait_minutes += visit.wait_minutes;
+        time = visit.stop.depart;
+        steps.push(visit.stop);
         previous = node;
+        load = visit.load;
     }
 
     let final_store = route_last_store(store_nodes);
@@ -474,6 +468,63 @@ fn simulate_shift(
         },
         span: (shift.start, arrival),
         wait_minutes,
+    })
+}
+
+/// One store's scheduled stop plus the leg it took to reach it.
+struct StoreVisit {
+    stop: PlannedStop,
+    load: Load,
+    distance_km: f64,
+    wait_minutes: i64,
+}
+
+/// Schedules one store visit after `previous` at `time`, or the breach that
+/// makes it infeasible. `load` is the load carried before the visit.
+fn store_visit(
+    problem: &Problem,
+    vehicle: &domain::Vehicle,
+    shift: domain::Shift,
+    (previous, time): (Node, Minutes),
+    node: Node,
+    load: Load,
+    legs: &mut dyn LegTimes,
+) -> Result<StoreVisit, Breach> {
+    let Node::Store(store_id) = node else {
+        return Err((BreachKind::InvalidRoute, None));
+    };
+    let Some(store) = problem.store(store_id) else {
+        return Err((BreachKind::InvalidRoute, Some(store_id)));
+    };
+    let Some(leg) = legs.leg(previous, node, time) else {
+        return Err((BreachKind::NoCurfewFeasiblePath, Some(store_id)));
+    };
+    let physical = time + Minutes::from_minutes(leg.total_minutes());
+    if leg.arrive > shift.end || physical > shift.end {
+        return Err((BreachKind::ShiftEndExceeded, Some(store_id)));
+    }
+    let Some(service_start) = next_service_start(store, physical) else {
+        return Err((BreachKind::ReceivingWindowMissed, Some(store_id)));
+    };
+    let depart = service_start + store.service;
+    if depart > shift.end {
+        return Err((BreachKind::ShiftEndExceeded, Some(store_id)));
+    }
+    let Some(next_load) = add_load(load, store.demand) else {
+        return Err((BreachKind::InvalidRoute, Some(store_id)));
+    };
+    if !next_load.fits_within(vehicle.capacity) {
+        return Err((BreachKind::InvalidRoute, Some(store_id)));
+    }
+    Ok(StoreVisit {
+        stop: PlannedStop {
+            node,
+            arrive: service_start,
+            depart,
+        },
+        load: next_load,
+        distance_km: leg.distance_km,
+        wait_minutes: leg.wait_minutes,
     })
 }
 

@@ -109,23 +109,17 @@ pub fn split_line(line: &str) -> Vec<String> {
     let mut in_quotes = false;
     let mut chars = line.chars().peekable();
     while let Some(character) = chars.next() {
-        if in_quotes {
-            if character == '"' {
-                if chars.peek() == Some(&'"') {
-                    current.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                current.push(character);
+        match (in_quotes, character) {
+            (true, '"') if chars.peek() == Some(&'"') => {
+                // `""` inside a quoted field is one literal quote.
+                current.push('"');
+                chars.next();
             }
-        } else {
-            match character {
-                '"' => in_quotes = true,
-                '|' => fields.push(std::mem::take(&mut current)),
-                _ => current.push(character),
-            }
+            (true, '"') => in_quotes = false,
+            (true, other) => current.push(other),
+            (false, '"') => in_quotes = true,
+            (false, '|') => fields.push(std::mem::take(&mut current)),
+            (false, other) => current.push(other),
         }
     }
     fields.push(current);

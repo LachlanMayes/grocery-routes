@@ -21,7 +21,7 @@ pub mod router;
 pub mod timed;
 pub mod truck_constraints;
 
-pub use audit::{CorridorAudit, CorridorRow, audit_solution};
+pub use audit::{AuditStrategy, CorridorAudit, CorridorRow, audit_solution, csv_field};
 pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey, MatrixStrategy};
 pub use ch::{ChError, ContractionHierarchy};
 pub use curated::{CuratedConstraints, CuratedEntry, CuratedError};

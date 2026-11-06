@@ -5,7 +5,7 @@
 
 use std::collections::{BinaryHeap, HashMap};
 
-use crate::graph::{Graph, NodeId};
+use crate::graph::{EdgeId, Graph, NodeId};
 use crate::truck_constraints::{TruckProfile, edge_allowed_for};
 
 /// Result of a shortest-path query.
@@ -60,12 +60,29 @@ impl Router {
         target: NodeId,
         profile: TruckProfile,
     ) -> Option<RouteResult> {
+        Self::shortest_path_with_edges(graph, source, target, profile).map(|(route, _)| route)
+    }
+
+    /// [`Router::shortest_path`] with the traversed edge sequence, one edge
+    /// per consecutive node pair.
+    ///
+    /// Corridor audits replay this series so they describe the exact edges
+    /// the distance was priced on, even where parallel edges exist.
+    pub fn shortest_path_with_edges(
+        graph: &Graph,
+        source: NodeId,
+        target: NodeId,
+        profile: TruckProfile,
+    ) -> Option<(RouteResult, Vec<EdgeId>)> {
         if source == target {
-            return Some(RouteResult {
-                distance_km: 0.0,
-                duration_minutes: 0,
-                nodes: vec![source],
-            });
+            return Some((
+                RouteResult {
+                    distance_km: 0.0,
+                    duration_minutes: 0,
+                    nodes: vec![source],
+                },
+                Vec::new(),
+            ));
         }
 
         let mut dist: HashMap<NodeId, f64> = HashMap::new();
@@ -101,10 +118,9 @@ impl Router {
                 .expect("popped node must have a time entry");
 
             for (edge_id, next_node, edge) in graph.out_edges(current) {
-                if visited.get(&next_node).copied().unwrap_or(false) {
-                    continue;
-                }
-                if edge_allowed_for(edge, profile).is_err() {
+                if visited.get(&next_node).copied().unwrap_or(false)
+                    || edge_allowed_for(edge, profile).is_err()
+                {
                     continue;
                 }
 
@@ -125,25 +141,7 @@ impl Router {
 
         let final_dist = *dist.get(&target)?;
         let final_time = *total_time.get(&target)?;
-
-        // Reconstruct path from target back to source.
-        let mut path = Vec::new();
-        let mut current = target;
-        loop {
-            path.push(current);
-            if current == source {
-                break;
-            }
-            let (pred, _) = prev.get(&current)?;
-            current = *pred;
-        }
-        path.reverse();
-
-        Some(RouteResult {
-            distance_km: final_dist,
-            duration_minutes: final_time,
-            nodes: path,
-        })
+        reconstruct(source, target, final_dist, final_time, &prev)
     }
 
     /// Computes distance and duration (without path reconstruction) from
@@ -159,6 +157,39 @@ impl Router {
         let result = Self::shortest_path(graph, source, target, profile)?;
         Some((result.distance_km, result.duration_minutes))
     }
+}
+
+/// Rebuilds the node and edge sequences from the predecessor map, target back
+/// to source; `None` when the map is missing a link.
+fn reconstruct(
+    source: NodeId,
+    target: NodeId,
+    final_dist: f64,
+    final_time: i64,
+    prev: &HashMap<NodeId, (NodeId, u64)>,
+) -> Option<(RouteResult, Vec<EdgeId>)> {
+    let mut path = Vec::new();
+    let mut edges = Vec::new();
+    let mut current = target;
+    loop {
+        path.push(current);
+        if current == source {
+            break;
+        }
+        let (pred, edge_id) = prev.get(&current)?;
+        edges.push(EdgeId(*edge_id));
+        current = *pred;
+    }
+    path.reverse();
+    edges.reverse();
+    Some((
+        RouteResult {
+            distance_km: final_dist,
+            duration_minutes: final_time,
+            nodes: path,
+        },
+        edges,
+    ))
 }
 
 #[cfg(test)]

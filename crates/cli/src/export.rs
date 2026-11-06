@@ -4,6 +4,7 @@
 //! generated and inspected without touching the filesystem.
 
 use domain::{DriverId, Load, Node, Problem, RoutePlan, Solution, StoreId};
+use routing::csv_field;
 use serde_json::{Value, json};
 
 /// Escapes `&`, `<`, `>`, `"` and `'` for safe interpolation into HTML.
@@ -333,26 +334,6 @@ pub fn returnables_csv(problem: &Problem, solution: &Solution) -> String {
         ));
     }
     out
-}
-
-/// Quotes a CSV field when it contains a comma, quote or line break, and
-/// neutralises spreadsheet formula prefixes (`=`, `+`, `-`, `@`) with a
-/// leading apostrophe.
-fn csv_field(value: &str) -> String {
-    let prefixed = if matches!(value.chars().next(), Some('=' | '+' | '-' | '@')) {
-        format!("'{value}")
-    } else {
-        value.to_string()
-    };
-    if prefixed.contains(',')
-        || prefixed.contains('"')
-        || prefixed.contains('\n')
-        || prefixed.contains('\r')
-    {
-        format!("\"{}\"", prefixed.replace('"', "\"\""))
-    } else {
-        prefixed
-    }
 }
 
 /// Formats a load as `ambient / chilled / frozen` handling units.
