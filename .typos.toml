@@ -1,0 +1,5 @@
+# The docs cite commit hashes and fixtures contain hex values; a 7+ character
+# hex run is an identifier, not a misspelled English word (the flag was on
+# `aded0ee` in docs/PLAN.md).
+[default]
+extend-ignore-re = ["[0-9a-f]{7,40}"]
