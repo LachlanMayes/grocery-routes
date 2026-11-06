@@ -120,7 +120,9 @@ impl ConsoleApp {
 }
 
 impl eframe::App for ConsoleApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    // eframe 0.37 replaced `update(ctx, ..)` with `ui(ui, ..)`. The root Ui has
+    // no frame of its own; the panel below supplies the standard background.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Drain any messages from background tasks
         while let Ok(msg) = self.msg_rx.try_recv() {
             self.handle_msg(msg);
@@ -134,14 +136,14 @@ impl eframe::App for ConsoleApp {
             self.runtime.spawn(sse_loop(tx));
         }
 
-        egui::Window::new("sidebar").show(ctx, |ui| {
+        egui::Window::new("sidebar").show(ui.ctx(), |ui| {
             self.render_sidebar(ui);
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.render_content(ui);
         });
 
-        ctx.request_repaint_after(Duration::from_millis(100));
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 }
 

@@ -25,8 +25,20 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tokio-stream = { version = "0.1", features = ["sync"] }
-egui = "0.31"
-eframe = "0.31"
+egui = "0.37"
+# eframe: upstream defaults minus the wgpu renderer. glow keeps the dependency
+# tree much smaller (better for the security audit) and matches the pre-0.37
+# console; see docs/PLAN.md. When bumping eframe, re-check this feature set.
+eframe = { version = "0.37", default-features = false, features = [
+  "accesskit",
+  "clipboard",
+  "default_fonts",
+  "glow",
+  "links",
+  "system_fonts",
+  "wayland",
+  "x11",
+] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 chrono = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
