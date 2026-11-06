@@ -48,9 +48,10 @@ proof of delivery, no further console UI.
 
 Current checks:
 
-- `cargo test --workspace`: all **241** tests pass.
+- `cargo test --workspace`: all **239** tests pass.
 - `cargo clippy --workspace --all-targets`: exits 0 with warnings (no errors).
-- Latest commits: `0483981` (quality + review pass: complexity refactors,
+- Latest commits: `bbdaff7` (maintenance: clippy sweep 91 -> 0, dependency
+  patch updates), `0483981` (quality + review pass: complexity refactors,
   shared helpers, strategy-aware audit), `d8cb599` (review fixes), `52982d9`
   (docs refresh), `95eb982` (G-NAF), `2905f93` (corridor audit), `86a5321`
   (contraction hierarchy), `200d446` (LNS multi-start), `db79960` (state
@@ -167,6 +168,12 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 7. **LNS remains behind local search** on C101 (679.85 vs 621.42 even with
    multi-start); keep LS as the quality path, revisit only with a measured
    win.
+8. **Dependency advisories**: `cargo audit` exits 0 for reachable code under
+   `.cargo/audit.toml`; three advisories are ignored with dated reasons in
+   [SECURITY.md](SECURITY.md) (quick-xml via the Linux-only egui
+   accessibility stack — cleared by an egui/eframe upgrade; rsa, which no
+   workspace target reaches and upstream never fixed). `memmap2` 0.5.10
+   (unsound warning) via `osmpbf` 0.3.8 has no fixed release upstream yet.
 
 ## Data & licences
 
@@ -189,7 +196,8 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
   toolchain reports Rust 1.99.1.
 - Workspace lints: `unsafe_code = "forbid"`; `clippy::all` at warn level.
 - Latest local verification (2026-11-06): `cargo test --workspace` passes
-  (241 tests); `cargo clippy --workspace --all-targets` exits 0 with existing
-  warnings (not `-D warnings` clean).
+  (239 tests); `cargo clippy --workspace --all-targets` exits 0 with **zero
+  warnings** (whole-tree sweep, 2026-11-06); `cargo audit` exits 0 — see
+  [SECURITY.md](SECURITY.md). `-D warnings` is still not enforced.
 - `Cargo.lock` is checked in and is the source of truth for dependency
   resolution.

@@ -7,6 +7,7 @@ Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
 - Truck-constraint enforcement model (what is and is not verified):
   [docs/TRUCK-CONSTRAINTS.md](docs/TRUCK-CONSTRAINTS.md)
 - G-NAF geocoding (acquisition, licensing, limits): [docs/GNAF.md](docs/GNAF.md)
+- Security and dependency audit: [docs/SECURITY.md](docs/SECURITY.md)
 - Milestone reports: [docs/M0-REPORT.md](docs/M0-REPORT.md) ·
   [docs/M1-REPORT.md](docs/M1-REPORT.md)
 
@@ -75,8 +76,8 @@ cargo clippy --workspace --all-targets
 cargo bench -p solver --no-run
 ```
 
-The workspace currently builds with warnings under `clippy::all` (warn level);
-it is not enforced with `-D warnings`.
+The workspace builds with zero `clippy::all` warnings as of 2026-11-06
+(whole-tree sweep); `-D warnings` is still not enforced.
 
 ## Layout
 

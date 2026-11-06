@@ -50,7 +50,7 @@ quality baseline.
 
 ```console
 cargo test --workspace
-# all 241 tests pass (as of 2026-11-06)
+# all 239 tests pass (as of 2026-11-06)
 
 cargo clippy --workspace --all-targets
 # exits 0 with warnings; clippy is not enforced with -D warnings
@@ -84,7 +84,7 @@ priorities. As of 2026-11-05:
 | `crates/solver/src/parser.rs` | Vendored Solomon/VRPLib parser + `solomon_to_problem`. |
 | `crates/solver/src/local_search.rs` | 2-opt, relocate, exchange, cross-exchange, multi-start; driver-occupancy tracking. |
 | `crates/solver/src/lns.rs` | LNS/ALNS implementation (opt-in; invalid candidates are rejected during search, and the final plan is validated — falls back to greedy only as a last resort). |
-| `crates/solver/src/savings.rs` | Clarke–Wright prototype; retained but not used (dead code warnings are expected). |
+| `crates/solver/src/savings.rs` | Clarke-Wright prototype; retained but not used (the module carries a dead-code allow; see the note at the top of the file). |
 | `crates/solver/src/lib.rs` | Exports `solve_with_local_search`, `solve_with_lns`, `LNSConfig`, `LSConfig`, `improve`. |
 | `crates/solver/tests/greedy.rs` | C101 calibration gates (greedy, local search, LNS) and M0/M1 end-to-end tests. |
 | `data/solomon/C101.txt` | Tracked benchmark instance; gates fail loudly if missing. |
