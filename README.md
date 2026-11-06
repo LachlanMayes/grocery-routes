@@ -47,6 +47,10 @@ cargo run -p cli -- audit --problem data/demo/problem.json --solution data/demo/
   --osm data/osm/australia-latest.osm.pbf --hgv --maxweight 42.5 --out-dir data/demo
 ```
 
+Add `--ch` when the plan was solved with `solve --ch`: the audit then
+replays the same time-optimal paths, verifying the ways the plan really
+uses.
+
 Calendars and geocoding:
 
 ```console

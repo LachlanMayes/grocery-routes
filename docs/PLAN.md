@@ -48,12 +48,14 @@ proof of delivery, no further console UI.
 
 Current checks:
 
-- `cargo test --workspace`: all **238** tests pass.
+- `cargo test --workspace`: all **241** tests pass.
 - `cargo clippy --workspace --all-targets`: exits 0 with warnings (no errors).
-- Latest commits: `95eb982` (G-NAF), `2905f93` (corridor audit), `86a5321`
+- Latest commits: `0483981` (quality + review pass: complexity refactors,
+  shared helpers, strategy-aware audit), `d8cb599` (review fixes), `52982d9`
+  (docs refresh), `95eb982` (G-NAF), `2905f93` (corridor audit), `86a5321`
   (contraction hierarchy), `200d446` (LNS multi-start), `db79960` (state
   holidays), `1cd22cd` (Christmas peak + returnables), `3b71be7` (curfew
-  enforcement), `bd6b72a` (previous docs refresh).
+  enforcement).
 - `data/solomon/C101.txt` is tracked, so the calibration gates fail loudly
   rather than silently skipping if the dataset is missing.
 
@@ -187,7 +189,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
   toolchain reports Rust 1.99.1.
 - Workspace lints: `unsafe_code = "forbid"`; `clippy::all` at warn level.
 - Latest local verification (2026-11-06): `cargo test --workspace` passes
-  (236 tests); `cargo clippy --workspace --all-targets` exits 0 with existing
+  (241 tests); `cargo clippy --workspace --all-targets` exits 0 with existing
   warnings (not `-D warnings` clean).
 - `Cargo.lock` is checked in and is the source of truth for dependency
   resolution.
