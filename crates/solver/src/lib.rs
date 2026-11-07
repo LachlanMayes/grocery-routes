@@ -30,6 +30,7 @@ pub mod lns;
 pub mod local_search;
 mod matrix;
 pub mod parser;
+pub mod relay;
 mod savings; // Solomon/VRPLib parser (vendored for M1)
 
 pub use curfew::{BreachKind, CurfewDrop, CurfewReport, LegTimes, StaticLegs, enforce_curfews};
@@ -39,6 +40,7 @@ pub use matrix::{
     DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
 };
 pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
+pub use relay::{RelayConfig, RelayNote, RelayReport, apply_relay, apply_relay_with_matrix};
 
 use domain::{Problem, Solution};
 use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
@@ -283,6 +285,25 @@ pub fn solve_with_lns_routing_multistart_with(
 ) -> anyhow::Result<Solution> {
     let matrix = routing_matrix(problem, cached_matrix, profile, strategy)?;
     Ok(solve_with_lns_multistart(problem, config, matrix, repeats))
+}
+
+/// Runs greedy, then applies the relay post-pass.
+///
+/// Relay conversion keeps the original route whenever a hand-over is not
+/// feasible, so the result is always at least as good as greedy and still
+/// passes [`domain::Solution::validate`]. The returned report lists which
+/// routes were converted to relay routes.
+///
+/// Note: the greedy candidate loop itself does not yet consider relay
+/// insertions; relay is only applied as a post-pass here.
+pub fn solve_greedy_with_relay(problem: &Problem, config: RelayConfig) -> (Solution, RelayReport) {
+    let greedy_solution = greedy::plan(problem);
+    let (solution, report) = apply_relay(problem, greedy_solution, &config);
+    assert!(
+        solution.validate(problem).is_ok(),
+        "relay solution must validate"
+    );
+    (solution, report)
 }
 
 /// Solves `problem` using greedy insertion (M0) with road-network distances

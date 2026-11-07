@@ -234,6 +234,12 @@ pub struct SolveArgs {
     /// timezone.
     #[arg(long, requires = "enforce_curfews")]
     pub network_timezone: Option<String>,
+    /// Apply the relay post-pass after solving: convert routes into
+    /// overnight relay routes (depot hand-over, two shifts) where feasible
+    /// and print the relay report. Relay routes are rejected by curfew
+    /// enforcement with a recorded reason if combined with `--enforce-curfews`.
+    #[arg(long)]
+    pub relay: bool,
 }
 
 /// Arguments of `export`.
@@ -567,7 +573,7 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
             let (solution, cache) = solve_with_osm(args, &problem, osm_path, profile, strategy)?;
             (solution, Some(cache))
         }
-        None => (solve_with_haversine(args, &problem), None),
+        None => solve_with_haversine(args, &problem),
     };
     let solution =
         enforce_curfews_for(&problem, solution, cache.as_ref(), curfew_timezone, profile)?;
@@ -609,7 +615,52 @@ fn solve_with_osm(
         println!("  matrix strategy: contraction hierarchy (time-optimal)");
     }
     let solution = solve_matrix_variant(args, problem, &mut cached, profile, strategy)?;
-    Ok((solution, cached))
+    if args.relay {
+        let (solution, report) =
+            apply_relay_to_osm(problem, solution, &mut cached, profile, strategy)?;
+        print_relay_report(&report);
+        Ok((solution, cached))
+    } else {
+        Ok((solution, cached))
+    }
+}
+
+/// Applies the relay post-pass using the road-network matrix.
+fn apply_relay_to_osm(
+    problem: &Problem,
+    solution: Solution,
+    cached: &mut routing::CachedMatrix,
+    profile: routing::TruckProfile,
+    strategy: routing::MatrixStrategy,
+) -> anyhow::Result<(Solution, solver::RelayReport)> {
+    let entries = cached
+        .matrix_for_with(problem, profile, strategy)?
+        .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+    let node_count = problem.depots.len() + problem.stores.len();
+    let matrix = solver::DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+    Ok(solver::apply_relay_with_matrix(
+        problem,
+        solution,
+        &solver::RelayConfig::default(),
+        matrix,
+    ))
+}
+
+/// Prints the relay report (routes converted, drivers, hand-over times).
+fn print_relay_report(report: &solver::RelayReport) {
+    println!("  relay: {} route(s) converted", report.converted);
+    for note in &report.details {
+        let drivers = note
+            .drivers
+            .iter()
+            .map(|driver| driver.0.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "    route {} vehicle {} drivers [{}] hand-over {}",
+            note.route_index, note.vehicle.0, drivers, note.handover
+        );
+    }
 }
 
 /// Runs the requested solver over a loaded matrix cache.
@@ -639,12 +690,21 @@ fn solve_matrix_variant(
 }
 
 /// Solves with the haversine/speed model (no OSM extract).
-fn solve_with_haversine(args: &SolveArgs, problem: &Problem) -> Solution {
+fn solve_with_haversine(
+    args: &SolveArgs,
+    problem: &Problem,
+) -> (Solution, Option<routing::CachedMatrix>) {
     if !args.ls {
-        return solver::solve(problem);
+        if args.relay {
+            let (solution, report) =
+                solver::solve_greedy_with_relay(problem, solver::RelayConfig::default());
+            print_relay_report(&report);
+            return (solution, None);
+        }
+        return (solver::solve(problem), None);
     }
     let config = solver::LNSConfig::default();
-    if args.repeat > 1 {
+    let solution = if args.repeat > 1 {
         solver::solve_with_lns_multistart(
             problem,
             config,
@@ -653,6 +713,14 @@ fn solve_with_haversine(args: &SolveArgs, problem: &Problem) -> Solution {
         )
     } else {
         solver::solve_with_lns_haversine(problem, config)
+    };
+    if args.relay {
+        let (solution, report) =
+            solver::apply_relay(problem, solution, &solver::RelayConfig::default());
+        print_relay_report(&report);
+        (solution, None)
+    } else {
+        (solution, None)
     }
 }
 
