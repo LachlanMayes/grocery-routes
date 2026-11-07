@@ -12,8 +12,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
-/// Base URL for the API. Defaults to localhost:8080.
-const DEFAULT_BASE_URL: &str = "http://localhost:8080";
+/// Base URL for the API. Defaults to the loopback IPv4 address because on
+/// Windows `localhost` resolves to `::1` first and the API binds IPv4.
+const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
 
 /// Import request body: a serialized domain problem.
 #[derive(Clone, Debug, Serialize)]
@@ -99,7 +100,7 @@ impl ApiClient {
         }
     }
 
-    /// Default client pointing at localhost:8080.
+    /// Default client pointing at 127.0.0.1:8080.
     pub fn default_local() -> Self {
         Self::new(DEFAULT_BASE_URL)
     }

@@ -68,6 +68,21 @@ been validated against a real release yet — read
 calibration gates run in a clean checkout. Everything generated is synthetic; no
 real store addresses are shipped.
 
+## Operator console
+
+The console is an egui client for the local API, so it needs two processes.
+Start the API first (it creates the SQLite database if missing), then the
+console in a second terminal:
+
+```console
+cargo run -p api -- --db data/demo/api.sqlite
+cargo run -p console
+```
+
+The console connects to `http://127.0.0.1:8080`; pass `--addr` to the API if
+you move it. In the Import tab, paste a problem JSON document (`gen-sim` in the
+Quickstart writes one), then use the problem ID it reports in the Solve tab.
+
 ## Checks
 
 ```console
@@ -89,7 +104,7 @@ The workspace builds with zero `clippy::all` warnings as of 2026-11-06
 | `crates/routing` | OSM PBF ingest, directed graph, truck constraints (OSM tags + `curated` per-way limits), cached matrices, contraction hierarchy (`ch`), time-dependent curfews (`timed`), corridor audit (`audit`) |
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
 | `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` |
-| `crates/api` | axum + SQLite API, SSE solve events, import/solve/solution/KPI endpoints |
-| `apps/console` | egui operator console |
+| `crates/api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
+| `apps/console` | egui operator console (`cargo run -p console`), talks to the API on `127.0.0.1:8080` |
 | `constraints/` | curated truck-constraints file (schema + provenance rules) |
 | `docs/` | roadmap, plan status, milestone reports, truck-constraint model, G-NAF notes |

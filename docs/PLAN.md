@@ -109,7 +109,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented and fixture-tested; not yet validated against a real G-NAF release (operator step, see `docs/GNAF.md`). |
 | `crates/cli` | `gen-sim` / `solve` / `export` plus `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented; C101 dataset is tracked. |
 | `crates/api` | axum + SQLite; SSE events; import/solve/solution/KPIs | M4 | Implemented; endpoint integration tests pass; OSM matrices default to Dijkstra (CH is CLI-only for now). |
-| `apps/console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
+| `apps/console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer), backed by the API server binary (`cargo run -p api`); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
 
 ## Milestones
 
