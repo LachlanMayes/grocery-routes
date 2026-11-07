@@ -133,6 +133,13 @@ impl CuratedConstraints {
         self.by_way.get(&way_id)
     }
 
+    /// All curated entries, ordered by way id for deterministic output.
+    pub fn entries(&self) -> Vec<&CuratedEntry> {
+        let mut entries: Vec<_> = self.by_way.values().collect();
+        entries.sort_by_key(|entry| entry.way_id);
+        entries
+    }
+
     /// Folds curated limits into the graph.
     ///
     /// For every edge whose OSM way id has a curated entry, the edge's
@@ -287,6 +294,33 @@ mod tests {
         assert_eq!(curated.apply(&mut graph), 0);
         let edge = graph.edge(crate::graph::EdgeId(0)).unwrap();
         assert_eq!(edge.maxweight_tonnes, Some(20.0));
+    }
+
+    #[test]
+    fn entries_are_ordered_by_way_id() {
+        let doc = r#"{
+            "entries": [
+                {
+                    "way_id": 200,
+                    "maxweight_tonnes": 10.0,
+                    "note": "test b",
+                    "source": "test",
+                    "verified_by": "test",
+                    "verified_at": "2026-10-01"
+                },
+                {
+                    "way_id": 100,
+                    "maxheight_m": 4.5,
+                    "note": "test a",
+                    "source": "test",
+                    "verified_by": "test",
+                    "verified_at": "2026-10-01"
+                }
+            ]
+        }"#;
+        let curated = load(doc).unwrap();
+        let ids: Vec<i64> = curated.entries().iter().map(|e| e.way_id).collect();
+        assert_eq!(ids, vec![100, 200]);
     }
 
     #[test]

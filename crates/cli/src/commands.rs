@@ -45,6 +45,21 @@ pub enum Command {
     Geocode(GeocodeArgs),
     /// Find the nearest addresses to a coordinate in a G-NAF database.
     Reverse(ReverseArgs),
+    /// Validate a curated truck-constraints JSON file and optionally write it
+    /// to SQLite.
+    Constraints(ConstraintsArgs),
+}
+
+/// Arguments of `constraints`.
+#[derive(Debug, Args)]
+pub struct ConstraintsArgs {
+    /// Curated truck-constraints JSON file to validate.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Optional SQLite database to write the validated entries to
+    /// (replaced if it exists).
+    #[arg(long)]
+    pub sqlite: Option<PathBuf>,
 }
 
 /// Arguments of `import-gnaf`.
@@ -246,6 +261,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::ImportGnaf(args) => run_import_gnaf(&args),
         Command::Geocode(args) => run_geocode(&args),
         Command::Reverse(args) => run_reverse(&args),
+        Command::Constraints(args) => run_constraints(&args),
     }
 }
 
@@ -305,6 +321,81 @@ pub fn run_reverse(args: &ReverseArgs) -> anyhow::Result<()> {
             address.display(),
             address.pid
         );
+    }
+    Ok(())
+}
+
+/// `constraints`: validates a curated truck-constraints JSON file and
+/// optionally exports it to SQLite.
+pub fn run_constraints(args: &ConstraintsArgs) -> anyhow::Result<()> {
+    let raw = std::fs::read_to_string(&args.file)
+        .with_context(|| format!("read constraints file {}", args.file.display()))?;
+    let curated = routing::CuratedConstraints::from_json_str(&raw)
+        .with_context(|| format!("parse constraints file {}", args.file.display()))?;
+
+    println!(
+        "constraints: {} entries from {}",
+        curated.len(),
+        args.file.display()
+    );
+    for entry in curated.entries() {
+        let weight = entry
+            .maxweight_tonnes
+            .map(|v| format!("{v} t"))
+            .unwrap_or_else(|| "-".to_string());
+        let height = entry
+            .maxheight_m
+            .map(|v| format!("{v} m"))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "  way {}: weight {} height {} ({}; {})",
+            entry.way_id, weight, height, entry.note, entry.source
+        );
+    }
+
+    if let Some(db_path) = &args.sqlite {
+        if let Some(parent) = db_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
+        let conn = rusqlite::Connection::open(db_path)
+            .with_context(|| format!("open constraints database {}", db_path.display()))?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS curated_entries (
+                way_id INTEGER PRIMARY KEY,
+                maxweight_tonnes REAL,
+                maxheight_m REAL,
+                note TEXT NOT NULL,
+                source TEXT NOT NULL,
+                verified_by TEXT NOT NULL,
+                verified_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .context("creating curated_entries table")?;
+        let mut stmt = conn
+            .prepare(
+                "INSERT OR REPLACE INTO curated_entries
+                 (way_id, maxweight_tonnes, maxheight_m, note, source, verified_by, verified_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .context("preparing curated_entries insert")?;
+        for entry in curated.entries() {
+            stmt.execute(rusqlite::params![
+                entry.way_id,
+                entry.maxweight_tonnes,
+                entry.maxheight_m,
+                entry.note,
+                entry.source,
+                entry.verified_by,
+                entry.verified_at,
+            ])
+            .with_context(|| format!("inserting way {}", entry.way_id))?;
+        }
+        drop(stmt);
+        println!("wrote {} to {}", curated.len(), db_path.display());
     }
     Ok(())
 }

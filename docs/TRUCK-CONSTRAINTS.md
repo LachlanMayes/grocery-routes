@@ -115,6 +115,37 @@ cargo run -p cli -- solve --problem problem.json --out solution.json \
   --maxweight 42.5 --maxheight 4.3 --hgv
 ```
 
+Validate a constraints file and optionally export it to SQLite (table
+`curated_entries`, one row per way id, ordered by way id):
+
+```console
+cargo run -p cli -- constraints --file constraints/truck-constraints.json \
+  --sqlite data/constraints.sqlite
+```
+
+## Rule set for curated entries (v1)
+
+An entry describes one OSM way that carries a physical legal limit OSM does
+not tag. The operator supplies the way id, the limit and its provenance —
+the numbers below are the schema bounds, not pre-filled law.
+
+| Highway class in OSM | What to verify | Typical bound |
+|---|---|---|
+| `primary`, `secondary`, `tertiary`, `residential`, `unclassified` | bridge load rating (TfNSW/state bridge register), tunnel clearance | weight 5–42.5 t, height 3.5–4.6 m |
+| `service`, `track` | council access restriction signage | weight 5–25 t |
+| `motorway`, `trunk` | usually permit territory — do not curate unless a structure limits it; note the structure name | — |
+
+Rules:
+
+- **One entry per way id.** Duplicates fail validation loudly.
+- **Tighten only.** The graph keeps the minimum of (OSM tag, curated limit). A curated entry never clears an OSM restriction.
+- **Provenance is mandatory.** `source`, `verified_by`, `verified_at` cannot be empty; the loader rejects the file otherwise.
+- **At least one limit.** `maxweight_tonnes` or `maxheight_m` (or both) must be set, positive and finite (weight ≤ 200 t, height ≤ 10 m).
+- **Both travel directions.** The entry applies to every edge built from that way, one-way or not.
+- **Synthetic graph edges carry no way id** and are therefore never tightened — the curated layer only sees OSM-derived graphs.
+
+The OSM coverage that motivates this file (M0 Overpass study of the Sydney bbox, 2026-11-03): `maxweight` on 3.2% of drivable ways, `maxheight` on 0.8%, `hgv` on 0.4%. The rest need a human.
+
 ## Future work (explicitly not done)
 
 - Time-dependent costs inside the solver search (curfew-aware

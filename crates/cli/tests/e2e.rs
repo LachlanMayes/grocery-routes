@@ -165,6 +165,45 @@ fn gnaf_import_geocode_and_reverse_round_trip() {
 }
 
 #[test]
+fn constraints_validate_and_export_sqlite() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let file = dir.path().join("truck-constraints.json");
+    fs::write(
+        &file,
+        r#"{
+            "entries": [
+                {
+                    "way_id": 999999001,
+                    "maxweight_tonnes": 12.5,
+                    "maxheight_m": 4.3,
+                    "note": "Bridge limit (sample)",
+                    "source": "TfNSW sample",
+                    "verified_by": "test",
+                    "verified_at": "2026-10-01"
+                }
+            ]
+        }"#,
+    )
+    .expect("write constraints");
+    let sqlite = dir.path().join("constraints.sqlite");
+
+    let mut cmd = Command::new(BIN);
+    cmd.arg("constraints")
+        .arg("--file")
+        .arg(&file)
+        .arg("--sqlite")
+        .arg(&sqlite);
+    let output = expect_success(cmd);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("1 entries"), "stdout: {stdout}");
+    assert!(stdout.contains("wrote 1"), "stdout: {stdout}");
+    assert!(sqlite.exists(), "sqlite file should exist");
+    // Header for user database is always present.
+    let bytes = fs::read(&sqlite).expect("read sqlite");
+    assert!(bytes.starts_with(b"SQLite format 3"), "not a sqlite file");
+}
+
+#[test]
 fn holidays_subcommand_prints_national_and_state_calendars() {
     let output = Command::new(BIN)
         .args(["holidays", "--year", "2026", "--state", "vic"])

@@ -902,6 +902,7 @@ dependencies = [
  "geo-au",
  "jiff",
  "routing",
+ "rusqlite",
  "serde_json",
  "sim",
  "solver",
