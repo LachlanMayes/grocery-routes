@@ -136,7 +136,7 @@ impl eframe::App for ConsoleApp {
             self.runtime.spawn(sse_loop(tx));
         }
 
-        egui::Window::new("sidebar").show(ui.ctx(), |ui| {
+        egui::Panel::left("sidebar").show(ui, |ui| {
             self.render_sidebar(ui);
         });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -192,8 +192,22 @@ impl ConsoleApp {
     /// Handle a message from a background task.
     fn handle_msg(&mut self, msg: Msg) {
         match msg {
-            Msg::ProblemImported(res) => self.import_status = Some(res),
-            Msg::SolutionSolved(res) => self.solve_status = Some(res),
+            Msg::ProblemImported(res) => {
+                // Pre-fill the solve tab so the ID does not have to be copied
+                // by hand after every import.
+                if let Ok(id) = &res {
+                    self.problem_id_input.clone_from(id);
+                }
+                self.import_status = Some(res);
+            }
+            Msg::SolutionSolved(res) => {
+                // Pre-fill the solutions and KPIs tabs with the new solution.
+                if let Ok(resp) = &res {
+                    self.solution_id_input.clone_from(&resp.id);
+                    self.kpis_id_input.clone_from(&resp.id);
+                }
+                self.solve_status = Some(res);
+            }
             Msg::SolutionFetched(res) => self.solution_status = Some(res),
             Msg::KpisFetched(res) => self.kpis_status = Some(res),
             Msg::SolveEvent(ev) => {
@@ -224,35 +238,17 @@ impl ConsoleApp {
             .id_salt("import_scroll")
             .max_height(300.0)
             .show(ui, |ui| {
-                ui.text_edit_multiline(&mut self.import_json);
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.import_json)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(12),
+                );
             });
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button("Import Problem").clicked() {
-                let json = self.import_json.clone();
-                let tx = self.msg_tx.clone();
-                let client = self.client.clone();
-                self.import_status = None;
-                self.runtime.spawn(async move {
-                    let val: serde_json::Value = match serde_json::from_str(&json) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            let _ = tx.send(Msg::ProblemImported(Err(anyhow::anyhow!(
-                                "Invalid JSON: {e}"
-                            ))));
-                            return;
-                        }
-                    };
-                    match client.import_problem(&val).await {
-                        Ok(resp) => {
-                            let _ = tx.send(Msg::ProblemImported(Ok(resp.id)));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Msg::ProblemImported(Err(e)));
-                        }
-                    }
-                });
+                self.start_import();
             }
             if ui.button("Clear").clicked() {
                 self.import_json.clear();
@@ -260,15 +256,60 @@ impl ConsoleApp {
             }
         });
 
-        if let Some(ref status) = self.import_status {
-            ui.add_space(4.0);
-            match status {
-                Ok(id) => {
-                    ui.colored_label(egui::Color32::GREEN, format!("Imported: {id}"));
+        if self.render_import_status(ui) {
+            self.tab = Tab::Solve;
+        }
+    }
+
+    /// Start the background import of the JSON currently in the editor.
+    fn start_import(&mut self) {
+        let json = self.import_json.clone();
+        let tx = self.msg_tx.clone();
+        let client = self.client.clone();
+        self.import_status = None;
+        self.runtime.spawn(async move {
+            let val: serde_json::Value = match serde_json::from_str(&json) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.send(Msg::ProblemImported(Err(anyhow::anyhow!(
+                        "Invalid JSON: {e}"
+                    ))));
+                    return;
+                }
+            };
+            match client.import_problem(&val).await {
+                Ok(resp) => {
+                    let _ = tx.send(Msg::ProblemImported(Ok(resp.id)));
                 }
                 Err(e) => {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                    let _ = tx.send(Msg::ProblemImported(Err(e)));
                 }
+            }
+        });
+    }
+
+    /// Render the import result. Returns true when the operator asked to open
+    /// the Solve tab.
+    fn render_import_status(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(status) = &self.import_status else {
+            return false;
+        };
+        ui.add_space(4.0);
+        match status {
+            Ok(id) => {
+                let mut go_to_solve = false;
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::GREEN, format!("Imported: {id}"));
+                    copy_button(ui, id);
+                    if ui.button("Go to Solve").clicked() {
+                        go_to_solve = true;
+                    }
+                });
+                go_to_solve
+            }
+            Err(e) => {
+                ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                false
             }
         }
     }
@@ -299,51 +340,47 @@ impl ConsoleApp {
 
         ui.add_space(8.0);
         if ui.button("Solve").clicked() {
-            let pid = self.problem_id_input.clone();
-            let lns = self.solve_lns;
-            let osm = if self.osm_path.is_empty() {
-                None
-            } else {
-                Some(self.osm_path.clone())
-            };
-            let mw = if self.maxweight.is_empty() {
-                None
-            } else {
-                self.maxweight.parse::<f64>().ok()
-            };
-            let mh = if self.maxheight.is_empty() {
-                None
-            } else {
-                self.maxheight.parse::<f64>().ok()
-            };
-            let hgv = self.hgv;
-            let tx = self.msg_tx.clone();
-            let client = self.client.clone();
-            self.solve_status = None;
-            self.runtime.spawn(async move {
-                let req = SolveRequest {
-                    problem_id: pid,
-                    lns,
-                    osm_path: osm,
-                    maxweight: mw,
-                    maxheight: mh,
-                    hgv,
-                };
-                match client.solve(&req).await {
-                    Ok(resp) => {
-                        let _ = tx.send(Msg::SolutionSolved(Ok(resp)));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::SolutionSolved(Err(e)));
-                    }
-                }
-            });
+            self.start_solve();
         }
 
-        ui.add_space(8.0);
-        if let Some(ref status) = self.solve_status {
-            match status {
+        if let Some(tab) = self.render_solve_status(ui) {
+            self.tab = tab;
+        }
+    }
+
+    /// Start a background solve with the options currently in the form.
+    fn start_solve(&mut self) {
+        let req = SolveRequest {
+            problem_id: self.problem_id_input.clone(),
+            lns: self.solve_lns,
+            osm_path: non_empty(&self.osm_path),
+            maxweight: parse_optional(&self.maxweight),
+            maxheight: parse_optional(&self.maxheight),
+            hgv: self.hgv,
+        };
+        let tx = self.msg_tx.clone();
+        let client = self.client.clone();
+        self.solve_status = None;
+        self.runtime.spawn(async move {
+            match client.solve(&req).await {
                 Ok(resp) => {
+                    let _ = tx.send(Msg::SolutionSolved(Ok(resp)));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::SolutionSolved(Err(e)));
+                }
+            }
+        });
+    }
+
+    /// Render the solve result. Returns the tab the operator asked to open.
+    fn render_solve_status(&mut self, ui: &mut egui::Ui) -> Option<Tab> {
+        let status = self.solve_status.as_ref()?;
+        ui.add_space(8.0);
+        match status {
+            Ok(resp) => {
+                let mut next_tab = None;
+                ui.horizontal(|ui| {
                     ui.colored_label(
                         egui::Color32::GREEN,
                         format!(
@@ -351,10 +388,19 @@ impl ConsoleApp {
                             resp.id, resp.served, resp.total, resp.distance_km
                         ),
                     );
-                }
-                Err(e) => {
-                    ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
-                }
+                    copy_button(ui, &resp.id);
+                    if ui.button("View Solution").clicked() {
+                        next_tab = Some(Tab::Solutions);
+                    }
+                    if ui.button("View KPIs").clicked() {
+                        next_tab = Some(Tab::Kpis);
+                    }
+                });
+                next_tab
+            }
+            Err(e) => {
+                ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                None
             }
         }
     }
@@ -490,6 +536,31 @@ impl ConsoleApp {
     }
 }
 
+/// A button that copies `text` to the system clipboard.
+fn copy_button(ui: &mut egui::Ui, text: &str) {
+    if ui
+        .button("Copy ID")
+        .on_hover_text("Copy to the clipboard")
+        .clicked()
+    {
+        ui.ctx().copy_text(text.to_owned());
+    }
+}
+
+/// `Some(text)` when a text field holds something.
+fn non_empty(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Parse an optional numeric solver option; empty or invalid means unset.
+fn parse_optional(text: &str) -> Option<f64> {
+    if text.is_empty() {
+        None
+    } else {
+        text.parse().ok()
+    }
+}
+
 /// Runs a single background SSE connection for the lifetime of the console.
 ///
 /// It connects to the API's `/events` stream, reads `data: ` lines
@@ -542,17 +613,22 @@ mod tests {
             Some(Ok(id)) => assert_eq!(id, "problem-123"),
             other => panic!("unexpected import status: {other:?}"),
         }
+        // The solve tab is pre-filled so the ID does not have to be copied.
+        assert_eq!(app.problem_id_input, "problem-123");
     }
 
     #[tokio::test]
     async fn handles_import_error() {
         let mut app = ConsoleApp::new(Handle::current());
+        app.problem_id_input = "previous-problem".into();
         app.handle_msg(Msg::ProblemImported(Err(anyhow::anyhow!("server said no"))));
 
         match app.import_status {
             Some(Err(error)) => assert!(error.to_string().contains("server said no")),
             other => panic!("unexpected import status: {other:?}"),
         }
+        // A failed import must not clobber the previous problem ID.
+        assert_eq!(app.problem_id_input, "previous-problem");
     }
 
     #[tokio::test]
@@ -572,6 +648,9 @@ mod tests {
             Some(Ok(response)) => assert_eq!(response.id, "solution-123"),
             other => panic!("unexpected solve status: {other:?}"),
         }
+        // The solutions and KPIs tabs are pre-filled with the new solution.
+        assert_eq!(app.solution_id_input, "solution-123");
+        assert_eq!(app.kpis_id_input, "solution-123");
     }
 
     #[tokio::test]

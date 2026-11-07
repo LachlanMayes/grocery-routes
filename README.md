@@ -82,6 +82,8 @@ cargo run -p console
 The console connects to `http://127.0.0.1:8080`; pass `--addr` to the API if
 you move it. In the Import tab, paste a problem JSON document (`gen-sim` in the
 Quickstart writes one), then use the problem ID it reports in the Solve tab.
+Successful imports and solves pre-fill the following tab, and each success row
+has a **Copy ID** button.
 
 ## Checks
 
