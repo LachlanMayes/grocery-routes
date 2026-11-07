@@ -90,7 +90,7 @@ impl CorridorAudit {
                 || format!("synthetic:{}", row.edge_id.0),
                 |id| id.to_string(),
             );
-            let _ = writeln!(
+            writeln!(
                 out,
                 "{},{},{},{},{:.3},{},{},{},{},{}",
                 row.route,
@@ -105,7 +105,8 @@ impl CorridorAudit {
                 csv_field(row.hgv.as_deref().unwrap_or("")),
                 csv_field(row.access.as_deref().unwrap_or("")),
                 if row.has_limit_data { "yes" } else { "no" },
-            );
+            )
+            .expect("writing to an in-memory String cannot fail");
         }
         out
     }

@@ -358,7 +358,7 @@ async fn solve_handler(
         distance_km: solution.total_distance_km,
         cost_cents: solution.total_cost_cents,
     };
-    let _ = state.events.send(event);
+    state.events.send(event).ok();
 
     Ok(Json(SolveResponse {
         id: solution_id,

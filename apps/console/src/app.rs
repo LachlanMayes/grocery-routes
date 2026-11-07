@@ -271,18 +271,19 @@ impl ConsoleApp {
             let val: serde_json::Value = match serde_json::from_str(&json) {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = tx.send(Msg::ProblemImported(Err(anyhow::anyhow!(
+                    tx.send(Msg::ProblemImported(Err(anyhow::anyhow!(
                         "Invalid JSON: {e}"
-                    ))));
+                    ))))
+                    .ok();
                     return;
                 }
             };
             match client.import_problem(&val).await {
                 Ok(resp) => {
-                    let _ = tx.send(Msg::ProblemImported(Ok(resp.id)));
+                    tx.send(Msg::ProblemImported(Ok(resp.id))).ok();
                 }
                 Err(e) => {
-                    let _ = tx.send(Msg::ProblemImported(Err(e)));
+                    tx.send(Msg::ProblemImported(Err(e))).ok();
                 }
             }
         });
@@ -364,10 +365,10 @@ impl ConsoleApp {
         self.runtime.spawn(async move {
             match client.solve(&req).await {
                 Ok(resp) => {
-                    let _ = tx.send(Msg::SolutionSolved(Ok(resp)));
+                    tx.send(Msg::SolutionSolved(Ok(resp))).ok();
                 }
                 Err(e) => {
-                    let _ = tx.send(Msg::SolutionSolved(Err(e)));
+                    tx.send(Msg::SolutionSolved(Err(e))).ok();
                 }
             }
         });
@@ -425,10 +426,10 @@ impl ConsoleApp {
                 self.runtime.spawn(async move {
                     match client.get_solution(&id).await {
                         Ok(resp) => {
-                            let _ = tx.send(Msg::SolutionFetched(Ok(resp.solution)));
+                            tx.send(Msg::SolutionFetched(Ok(resp.solution))).ok();
                         }
                         Err(e) => {
-                            let _ = tx.send(Msg::SolutionFetched(Err(e)));
+                            tx.send(Msg::SolutionFetched(Err(e))).ok();
                         }
                     }
                 });
@@ -470,10 +471,10 @@ impl ConsoleApp {
                 self.runtime.spawn(async move {
                     match client.get_kpis(&id).await {
                         Ok(kpis) => {
-                            let _ = tx.send(Msg::KpisFetched(Ok(kpis)));
+                            tx.send(Msg::KpisFetched(Ok(kpis))).ok();
                         }
                         Err(e) => {
-                            let _ = tx.send(Msg::KpisFetched(Err(e)));
+                            tx.send(Msg::KpisFetched(Err(e))).ok();
                         }
                     }
                 });
@@ -588,7 +589,7 @@ async fn sse_loop(tx: mpsc::Sender<Msg>) {
                         && let Ok(event) =
                             serde_json::from_str::<crate::api_client::SolveEvent>(data)
                     {
-                        let _ = tx.send(Msg::SolveEvent(event));
+                        tx.send(Msg::SolveEvent(event)).ok();
                     }
                 }
             }

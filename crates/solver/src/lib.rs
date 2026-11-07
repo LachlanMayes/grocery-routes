@@ -39,10 +39,9 @@ pub use matrix::{
     DistanceMatrix, FALLBACK_SPEED_KMH, euclidean_km, euclidean_matrix, travel_minutes,
 };
 pub use parser::{SolomonInstance, parse_solomon_file, solomon_to_problem};
-#[allow(unused_imports)]
-pub use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
 
 use domain::{Problem, Solution};
+use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
 
 /// Solves `problem` and returns a validated plan using greedy insertion (M0/M1).
 ///
