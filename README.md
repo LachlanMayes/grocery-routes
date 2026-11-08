@@ -4,6 +4,8 @@ Route + delivery planning for Australian supermarket distribution — Coles,
 Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
 
 - Roadmap, milestones and current gate outcomes: [docs/PLAN.md](docs/PLAN.md)
+- CLI reference (every subcommand and flag): [docs/CLI.md](docs/CLI.md)
+- HTTP API reference: [docs/API.md](docs/API.md)
 - Truck-constraint enforcement model (what is and is not verified):
   [docs/TRUCK-CONSTRAINTS.md](docs/TRUCK-CONSTRAINTS.md)
 - G-NAF geocoding (acquisition, licensing, limits): [docs/GNAF.md](docs/GNAF.md)
