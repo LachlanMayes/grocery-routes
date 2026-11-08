@@ -12,9 +12,9 @@
 
 use std::cmp::Reverse;
 
-use domain::{DepotId, Minutes, Node, Problem, RoutePlan, Solution, StoreId};
+use domain::{DepotId, DriverId, Minutes, Node, Problem, RoutePlan, Solution, StoreId};
 
-use crate::greedy::{ActiveRoute, Scheduled, plan_with_matrix, schedule_route_simple};
+use crate::greedy::{ActiveRoute, Legs, Scheduled, plan_with_matrix, schedule_route};
 use crate::matrix::DistanceMatrix;
 use domain::PlannedStop;
 
@@ -174,6 +174,48 @@ fn init_singleton_routes(
     let mut used = vec![false; problem.vehicles.len()];
     let mut assigned_stores = std::collections::HashSet::new();
 
+    /// One vehicle, one store: build the solo route and book the driver.
+    #[allow(clippy::too_many_arguments)]
+    fn try_seed_route(
+        problem: &Problem,
+        matrix: &DistanceMatrix,
+        driver_indices: &[usize],
+        active: &mut Vec<ActiveRoute>,
+        used: &mut [bool],
+        assigned_stores: &mut std::collections::HashSet<StoreId>,
+        driver_busy: &mut [Vec<(Minutes, Minutes)>],
+        v_idx: usize,
+        store_id: StoreId,
+        home: Node,
+    ) -> bool {
+        let vehicle = &problem.vehicles[v_idx];
+        let candidate = [home, Node::Store(store_id), home];
+        if let Some(scheduled) = schedule_route(
+            problem,
+            &mut Legs::Static(matrix),
+            driver_indices,
+            vehicle,
+            &candidate,
+            driver_busy,
+            None,
+        ) {
+            // Add driver booking.
+            let driver_idx = scheduled.driver.0 as usize;
+            let span = scheduled.span;
+            if let Some(spans) = driver_busy.get_mut(driver_idx) {
+                spans.push(span);
+            }
+            used[v_idx] = true;
+            assigned_stores.insert(store_id);
+            active.push(ActiveRoute {
+                vehicle_index: v_idx,
+                scheduled,
+            });
+            return true;
+        }
+        false
+    }
+
     // One store per vehicle initially (capacity permitting).
     for &v_idx in vehicle_indices {
         let vehicle = &problem.vehicles[v_idx];
@@ -188,68 +230,19 @@ fn init_singleton_routes(
             if assigned_stores.contains(&store.id) {
                 continue;
             }
-            let candidate = [home, Node::Store(store.id), home];
-            if let Some(scheduled) = schedule_route_simple(
+            if try_seed_route(
                 problem,
                 matrix,
                 driver_indices,
-                vehicle,
-                &candidate,
+                &mut active,
+                &mut used,
+                &mut assigned_stores,
                 driver_busy,
-                None,
+                v_idx,
+                store.id,
+                home,
             ) {
-                // Add driver booking.
-                let driver_idx = scheduled.driver.0 as usize;
-                let span = scheduled.span;
-                if let Some(spans) = driver_busy.get_mut(driver_idx) {
-                    spans.push(span);
-                }
-                used[v_idx] = true;
-                assigned_stores.insert(store.id);
-                active.push(ActiveRoute {
-                    vehicle_index: v_idx,
-                    scheduled,
-                });
                 break;
-            }
-        }
-    }
-
-    // Remaining vehicles with no store: keep as empty (will be dropped later).
-    for &v_idx in vehicle_indices {
-        if !used[v_idx] {
-            let vehicle = &problem.vehicles[v_idx];
-            let home = Node::Depot(vehicle.depot);
-            // Try any store (capacity checked in schedule_route)
-            for s_idx in 0..problem.stores.len() {
-                let store = &problem.stores[s_idx];
-                if assigned_stores.contains(&store.id) {
-                    continue;
-                }
-                let candidate = [home, Node::Store(store.id), home];
-                if let Some(scheduled) = schedule_route_simple(
-                    problem,
-                    matrix,
-                    driver_indices,
-                    vehicle,
-                    &candidate,
-                    driver_busy,
-                    None,
-                ) {
-                    // Add driver booking.
-                    let driver_idx = scheduled.driver.0 as usize;
-                    let span = scheduled.span;
-                    if let Some(spans) = driver_busy.get_mut(driver_idx) {
-                        spans.push(span);
-                    }
-                    used[v_idx] = true;
-                    assigned_stores.insert(store.id);
-                    active.push(ActiveRoute {
-                        vehicle_index: v_idx,
-                        scheduled,
-                    });
-                    break;
-                }
             }
         }
     }
@@ -326,9 +319,9 @@ fn try_merge_routes(
         // Try with both exemptions - a merged route could be assigned to either driver.
         // We need to check that the new schedule doesn't conflict with other drivers'
         // bookings, but it can replace either route_i or route_j's booking.
-        if let Some(scheduled) = schedule_route_simple(
+        if let Some(scheduled) = schedule_route(
             problem,
-            matrix,
+            &mut Legs::Static(matrix),
             driver_indices,
             vehicle,
             &combined,
@@ -337,9 +330,9 @@ fn try_merge_routes(
         ) {
             return Some(scheduled);
         }
-        if let Some(scheduled) = schedule_route_simple(
+        if let Some(scheduled) = schedule_route(
             problem,
-            matrix,
+            &mut Legs::Static(matrix),
             driver_indices,
             vehicle,
             &combined,
@@ -446,9 +439,9 @@ fn two_opt(
             }
             let mut candidate = nodes.clone();
             candidate[i..=j].reverse();
-            if let Some(scheduled) = schedule_route_simple(
+            if let Some(scheduled) = schedule_route(
                 problem,
-                matrix,
+                &mut Legs::Static(matrix),
                 driver_indices,
                 vehicle,
                 &candidate,
@@ -462,9 +455,9 @@ fn two_opt(
         }
     }
     if best_cost < route.scheduled.cost_cents
-        && let Some(scheduled) = schedule_route_simple(
+        && let Some(scheduled) = schedule_route(
             problem,
-            matrix,
+            &mut Legs::Static(matrix),
             driver_indices,
             vehicle,
             &best_nodes,
@@ -521,9 +514,9 @@ fn relocate(
                 routes[src_idx].scheduled.driver.0 as usize,
                 routes[src_idx].scheduled.span,
             ));
-            let Some(src_scheduled) = schedule_route_simple(
+            let Some(src_scheduled) = schedule_route(
                 problem,
-                matrix,
+                &mut Legs::Static(matrix),
                 driver_indices,
                 src_vehicle,
                 &new_src_nodes,
@@ -548,9 +541,9 @@ fn relocate(
                         routes[dst_idx].scheduled.driver.0 as usize,
                         routes[dst_idx].scheduled.span,
                     ));
-                    if let Some(dst_scheduled) = schedule_route_simple(
+                    if let Some(dst_scheduled) = schedule_route(
                         problem,
-                        matrix,
+                        &mut Legs::Static(matrix),
                         driver_indices,
                         dst_vehicle,
                         &new_dst_nodes,
@@ -601,6 +594,113 @@ fn relocate(
     false
 }
 
+/// Replaces one booked span for a driver with another: removes the old
+/// route's span and pushes the new route's.
+fn rebook_span(
+    driver_busy: &mut [Vec<(Minutes, Minutes)>],
+    old_driver: DriverId,
+    old_span: (Minutes, Minutes),
+    new_driver: DriverId,
+    new_span: (Minutes, Minutes),
+) {
+    if let Some(spans) = driver_busy.get_mut(old_driver.0 as usize)
+        && let Some(pos) = spans.iter().position(|&s| s == old_span)
+    {
+        spans.remove(pos);
+    }
+    if let Some(spans) = driver_busy.get_mut(new_driver.0 as usize) {
+        spans.push(new_span);
+    }
+}
+
+/// Attempts a two-route swap update: replaces the schedules of routes `i`
+/// and `j` when the combined cost improves, updating driver bookings.
+fn try_swap_schedules(
+    routes: &mut [ActiveRoute],
+    driver_busy: &mut [Vec<(Minutes, Minutes)>],
+    i: usize,
+    j: usize,
+    si_sched: Scheduled,
+    sj_sched: Scheduled,
+) -> bool {
+    let delta = si_sched.cost_cents + sj_sched.cost_cents
+        - routes[i].scheduled.cost_cents
+        - routes[j].scheduled.cost_cents;
+    if delta >= 0 {
+        return false;
+    }
+    // Update driver busy for route i
+    rebook_span(
+        driver_busy,
+        routes[i].scheduled.driver,
+        routes[i].scheduled.span,
+        si_sched.driver,
+        si_sched.span,
+    );
+
+    // Update driver busy for route j
+    rebook_span(
+        driver_busy,
+        routes[j].scheduled.driver,
+        routes[j].scheduled.span,
+        sj_sched.driver,
+        sj_sched.span,
+    );
+
+    routes[i].scheduled = si_sched;
+    routes[j].scheduled = sj_sched;
+    true
+}
+
+/// Tries both new sequences on routes `i` / `j`; applies them when the
+/// combined cost improves.
+#[allow(clippy::too_many_arguments)]
+fn try_candidate_pair(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    driver_indices: &[usize],
+    routes: &mut [ActiveRoute],
+    driver_busy: &mut [Vec<(Minutes, Minutes)>],
+    i: usize,
+    j: usize,
+    new_i: Vec<Node>,
+    new_j: Vec<Node>,
+) -> bool {
+    let vi = &problem.vehicles[routes[i].vehicle_index];
+    let vj = &problem.vehicles[routes[j].vehicle_index];
+    let exempt_i = Some((
+        routes[i].scheduled.driver.0 as usize,
+        routes[i].scheduled.span,
+    ));
+    let exempt_j = Some((
+        routes[j].scheduled.driver.0 as usize,
+        routes[j].scheduled.span,
+    ));
+    if let (Some(si_sched), Some(sj_sched)) = (
+        schedule_route(
+            problem,
+            &mut Legs::Static(matrix),
+            driver_indices,
+            vi,
+            &new_i,
+            driver_busy,
+            exempt_i,
+        ),
+        schedule_route(
+            problem,
+            &mut Legs::Static(matrix),
+            driver_indices,
+            vj,
+            &new_j,
+            driver_busy,
+            exempt_j,
+        ),
+    ) {
+        return try_swap_schedules(routes, driver_busy, i, j, si_sched, sj_sched);
+    }
+    false
+}
+
 fn exchange(
     problem: &Problem,
     matrix: &DistanceMatrix,
@@ -610,10 +710,8 @@ fn exchange(
 ) -> bool {
     for i in 0..routes.len() {
         for j in (i + 1)..routes.len() {
-            let vi = &problem.vehicles[routes[i].vehicle_index];
-            let vj = &problem.vehicles[routes[j].vehicle_index];
-            let steps_i = &routes[i].scheduled.steps;
-            let steps_j = &routes[j].scheduled.steps;
+            let steps_i: Vec<PlannedStop> = routes[i].scheduled.steps.clone();
+            let steps_j: Vec<PlannedStop> = routes[j].scheduled.steps.clone();
             if steps_i.len() <= 3 || steps_j.len() <= 3 {
                 continue;
             }
@@ -630,71 +728,18 @@ fn exchange(
                     let mut new_j: Vec<Node> = steps_j.iter().map(|s| s.node).collect();
                     new_i[pos_i] = Node::Store(sj);
                     new_j[pos_j] = Node::Store(si);
-                    // Exempt both routes' current bookings
-                    let exempt_i = Some((
-                        routes[i].scheduled.driver.0 as usize,
-                        routes[i].scheduled.span,
-                    ));
-                    let exempt_j = Some((
-                        routes[j].scheduled.driver.0 as usize,
-                        routes[j].scheduled.span,
-                    ));
-                    if let (Some(si_sched), Some(sj_sched)) = (
-                        schedule_route_simple(
-                            problem,
-                            matrix,
-                            driver_indices,
-                            vi,
-                            &new_i,
-                            driver_busy,
-                            exempt_i,
-                        ),
-                        schedule_route_simple(
-                            problem,
-                            matrix,
-                            driver_indices,
-                            vj,
-                            &new_j,
-                            driver_busy,
-                            exempt_j,
-                        ),
+                    if try_candidate_pair(
+                        problem,
+                        matrix,
+                        driver_indices,
+                        routes,
+                        driver_busy,
+                        i,
+                        j,
+                        new_i,
+                        new_j,
                     ) {
-                        let delta = si_sched.cost_cents + sj_sched.cost_cents
-                            - routes[i].scheduled.cost_cents
-                            - routes[j].scheduled.cost_cents;
-                        if delta < 0 {
-                            // Update driver busy for route i
-                            let old_driver_i = routes[i].scheduled.driver.0 as usize;
-                            let old_span_i = routes[i].scheduled.span;
-                            if let Some(spans) = driver_busy.get_mut(old_driver_i)
-                                && let Some(pos) = spans.iter().position(|&s| s == old_span_i)
-                            {
-                                spans.remove(pos);
-                            }
-                            let new_driver_i = si_sched.driver.0 as usize;
-                            let new_span_i = si_sched.span;
-                            if let Some(spans) = driver_busy.get_mut(new_driver_i) {
-                                spans.push(new_span_i);
-                            }
-
-                            // Update driver busy for route j
-                            let old_driver_j = routes[j].scheduled.driver.0 as usize;
-                            let old_span_j = routes[j].scheduled.span;
-                            if let Some(spans) = driver_busy.get_mut(old_driver_j)
-                                && let Some(pos) = spans.iter().position(|&s| s == old_span_j)
-                            {
-                                spans.remove(pos);
-                            }
-                            let new_driver_j = sj_sched.driver.0 as usize;
-                            let new_span_j = sj_sched.span;
-                            if let Some(spans) = driver_busy.get_mut(new_driver_j) {
-                                spans.push(new_span_j);
-                            }
-
-                            routes[i].scheduled = si_sched;
-                            routes[j].scheduled = sj_sched;
-                            return true;
-                        }
+                        return true;
                     }
                 }
             }
@@ -713,10 +758,8 @@ fn cross_exchange(
     // Swap contiguous subsequences (length 1..2 for now) between two routes.
     for i in 0..routes.len() {
         for j in (i + 1)..routes.len() {
-            let vi = &problem.vehicles[routes[i].vehicle_index];
-            let vj = &problem.vehicles[routes[j].vehicle_index];
-            let steps_i = &routes[i].scheduled.steps;
-            let steps_j = &routes[j].scheduled.steps;
+            let steps_i: Vec<PlannedStop> = routes[i].scheduled.steps.clone();
+            let steps_j: Vec<PlannedStop> = routes[j].scheduled.steps.clone();
             if steps_i.len() <= 4 || steps_j.len() <= 4 {
                 continue;
             }
@@ -736,71 +779,18 @@ fn cross_exchange(
                         let mut new_j: Vec<Node> = steps_j.iter().map(|s| s.node).collect();
                         new_i.splice(start_i..start_i + len, sub_j.clone());
                         new_j.splice(start_j..start_j + len, sub_i.clone());
-                        // Exempt both routes' current bookings
-                        let exempt_i = Some((
-                            routes[i].scheduled.driver.0 as usize,
-                            routes[i].scheduled.span,
-                        ));
-                        let exempt_j = Some((
-                            routes[j].scheduled.driver.0 as usize,
-                            routes[j].scheduled.span,
-                        ));
-                        if let (Some(si_sched), Some(sj_sched)) = (
-                            schedule_route_simple(
-                                problem,
-                                matrix,
-                                driver_indices,
-                                vi,
-                                &new_i,
-                                driver_busy,
-                                exempt_i,
-                            ),
-                            schedule_route_simple(
-                                problem,
-                                matrix,
-                                driver_indices,
-                                vj,
-                                &new_j,
-                                driver_busy,
-                                exempt_j,
-                            ),
+                        if try_candidate_pair(
+                            problem,
+                            matrix,
+                            driver_indices,
+                            routes,
+                            driver_busy,
+                            i,
+                            j,
+                            new_i,
+                            new_j,
                         ) {
-                            let delta = si_sched.cost_cents + sj_sched.cost_cents
-                                - routes[i].scheduled.cost_cents
-                                - routes[j].scheduled.cost_cents;
-                            if delta < 0 {
-                                // Update driver busy for route i
-                                let old_driver_i = routes[i].scheduled.driver.0 as usize;
-                                let old_span_i = routes[i].scheduled.span;
-                                if let Some(spans) = driver_busy.get_mut(old_driver_i)
-                                    && let Some(pos) = spans.iter().position(|&s| s == old_span_i)
-                                {
-                                    spans.remove(pos);
-                                }
-                                let new_driver_i = si_sched.driver.0 as usize;
-                                let new_span_i = si_sched.span;
-                                if let Some(spans) = driver_busy.get_mut(new_driver_i) {
-                                    spans.push(new_span_i);
-                                }
-
-                                // Update driver busy for route j
-                                let old_driver_j = routes[j].scheduled.driver.0 as usize;
-                                let old_span_j = routes[j].scheduled.span;
-                                if let Some(spans) = driver_busy.get_mut(old_driver_j)
-                                    && let Some(pos) = spans.iter().position(|&s| s == old_span_j)
-                                {
-                                    spans.remove(pos);
-                                }
-                                let new_driver_j = sj_sched.driver.0 as usize;
-                                let new_span_j = sj_sched.span;
-                                if let Some(spans) = driver_busy.get_mut(new_driver_j) {
-                                    spans.push(new_span_j);
-                                }
-
-                                routes[i].scheduled = si_sched;
-                                routes[j].scheduled = sj_sched;
-                                return true;
-                            }
+                            return true;
                         }
                     }
                 }

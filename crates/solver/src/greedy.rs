@@ -29,7 +29,49 @@ use domain::{
     Store, StoreId, Vehicle, VehicleId,
 };
 
+use crate::curfew::LegTimes;
 use crate::matrix::DistanceMatrix;
+
+/// Source of leg times while scheduling: the static matrix, or a
+/// time-dependent provider (e.g. curfew waits).
+///
+/// `plan_with_matrix`/`schedule_shift` etc. take `&mut Legs<'_>` so providers
+/// can be reborrowed per schedule attempt without `Option<&mut T>` lifetime
+/// gymnastics.
+pub(crate) enum Legs<'a> {
+    /// Static matrix legs (the default solver path).
+    Static(&'a DistanceMatrix),
+    /// Time-dependent legs from a [`LegTimes`] provider.
+    Dynamic(&'a mut (dyn LegTimes + 'a)),
+}
+
+impl Legs<'_> {
+    /// `(distance_km, arrival)` for a leg departing `previous` at `time`, or
+    /// `None` when the leg is infeasible.
+    pub(crate) fn leg(
+        &mut self,
+        previous: Node,
+        node: Node,
+        time: Minutes,
+        vehicle_speed_kmh: f64,
+    ) -> Option<(f64, Minutes)> {
+        match self {
+            Legs::Static(matrix) => {
+                let km = matrix.distance_km(previous, node)?;
+                let arrival =
+                    time + matrix.travel_minutes_between(previous, node, vehicle_speed_kmh)?;
+                Some((km, arrival))
+            }
+            Legs::Dynamic(provider) => {
+                let leg = provider.leg(previous, node, time)?;
+                Some((
+                    leg.distance_km,
+                    time + Minutes::from_minutes(leg.total_minutes()),
+                ))
+            }
+        }
+    }
+}
 
 /// A route sequence scheduled onto one (driver, shift) pair, with the derived
 /// metrics the solution model expects.
@@ -113,6 +155,19 @@ pub(crate) fn plan(problem: &Problem) -> Solution {
 
 /// Runs the greedy insertion heuristic with a custom distance matrix.
 pub(crate) fn plan_with_matrix(problem: &Problem, matrix: DistanceMatrix) -> Solution {
+    let mut legs = Legs::Static(&matrix);
+    plan_inner(problem, &mut legs)
+}
+
+/// Runs the greedy insertion heuristic, scoring legs with a time-dependent
+/// provider (e.g. curfew waits from [`crate::curfew::LegTimes`]).
+pub(crate) fn plan_with_legs(problem: &Problem, legs: &mut dyn LegTimes) -> Solution {
+    let mut legs = Legs::Dynamic(legs);
+    plan_inner(problem, &mut legs)
+}
+
+/// The greedy loop with a leg source threaded through every schedule attempt.
+fn plan_inner(problem: &Problem, legs: &mut Legs<'_>) -> Solution {
     let driver_indices = driver_order(problem);
     let mut routes: Vec<ActiveRoute> = Vec::new();
     let mut used = vec![false; problem.vehicles.len()];
@@ -133,7 +188,7 @@ pub(crate) fn plan_with_matrix(problem: &Problem, matrix: DistanceMatrix) -> Sol
         }
         match best_insertion(
             problem,
-            &matrix,
+            legs,
             &driver_indices,
             &routes,
             &used,
@@ -182,7 +237,7 @@ fn driver_order(problem: &Problem) -> Vec<usize> {
 /// ties broken by `(cost, vehicle id, insertion index)`.
 fn best_insertion(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     driver_indices: &[usize],
     routes: &[ActiveRoute],
     used: &[bool],
@@ -205,7 +260,7 @@ fn best_insertion(
             candidate.insert(position, node);
             let Some(scheduled) = schedule_route(
                 problem,
-                matrix,
+                legs,
                 driver_indices,
                 vehicle,
                 &candidate,
@@ -237,7 +292,7 @@ fn best_insertion(
         let candidate = [home, node, home];
         let Some(scheduled) = schedule_route(
             problem,
-            matrix,
+            legs,
             driver_indices,
             vehicle,
             &candidate,
@@ -318,9 +373,9 @@ fn commit(
 /// Tries each driver, in id order, and each of that driver's shifts, in
 /// declaration order, and returns the first schedule that is feasible and
 /// does not overlap an existing booking of the same driver.
-pub fn schedule_route(
+pub(crate) fn schedule_route(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     driver_indices: &[usize],
     vehicle: &Vehicle,
     sequence: &[Node],
@@ -334,7 +389,7 @@ pub fn schedule_route(
             .map_or(NO_SPANS, Vec::as_slice);
         for &shift in &driver.shifts {
             let Some(scheduled) =
-                schedule_shift(problem, matrix, vehicle, driver.id, shift, sequence)
+                schedule_shift(problem, legs, vehicle, driver.id, shift, sequence)
             else {
                 continue;
             };
@@ -344,6 +399,37 @@ pub fn schedule_route(
             if !blocked {
                 return Some(scheduled);
             }
+        }
+    }
+    None
+}
+
+/// Tries each of a single driver's shifts for `sequence`, skipping spans that
+/// clash with `driver_busy` (except `exempt`). Used by metaheuristics that
+/// reschedule individual routes with a fixed driver.
+pub(crate) fn schedule_shift_candidate(
+    problem: &Problem,
+    legs: &mut Legs<'_>,
+    vehicle: &Vehicle,
+    driver: DriverId,
+    sequence: &[Node],
+    driver_busy: &[Vec<(Minutes, Minutes)>],
+    exempt: Option<(usize, (Minutes, Minutes))>,
+) -> Option<Scheduled> {
+    let driver_obj = problem.drivers.iter().find(|d| d.id == driver)?;
+    let busy = driver_busy
+        .get(driver.0 as usize)
+        .map_or(&[][..], Vec::as_slice);
+    for &shift in &driver_obj.shifts {
+        let Some(scheduled) = schedule_shift(problem, legs, vehicle, driver, shift, sequence)
+        else {
+            continue;
+        };
+        let blocked = busy.iter().any(|&span| {
+            spans_overlap(span, scheduled.span) && Some((driver.0 as usize, span)) != exempt
+        });
+        if !blocked {
+            return Some(scheduled);
         }
     }
     None
@@ -359,7 +445,7 @@ pub fn schedule_route(
 /// and the spanned time respects `max_duration`.
 pub(crate) fn schedule_shift(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     vehicle: &Vehicle,
     driver: DriverId,
     shift: Shift,
@@ -393,11 +479,8 @@ pub(crate) fn schedule_shift(
             return None;
         };
         let store = problem.store(store_id)?;
-        let leg_km = matrix.distance_km(previous, node)?;
+        let (leg_km, arrival) = legs.leg(previous, node, time, vehicle.avg_speed_kmh)?;
         distance_km += leg_km;
-
-        let arrival =
-            time + matrix.travel_minutes_between(previous, node, vehicle.avg_speed_kmh)?;
         let service_start = next_service_start(store, arrival)?;
         let depart = service_start + store.service;
 
@@ -416,9 +499,8 @@ pub(crate) fn schedule_shift(
     }
 
     // Return leg to the ending depot.
-    let leg_km = matrix.distance_km(previous, last)?;
+    let (leg_km, arrival) = legs.leg(previous, last, time, vehicle.avg_speed_kmh)?;
     distance_km += leg_km;
-    let arrival = time + matrix.travel_minutes_between(previous, last, vehicle.avg_speed_kmh)?;
     if arrival > shift.end {
         return None;
     }
@@ -441,41 +523,6 @@ pub(crate) fn schedule_shift(
         duration,
         cost_cents: route_cost(problem.cost, distance_km, duration),
     })
-}
-
-/// Simplified scheduling for construction heuristics (with optional occupancy checks).
-/// Tries each driver, in id order, and each of that driver's shifts, in
-/// declaration order, and returns the first feasible schedule that does not
-/// overlap an existing booking of the same driver (except for `exempt`).
-pub fn schedule_route_simple(
-    problem: &Problem,
-    matrix: &DistanceMatrix,
-    driver_indices: &[usize],
-    vehicle: &Vehicle,
-    sequence: &[Node],
-    driver_busy: &[Vec<(Minutes, Minutes)>],
-    exempt: Option<(usize, (Minutes, Minutes))>,
-) -> Option<Scheduled> {
-    for &driver_index in driver_indices {
-        let driver = problem.drivers.get(driver_index)?;
-        let busy = driver_busy
-            .get(driver.id.0 as usize)
-            .map_or(NO_SPANS, Vec::as_slice);
-        for &shift in &driver.shifts {
-            let Some(scheduled) =
-                schedule_shift(problem, matrix, vehicle, driver.id, shift, sequence)
-            else {
-                continue;
-            };
-            let blocked = busy.iter().any(|&span| {
-                spans_overlap(span, scheduled.span) && Some((driver.id.0 as usize, span)) != exempt
-            });
-            if !blocked {
-                return Some(scheduled);
-            }
-        }
-    }
-    None
 }
 
 /// The earliest minute a store's service can start after arriving at

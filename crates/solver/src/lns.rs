@@ -11,13 +11,13 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use domain::{DepotId, DriverId, Minutes, Node, Problem, RoutePlan, Solution, StoreId, Vehicle};
+use domain::{DepotId, Minutes, Node, Problem, RoutePlan, Solution, StoreId};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
 
 use crate::greedy::{
-    Scheduled, plan_with_matrix, schedule_route as greedy_schedule_route,
-    schedule_shift as greedy_schedule_shift, spans_overlap,
+    Legs, Scheduled, plan_with_matrix, schedule_route as greedy_schedule_route,
+    schedule_shift_candidate,
 };
 use crate::matrix::DistanceMatrix;
 
@@ -708,7 +708,7 @@ fn worst_removal(
                 let cost_with = route.scheduled.cost_cents;
                 let cost_without = if let Some(sched) = schedule_shift_candidate(
                     problem,
-                    matrix,
+                    &mut Legs::Static(matrix),
                     vehicle,
                     driver,
                     &without_nodes,
@@ -1275,7 +1275,7 @@ fn re_schedule_routes(problem: &Problem, matrix: &DistanceMatrix, solution: &mut
         let seq: Vec<Node> = route.scheduled.steps.iter().map(|s| s.node).collect();
         if let Some(sched) = greedy_schedule_route(
             problem,
-            matrix,
+            &mut Legs::Static(matrix),
             &driver_indices,
             vehicle,
             &seq,
@@ -1308,82 +1308,16 @@ fn best_insertion_lns(
     solution: &LNSSolution,
     store_id: StoreId,
 ) -> Option<LNSInsertion> {
-    let _store = problem.store(store_id)?;
-    let node = Node::Store(store_id);
-    let mut best: Option<LNSInsertion> = None;
-    let driver_indices = driver_order(problem);
-    for (route_idx, route) in solution.routes.iter().enumerate() {
-        let vehicle = &problem.vehicles[route.vehicle_index];
-        let exempt = Some((route.scheduled.driver.0 as usize, route.scheduled.span));
-        let seq: Vec<Node> = route.scheduled.steps.iter().map(|s| s.node).collect();
-        let sl = seq.len();
-        if sl < 2 {
-            continue;
-        }
-        for pos in 1..sl {
-            let mut cand = seq.clone();
-            cand.insert(pos, node);
-            if let Some(sched) = greedy_schedule_route(
-                problem,
-                matrix,
-                &driver_indices,
-                vehicle,
-                &cand,
-                &solution.driver_busy,
-                exempt,
-            ) {
-                let base_cost = sched.cost_cents;
-                // Fleet-aware cost (Finding 10): penalize opening a new vehicle,
-                // not using the last existing route.
-                let fleet_penalty = if route_idx == solution.routes.len() {
-                    5_000
-                } else {
-                    0
-                };
-                let cost = base_cost + fleet_penalty;
-                let ins = LNSInsertion {
-                    route_idx,
-                    _pos: pos,
-                    vehicle_index: route.vehicle_index,
-                    scheduled: sched.clone(),
-                    cost_cents: cost,
-                };
-                if best.as_ref().is_none_or(|b| ins.cost_cents < b.cost_cents) {
-                    best = Some(ins);
-                }
-            }
-        }
-    }
-    let used_vehicles: HashSet<usize> = solution.routes.iter().map(|r| r.vehicle_index).collect();
-    for (vehicle_index, vehicle) in problem.vehicles.iter().enumerate() {
-        if used_vehicles.contains(&vehicle_index) {
-            continue;
-        }
-        let home = Node::Depot(vehicle.depot);
-        let cand = [home, node, home];
-        if let Some(sched) = greedy_schedule_route(
-            problem,
-            matrix,
-            &driver_indices,
-            vehicle,
-            &cand,
-            &solution.driver_busy,
-            None,
-        ) {
-            let ins = LNSInsertion {
-                route_idx: solution.routes.len(),
-                _pos: 1,
-                vehicle_index,
-                scheduled: sched.clone(),
-                // New vehicle for the restricted candidate: penalise using one.
-                cost_cents: sched.cost_cents + 5_000,
-            };
+    problem.store(store_id)?;
+    enumerate_insertions(problem, matrix, solution, store_id, false)
+        .into_iter()
+        .fold(None::<LNSInsertion>, |best, ins| {
             if best.as_ref().is_none_or(|b| ins.cost_cents < b.cost_cents) {
-                best = Some(ins);
+                Some(ins)
+            } else {
+                best
             }
-        }
-    }
-    best
+        })
 }
 
 /// All feasible insertions for a store (for regret).
@@ -1393,58 +1327,137 @@ fn all_insertions_lns(
     solution: &LNSSolution,
     store_id: StoreId,
 ) -> Vec<LNSInsertion> {
-    let mut insertions = Vec::new();
-    let Some(_store) = problem.store(store_id) else {
-        return insertions;
-    };
+    if problem.store(store_id).is_none() {
+        return Vec::new();
+    }
+    enumerate_insertions(problem, matrix, solution, store_id, true)
+}
+
+/// Enumerates every feasible insertion of `store_id` into existing routes
+/// (base cost) and fresh vehicles (base + 5_000 opening penalty), optionally
+/// applying the graph-sparsification time-window compatibility pre-check.
+fn enumerate_insertions(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    solution: &LNSSolution,
+    store_id: StoreId,
+    sparsify: bool,
+) -> Vec<LNSInsertion> {
     let node = Node::Store(store_id);
     let driver_indices = driver_order(problem);
+    let mut insertions =
+        route_insertions(problem, matrix, solution, node, &driver_indices, sparsify);
+    insertions.extend(fresh_vehicle_insertions(
+        problem,
+        matrix,
+        solution,
+        node,
+        &driver_indices,
+    ));
+    insertions
+}
+
+/// Insertions of `node` into existing routes at every interior position.
+fn route_insertions(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    solution: &LNSSolution,
+    node: Node,
+    driver_indices: &[usize],
+    sparsify: bool,
+) -> Vec<LNSInsertion> {
+    let mut insertions = Vec::new();
     for (route_idx, route) in solution.routes.iter().enumerate() {
-        let vehicle = &problem.vehicles[route.vehicle_index];
         let exempt = Some((route.scheduled.driver.0 as usize, route.scheduled.span));
         let seq: Vec<Node> = route.scheduled.steps.iter().map(|s| s.node).collect();
-        let sl = seq.len();
-        if sl < 2 {
+        if seq.len() < 2 || (sparsify && !route_passes_sparsify(problem, node, route)) {
             continue;
         }
-        // Graph sparsification: quick time-window compatibility check (Finding 19)
-        let store = problem.store(store_id).unwrap();
-        let earliest_arrival = route
-            .scheduled
-            .steps
-            .last()
-            .map(|s| s.arrive)
-            .unwrap_or(Minutes::ZERO);
-        if !store
-            .receiving
-            .iter()
-            .any(|tw| tw.start <= earliest_arrival && earliest_arrival < tw.end)
-        {
-            continue;
-        }
-        for pos in 1..sl {
-            let mut cand = seq.clone();
-            cand.insert(pos, node);
-            if let Some(sched) = greedy_schedule_route(
-                problem,
-                matrix,
-                &driver_indices,
-                vehicle,
-                &cand,
-                &solution.driver_busy,
-                exempt,
-            ) {
-                let cost = sched.cost_cents;
-                insertions.push(LNSInsertion {
-                    route_idx,
-                    _pos: pos,
-                    vehicle_index: route.vehicle_index,
-                    scheduled: sched.clone(),
-                    cost_cents: cost,
-                });
-            }
+        let mut candidates = route_candidates_for(
+            problem,
+            matrix,
+            route_idx,
+            route,
+            &seq,
+            node,
+            exempt,
+            driver_indices,
+            &solution.driver_busy,
+        );
+        insertions.append(&mut candidates);
+    }
+    insertions
+}
+
+/// Insertions of `node` at every interior position of one route.
+#[allow(clippy::too_many_arguments)]
+fn route_candidates_for(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    route_idx: usize,
+    route: &LNSRoute,
+    seq: &[Node],
+    node: Node,
+    exempt: Option<(usize, (Minutes, Minutes))>,
+    driver_indices: &[usize],
+    driver_busy: &[Vec<(Minutes, Minutes)>],
+) -> Vec<LNSInsertion> {
+    let vehicle = &problem.vehicles[route.vehicle_index];
+    let mut insertions = Vec::new();
+    for pos in 1..seq.len() {
+        let mut cand = seq.to_vec();
+        cand.insert(pos, node);
+        if let Some(sched) = greedy_schedule_route(
+            problem,
+            &mut Legs::Static(matrix),
+            driver_indices,
+            vehicle,
+            &cand,
+            driver_busy,
+            exempt,
+        ) {
+            insertions.push(LNSInsertion {
+                route_idx,
+                _pos: pos,
+                vehicle_index: route.vehicle_index,
+                scheduled: sched.clone(),
+                cost_cents: sched.cost_cents,
+            });
         }
     }
+    insertions
+}
+
+/// Graph sparsification: quick time-window compatibility check (Finding 19):
+/// whether `store`'s receiving windows can still be met after this route.
+fn route_passes_sparsify(problem: &Problem, node: Node, route: &LNSRoute) -> bool {
+    let earliest_arrival = route
+        .scheduled
+        .steps
+        .last()
+        .map(|s| s.arrive)
+        .unwrap_or(Minutes::ZERO);
+    let Node::Store(store_id) = node else {
+        return true;
+    };
+    let Some(store) = problem.store(store_id) else {
+        return true;
+    };
+    store
+        .receiving
+        .iter()
+        .any(|tw| tw.start <= earliest_arrival && earliest_arrival < tw.end)
+}
+
+/// Insertions of `node` into every unused vehicle (opening penalty applied).
+fn fresh_vehicle_insertions(
+    problem: &Problem,
+    matrix: &DistanceMatrix,
+    solution: &LNSSolution,
+    node: Node,
+    driver_indices: &[usize],
+) -> Vec<LNSInsertion> {
+    let mut insertions = Vec::new();
     let used_vehicles: HashSet<usize> = solution.routes.iter().map(|r| r.vehicle_index).collect();
     for (vehicle_index, vehicle) in problem.vehicles.iter().enumerate() {
         if used_vehicles.contains(&vehicle_index) {
@@ -1454,13 +1467,14 @@ fn all_insertions_lns(
         let cand = [home, node, home];
         if let Some(sched) = greedy_schedule_route(
             problem,
-            matrix,
-            &driver_indices,
+            &mut Legs::Static(matrix),
+            driver_indices,
             vehicle,
             &cand,
             &solution.driver_busy,
             None,
         ) {
+            // New vehicle for the restricted candidate: penalise using one.
             insertions.push(LNSInsertion {
                 route_idx: solution.routes.len(),
                 _pos: 1,
@@ -1512,35 +1526,6 @@ fn driver_order(problem: &Problem) -> Vec<usize> {
     let mut o: Vec<usize> = (0..problem.drivers.len()).collect();
     o.sort_by_key(|&i| (problem.drivers[i].id, i));
     o
-}
-
-/// Wraps greedy's schedule_shift for worst_removal's marginal-cost calculation.
-fn schedule_shift_candidate(
-    problem: &Problem,
-    matrix: &DistanceMatrix,
-    vehicle: &Vehicle,
-    driver: DriverId,
-    sequence: &[Node],
-    driver_busy: &[Vec<(Minutes, Minutes)>],
-    exempt: Option<(usize, (Minutes, Minutes))>,
-) -> Option<Scheduled> {
-    let driver_obj = problem.drivers.iter().find(|d| d.id == driver)?;
-    let busy = driver_busy
-        .get(driver.0 as usize)
-        .map_or(&[][..], Vec::as_slice);
-    for &shift in &driver_obj.shifts {
-        let Some(sched) = greedy_schedule_shift(problem, matrix, vehicle, driver, shift, sequence)
-        else {
-            continue;
-        };
-        let blocked = busy.iter().any(|&span| {
-            spans_overlap(span, sched.span) && Some((driver.0 as usize, span)) != exempt
-        });
-        if !blocked {
-            return Some(sched);
-        }
-    }
-    None
 }
 
 /// Converts a public Solution to LNS internal representation.

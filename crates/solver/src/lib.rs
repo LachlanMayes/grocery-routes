@@ -25,6 +25,7 @@
 //! same problem always yields the same plan.
 
 pub mod curfew;
+pub mod curfew_aware;
 pub mod greedy;
 pub mod lns;
 pub mod local_search;
@@ -34,6 +35,7 @@ pub mod relay;
 mod savings; // Solomon/VRPLib parser (vendored for M1)
 
 pub use curfew::{BreachKind, CurfewDrop, CurfewReport, LegTimes, StaticLegs, enforce_curfews};
+pub use curfew_aware::solve_greedy_with_curfews;
 pub use lns::{LNSConfig, solve_lns};
 pub use local_search::{LSConfig, improve};
 pub use matrix::{

@@ -240,6 +240,12 @@ pub struct SolveArgs {
     /// enforcement with a recorded reason if combined with `--enforce-curfews`.
     #[arg(long)]
     pub relay: bool,
+    /// Solve with curfew-aware construction: legs are time-dependent during
+    /// insertion, so the plan already survives curfew waits. Requires
+    /// `--osm` and curfew rules plus a horizon anchor (the same as
+    /// `--enforce-curfews`); replaces the static solve.
+    #[arg(long)]
+    pub curfew_aware: bool,
 }
 
 /// Arguments of `export`.
@@ -557,7 +563,7 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     } else {
         routing::MatrixStrategy::Dijkstra
     };
-    let curfew_timezone = if args.enforce_curfews {
+    let curfew_timezone = if args.enforce_curfews || args.curfew_aware {
         Some(resolve_curfew_timezone(args, &problem)?)
     } else {
         None
@@ -575,6 +581,19 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         }
         None => solve_with_haversine(args, &problem),
     };
+    if args.curfew_aware {
+        let cache = cache
+            .as_ref()
+            .context("--curfew-aware requires --osm (curfews need the road graph)")?;
+        let Some(timezone) = curfew_timezone else {
+            anyhow::bail!("--curfew-aware requires a curfew timezone");
+        };
+        let solution = solve_aware_osm(&problem, cache, timezone, profile)?;
+        check_solution(&problem, &solution)?;
+        write_solution_json(&args.out, &solution)?;
+        print_solve_summary(args, &problem, &solution);
+        return Ok(());
+    }
     let solution =
         enforce_curfews_for(&problem, solution, cache.as_ref(), curfew_timezone, profile)?;
 
@@ -736,21 +755,7 @@ fn enforce_curfews_for(
         return Ok(solution);
     };
     let cache = cache.context("--enforce-curfews requires --osm (curfews need the road graph)")?;
-    let anchor = problem
-        .horizon_start
-        .context("--enforce-curfews requires a horizon anchor (--horizon-start)")?;
-    let node_ids = cache.problem_node_ids(problem)?;
-    let graph = cache
-        .graph()
-        .context("curfew enforcement requires a loaded OSM graph")?;
-    let context = routing::CurfewContext::new(problem.curfews.clone(), anchor, timezone);
-    let mut provider = GraphLegs {
-        graph,
-        node_ids,
-        profile,
-        context,
-        depot_count: problem.depots.len(),
-    };
+    let mut provider = graph_provider(problem, cache, timezone, profile)?;
     let (enforced, report) = solver::enforce_curfews(problem, &solution, &mut provider);
     println!(
         "  curfew enforcement: {} route(s) adjusted, {} minute(s) waiting, {} store(s) dropped",
@@ -765,6 +770,44 @@ fn enforce_curfews_for(
         );
     }
     Ok(enforced)
+}
+
+/// Builds the time-dependent leg provider over an OSM extract.
+fn graph_provider<'a>(
+    problem: &'a Problem,
+    cache: &'a routing::CachedMatrix,
+    timezone: jiff::tz::TimeZone,
+    profile: routing::TruckProfile,
+) -> anyhow::Result<GraphLegs<'a>> {
+    let anchor = problem
+        .horizon_start
+        .context("a curfew-aware provider requires a horizon anchor (--horizon-start)")?;
+    let node_ids = cache.problem_node_ids(problem)?;
+    let graph = cache
+        .graph()
+        .context("a curfew-aware provider requires a loaded OSM graph")?;
+    let context = routing::CurfewContext::new(problem.curfews.clone(), anchor, timezone);
+    Ok(GraphLegs {
+        graph,
+        node_ids,
+        profile,
+        context,
+        depot_count: problem.depots.len(),
+    })
+}
+
+/// Solves with curfew-aware construction on the OSM graph: legs are
+/// time-dependent during insertion.
+fn solve_aware_osm(
+    problem: &Problem,
+    cache: &routing::CachedMatrix,
+    timezone: jiff::tz::TimeZone,
+    profile: routing::TruckProfile,
+) -> anyhow::Result<Solution> {
+    let mut provider = graph_provider(problem, cache, timezone, profile)?;
+    let solution = solver::solve_greedy_with_curfews(problem, &mut provider);
+    println!("  curfew-aware construction: legs scored with curfew waits");
+    Ok(solution)
 }
 
 /// Prints the solve summary (coverage, distance, duration, cost).

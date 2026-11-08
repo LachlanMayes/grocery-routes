@@ -9,11 +9,9 @@
 //! All moves respect driver occupancy, capacity, time windows, and shift limits
 //! by reusing the scheduling logic from the greedy heuristic.
 
-use domain::{
-    DriverId, Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId, Vehicle,
-};
+use domain::{Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId};
 
-use super::greedy::{Scheduled, plan_with_matrix, schedule_shift, spans_overlap};
+use super::greedy::{Legs, Scheduled, plan_with_matrix, schedule_shift_candidate, spans_overlap};
 use crate::matrix::DistanceMatrix;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
@@ -338,6 +336,7 @@ fn try_relocate_direct(
     dst_idx: usize,
     insert_pos: usize,
 ) -> bool {
+    let mut legs = Legs::Static(matrix);
     let src_route = &solution.routes[src_idx];
     let src_vehicle = &problem.vehicles[src_route.vehicle_index];
     let src_driver = src_route.scheduled.driver;
@@ -353,7 +352,7 @@ fn try_relocate_direct(
 
     let Some(src_scheduled) = schedule_shift_candidate(
         problem,
-        matrix,
+        &mut legs,
         src_vehicle,
         src_driver,
         &new_src_nodes,
@@ -382,7 +381,7 @@ fn try_relocate_direct(
 
     let Some(dst_scheduled) = schedule_shift_candidate(
         problem,
-        matrix,
+        &mut legs,
         dst_vehicle,
         dst_driver,
         &new_dst_nodes,
@@ -417,6 +416,7 @@ fn store_id_from_steps(steps: &[PlannedStop], pos: usize) -> Option<StoreId> {
 
 /// 2-opt: reverse a subsequence within a single route.
 fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution) -> bool {
+    let mut legs = Legs::Static(matrix);
     for route_idx in 0..solution.routes.len() {
         let route = &solution.routes[route_idx];
         let vehicle_idx = route.vehicle_index;
@@ -440,7 +440,7 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
 
                 if let Some(scheduled) = schedule_shift_candidate(
                     problem,
-                    matrix,
+                    &mut legs,
                     vehicle,
                     driver,
                     &candidate_nodes,
@@ -461,6 +461,15 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
     false
 }
 
+/// Builds the static leg source, or `None` when the solution cannot use a
+/// two-route move (too few routes).
+fn legs_or_none<'a>(matrix: &'a DistanceMatrix, solution: &LSSolution) -> Option<Legs<'a>> {
+    if solution.routes.len() < 2 {
+        return None;
+    }
+    Some(Legs::Static(matrix))
+}
+
 /// Relocate: move a store from one route to another.
 fn relocate(
     problem: &Problem,
@@ -468,9 +477,9 @@ fn relocate(
     solution: &mut LSSolution,
     rng: &mut StdRng,
 ) -> bool {
-    if solution.routes.len() < 2 {
+    let Some(mut legs) = legs_or_none(matrix, solution) else {
         return false;
-    }
+    };
 
     // Collect all movable stores
     let mut candidates = Vec::new();
@@ -506,7 +515,7 @@ fn relocate(
         let src_driver = src_route.scheduled.driver;
         let Some(src_scheduled) = schedule_shift_candidate(
             problem,
-            matrix,
+            &mut legs,
             src_vehicle,
             src_driver,
             &new_src_nodes,
@@ -542,7 +551,7 @@ fn relocate(
                 let dst_driver = dst_route.scheduled.driver;
                 let Some(dst_scheduled) = schedule_shift_candidate(
                     problem,
-                    matrix,
+                    &mut legs,
                     dst_vehicle,
                     dst_driver,
                     &new_dst_nodes,
@@ -578,9 +587,9 @@ fn exchange(
     solution: &mut LSSolution,
     rng: &mut StdRng,
 ) -> bool {
-    if solution.routes.len() < 2 {
+    let Some(mut legs) = legs_or_none(matrix, solution) else {
         return false;
-    }
+    };
 
     let mut pairs = Vec::new();
     for i in 0..solution.routes.len() {
@@ -638,7 +647,7 @@ fn exchange(
         if let (Some(si_sched), Some(sj_sched)) = (
             schedule_shift_candidate(
                 problem,
-                matrix,
+                &mut legs,
                 vi,
                 driver_i,
                 &new_i_nodes,
@@ -647,7 +656,7 @@ fn exchange(
             ),
             schedule_shift_candidate(
                 problem,
-                matrix,
+                &mut legs,
                 vj,
                 driver_j,
                 &new_j_nodes,
@@ -678,6 +687,7 @@ fn cross_exchange(
     solution: &mut LSSolution,
     _rng: &mut StdRng,
 ) -> bool {
+    let mut legs = Legs::Static(matrix);
     if solution.routes.len() < 2 {
         return false;
     }
@@ -719,7 +729,7 @@ fn cross_exchange(
                         if let (Some(si_sched), Some(sj_sched)) = (
                             schedule_shift_candidate(
                                 problem,
-                                matrix,
+                                &mut legs,
                                 vi,
                                 driver_i,
                                 &new_i,
@@ -728,7 +738,7 @@ fn cross_exchange(
                             ),
                             schedule_shift_candidate(
                                 problem,
-                                matrix,
+                                &mut legs,
                                 vj,
                                 driver_j,
                                 &new_j,
@@ -759,36 +769,7 @@ fn cross_exchange(
     false
 }
 
-/// Schedules a full route sequence (depot + stores + depot) for a specific driver.
-/// Checks driver occupancy against other routes in the solution.
-fn schedule_shift_candidate(
-    problem: &Problem,
-    matrix: &DistanceMatrix,
-    vehicle: &Vehicle,
-    driver: DriverId,
-    sequence: &[Node],
-    driver_busy: &[Vec<(Minutes, Minutes)>],
-    exempt: Option<(usize, (Minutes, Minutes))>,
-) -> Option<Scheduled> {
-    // Find the driver's shifts
-    let driver_obj = problem.drivers.iter().find(|d| d.id == driver)?;
-    let busy = driver_busy
-        .get(driver.0 as usize)
-        .map_or(&[][..], Vec::as_slice);
-    for &shift in &driver_obj.shifts {
-        let Some(scheduled) = schedule_shift(problem, matrix, vehicle, driver, shift, sequence)
-        else {
-            continue;
-        };
-        let blocked = busy.iter().any(|&span| {
-            spans_overlap(span, scheduled.span) && Some((driver.0 as usize, span)) != exempt
-        });
-        if !blocked {
-            return Some(scheduled);
-        }
-    }
-    None
-}
+// `schedule_shift_candidate` now lives in `greedy` (shared with LNS).
 
 #[cfg(test)]
 mod tests {

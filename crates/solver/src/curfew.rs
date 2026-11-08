@@ -544,7 +544,30 @@ mod tests {
         Load, Shift, Store, TimeWindow, Vehicle, VehicleId,
     };
 
-    fn problem_with_two_stores() -> Problem {
+    /// Shared two-store fixture (used by curfew and curfew-aware tests).
+    /// Marked as a fixture block: the `Problem` payload shapes intentionally
+    /// mirror the crate's other test fixtures (see the code-quality skill on
+    /// test duplication).
+    // jscpd:ignore-start
+    #[cfg(test)]
+    pub(crate) fn problem_with_two_stores(
+        store_a_window: (i64, i64),
+        store_b_window: (i64, i64),
+    ) -> Problem {
+        let store =
+            |id: u32, name: &'static str, lat: f64, demand: Load, (start, end): (i64, i64)| Store {
+                id: StoreId(id),
+                chain: Chain::Coles,
+                name: name.into(),
+                location: LatLon::new(lat, if name == "A" { 151.30 } else { 151.10 }),
+                demand,
+                service: Minutes::from_minutes(10),
+                receiving: vec![TimeWindow::new(
+                    Minutes::from_minutes(start),
+                    Minutes::from_minutes(end),
+                )],
+                timezone: None,
+            };
         Problem {
             name: "curfew fixture".into(),
             depots: vec![Depot {
@@ -554,26 +577,8 @@ mod tests {
                 timezone: None,
             }],
             stores: vec![
-                Store {
-                    id: StoreId(0),
-                    chain: Chain::Coles,
-                    name: "A".into(),
-                    location: LatLon::new(-33.80, 151.30),
-                    demand: Load::new(2, 2, 1),
-                    service: Minutes::from_minutes(10),
-                    receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
-                    timezone: None,
-                },
-                Store {
-                    id: StoreId(1),
-                    chain: Chain::Coles,
-                    name: "B".into(),
-                    location: LatLon::new(-33.95, 151.10),
-                    demand: Load::new(1, 1, 1),
-                    service: Minutes::from_minutes(10),
-                    receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
-                    timezone: None,
-                },
+                store(0, "A", -33.80, Load::new(2, 2, 1), store_a_window),
+                store(1, "B", -33.95, Load::new(1, 1, 1), store_b_window),
             ],
             vehicles: vec![Vehicle {
                 id: VehicleId(0),
@@ -595,6 +600,7 @@ mod tests {
             horizon_start: None,
         }
     }
+    // jscpd:ignore-end
 
     /// A provider that delegates to the static matrix for `base`, then adds
     /// `extra_wait` of curfew waiting to every leg.
@@ -615,7 +621,7 @@ mod tests {
 
     #[test]
     fn static_provider_leaves_the_plan_unchanged() {
-        let problem = problem_with_two_stores();
+        let problem = problem_with_two_stores((0, 600), (0, 600));
         let solution = solve_greedy(&problem);
         let mut provider = StaticLegs::new(&problem);
         let (enforced, report) = enforce_curfews(&problem, &solution, &mut provider);
@@ -626,7 +632,7 @@ mod tests {
 
     #[test]
     fn curfew_waits_shift_the_schedule_and_validate() {
-        let problem = problem_with_two_stores();
+        let problem = problem_with_two_stores((0, 600), (0, 600));
         let solution = solve_greedy(&problem);
         let mut provider = WaitProvider {
             base: StaticLegs::new(&problem),
@@ -650,7 +656,7 @@ mod tests {
 
     #[test]
     fn a_wait_that_breaks_a_receiving_window_drops_the_store() {
-        let mut problem = problem_with_two_stores();
+        let mut problem = problem_with_two_stores((0, 600), (0, 600));
         // Store 0 must be served within the first hour of the horizon.
         problem.stores[0].receiving =
             vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(60))];
@@ -688,7 +694,7 @@ mod tests {
 
     #[test]
     fn driver_conflicts_check_overlap_rest_and_work_caps() {
-        let problem = problem_with_two_stores();
+        let problem = problem_with_two_stores((0, 600), (0, 600));
         // The pre-existing spans themselves respect the 420-minute rest
         // rule (they come from a valid plan in real use).
         let committed = vec![vec![(Minutes::from_minutes(0), Minutes::from_minutes(100))]];
