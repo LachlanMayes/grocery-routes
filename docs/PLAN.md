@@ -5,10 +5,13 @@ Woolworths, ALDI and IGA/Metcash store networks. Rust, built from scratch as a
 passion project; designed to hold up at 10+ trucks across states, executed
 one-chain-one-metro at a time.
 
-## Status (2026-11-07)
+## Status (2026-11-09)
 
 M0–M4 are implemented and verified. The seven gaps listed in the previous
-status were closed in software (commits `98a3f96` … `aded0ee`):
+status were closed in software (commits `98a3f96` … `aded0ee`), and the
+next-sprint plan (tasks 1–6) is also closed: truck-constraints tooling
+(`03b984d`), relay/rest post-pass (`b17b5a0`), curfew-aware construction
+(`e5a8130`), and the LNS-vs-LS harder benchmark (`a263534`).
 
 - **Curfew enforcement** — `routing::timed` computes time-dependent legs
   (a truck waits at the previous node until a traversal is clear of every
@@ -48,7 +51,7 @@ proof of delivery, no further console UI.
 
 Current checks:
 
-- `cargo test --workspace`: all **239** tests pass.
+- `cargo test --workspace`: all **254** tests pass (2026-11-09).
 - `cargo clippy --workspace --all-targets`: exits 0 with **zero warnings**
   (whole-tree sweep, 2026-11-06).
 - Latest commits: `fc88c9b` (console: eframe/egui 0.37 upgrade, glow
@@ -58,7 +61,9 @@ Current checks:
   `ce8039e` (review fixes), `4445fc0` (docs refresh), `aded0ee` (G-NAF),
   `37e5925` (corridor audit), `c9eaa8f` (contraction hierarchy), `2b88822`
   (LNS multi-start), `a9f5a75` (state holidays), `8f11f8a` (Christmas peak
-  + returnables), `98a3f96` (curfew enforcement).
+  + returnables), `98a3f96` (curfew enforcement), `03b984d` (truck
+  constraints tooling), `b17b5a0` (relay post-pass), `e5a8130`
+  (curfew-aware construction), `a263534` (LNS-vs-LS harder benchmark).
 - `data/solomon/C101.txt` is tracked, so the calibration gates fail loudly
   rather than silently skipping if the dataset is missing.
 
@@ -130,15 +135,14 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 - **M4 — Product shell** — **done**. axum + SQLite endpoints, SSE solve
   events, import validation, request body limit, OSM cache per path; egui
   console covers import/solve/solutions/KPIs/events.
-- **M5 — Multi-day optimisation + AU/grocery depth** — **done except
-  solver-side relay/rest placement**. NHVR fatigue rules (between-shift
+- **M5 — Multi-day optimisation + AU/grocery depth** — **done**. NHVR fatigue rules (between-shift
   rest, work caps), per-chain receiving defaults, horizon→local clock,
   national + state/territory holidays, Christmas-peak profile, returnables
-  ledger and curfew enforcement are all implemented. **Relay/rest
-  placement** (multi-driver hand-overs mid-route, in-shift breaks) is the
-  one named item deliberately left: it needs a scheduling-model change in
-  the greedy/LNS core, is not required by any current gate, and is scoped
-  here as future work rather than half-built.
+  ledger, curfew enforcement, and relay/rest placement (post-pass over
+  (driver, shift) pairs with backtracking, `--relay`, `solver::relay`) are
+  all implemented. Curfew-aware *construction* now also exists
+  (`solver::curfew_aware`, `--curfew-aware`); LS/LNS improvement phases
+  still operate on the static matrix.
 - **M6 — Driver side** — **decision made (2026-11-05)**: route sheet + OSM
   deep links is the deliverable; no live tracking, proof of delivery,
   driver app or further console surface.
@@ -148,28 +152,39 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 1. **Corridor legality needs human verification.** The `audit` command
    reports every traversed way and which ones carry no truck-limit data;
    `constraints/truck-constraints.json` stays empty until someone verifies
-   real limits. Until then, plans through un-annotated ways are not legally
-   verified (see [TRUCK-CONSTRAINTS.md](TRUCK-CONSTRAINTS.md)).
-2. **Curfew enforcement is a post-solve feasibility restore.** Route order
-   and fleet assignment are fixed; waits and drops are the only remedies.
-   A curfew-aware optimiser (time-dependent costs inside the search) would
-   need the scheduling model to take leg providers, which is the same
-   change relay placement needs.
-3. **Relay/rest placement** (M5, deliberately not built): multi-driver
-   hand-overs and in-shift break rules. The model and validator already
-   represent the outcomes; the solver does not yet produce them.
+   real limits, but the tooling now exists: `constraints --file <json>
+   [--sqlite <db>]` validates a curated file and exports
+   `curated_entries`/`curated_entry` tables (`03b984d`). Until then, plans
+   through un-annotated ways are not legally verified (see
+   [TRUCK-CONSTRAINTS.md](TRUCK-CONSTRAINTS.md)).
+2. **Curfew enforcement has two modes now.** `--enforce-curfews` is still a
+   post-solve feasibility restore (route order and fleet assignment fixed;
+   waits and drops are the only remedies). `--curfew-aware` builds routes
+   through the `Legs` provider during construction (`solver::curfew_aware`,
+   `solve_greedy_with_curfews`), so windows are respected at insertion time.
+   The LS/LNS improvement phases still operate on the static matrix, so
+   curfew legality there is restored, not optimised.
+3. **Relay/rest placement — shipped as a post-pass** (`b17b5a0`):
+   `solver::relay` with `schedule_relay_route` backtracking over
+   (driver, shift) pairs, `apply_relay`/`apply_relay_with_matrix`,
+   `solve_greedy_with_relay`, CLI `--relay`. It keeps the original route
+   on any failure, so it can never block a feasible plan. LNS-integrated
+   relay (hand-overs inside the search) is not built, by design.
 4. **State holiday irregulars**: the AFL Grand Final Friday is in the
    sourced table only for 2026–2027 (other years omit it); regional show
    days and part-day holidays are out of scope; every authority's own
    calendar is authoritative.
 5. **G-NAF**: validated against synthetic fixtures, not a real release;
    queries are `LIKE` scans with no FTS/R-tree; wiring geocoding into store
-   import is not started.
+   import is not started (the next engineering step once a real release is
+   available).
 6. **CH memory/timing on a real extract is unmeasured**; the hierarchy is
    opt-in and documented as such. `CachedMatrix` caches per strategy.
-7. **LNS remains behind local search** on C101 (679.85 vs 621.42 even with
-   multi-start); keep LS as the quality path, revisit only with a measured
-   win.
+7. **LNS decision closed** (`a263534`): harder 200-customer benchmark
+   (`crates/solver/tests/harder_benchmark.rs`) measured LS 1372.06/187
+   served vs LNS 1827.32/136 served — LS wins by ~25%. LS stays the
+   quality path, LNS stays opt-in. No solver change; the condition in
+   `docs/M1-REPORT.md` ("Harder benchmark") is recorded there.
 8. **Dependency advisories**: `cargo audit` exits 0. One advisory is ignored
    with a dated reason in [SECURITY.md](SECURITY.md): rsa, which no
    workspace target reaches and upstream never fixed. The eframe/egui 0.37

@@ -1,6 +1,6 @@
 # M1 report — solver v1 + calibration gate
 
-Original date: 2026-11-04. Updated: 2026-11-06. Scope per
+Original date: 2026-11-04. Updated: 2026-11-09. Scope per
 [PLAN.md](PLAN.md).
 
 > **Verdict: M1 is delivered.** The C101 calibration path is now wired, the
