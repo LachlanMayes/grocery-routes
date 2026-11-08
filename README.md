@@ -34,7 +34,10 @@ cargo run -p cli -- solve --problem data/demo/problem.json --out data/demo/solut
 ```
 
 Optional solver switches: `--ls` (LNS; add `--repeat 8` for parallel
-multi-start), `--ch` (contraction-hierarchy matrices, time-optimal), and
+multi-start), `--ch` (contraction-hierarchy matrices, time-optimal),
+`--relay` (multi-driver hand-over post-pass over (driver, shift) pairs),
+`--curfew-aware` (build routes through the `Legs` provider so receiving
+windows are respected at insertion time), and
 `--enforce-curfews --network-timezone Australia/Sydney` (re-schedules the
 plan so no traversal enters a curfewed road class during its window).
 
@@ -93,8 +96,8 @@ cargo clippy --workspace --all-targets
 cargo bench -p solver --no-run
 ```
 
-The workspace builds with zero `clippy::all` warnings as of 2026-11-06
-(whole-tree sweep); `-D warnings` is still not enforced.
+The workspace builds with zero `clippy::all` warnings as of 2026-11-09
+(whole-tree sweep); `-D warnings` is still not enforced. 254 tests pass.
 
 ## Layout
 
@@ -102,10 +105,10 @@ The workspace builds with zero `clippy::all` warnings as of 2026-11-06
 |---|---|
 | `crates/domain` | timeline model + validation rules (the contract), horizon→local clock (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) |
 | `crates/sim` | seeded synthetic network generator, Christmas-peak profile |
-| `crates/solver` | haversine/road matrices, greedy insertion, local search, LNS/ALNS with multi-start, curfew re-scheduling |
+| `crates/solver` | haversine/road matrices, greedy insertion, local search, LNS/ALNS with multi-start, curfew re-scheduling and curfew-aware construction (`Legs`), relay post-pass |
 | `crates/routing` | OSM PBF ingest, directed graph, truck constraints (OSM tags + `curated` per-way limits), cached matrices, contraction hierarchy (`ch`), time-dependent curfews (`timed`), corridor audit (`audit`) |
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
-| `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` |
+| `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-gnaf`, `geocode`, `reverse` |
 | `crates/api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
 | `apps/console` | egui operator console (`cargo run -p console`), talks to the API on `127.0.0.1:8080` |
 | `constraints/` | curated truck-constraints file (schema + provenance rules) |

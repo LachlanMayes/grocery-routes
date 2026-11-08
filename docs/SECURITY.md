@@ -37,8 +37,10 @@ against them.
   This cleared the quick-xml advisories (RUSTSEC-2026-0194/0195) and the
   paste and ttf-parser unmaintained warnings, and pruned the whole wgpu
   stack; the zbus-family versions were updated but remain flagged.
-- **2026-11-06** — first audit recorded: 3 advisories ignored (quick-xml,
-  rsa) and 6 warnings noted.
+- **2026-11-09** - post-sprint audit re-check: still 1 ignore (rsa,
+  unreachable, upstream unfixed) and 4 informational warnings (zbus family
+  on the Linux-only accessibility path, `memmap2` 0.5.10 via `osmpbf`
+  0.3.8). No new advisories; `cargo audit --no-fetch` exits 0.
 
 ## Rules
 

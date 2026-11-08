@@ -148,8 +148,9 @@ The OSM coverage that motivates this file (M0 Overpass study of the Sydney bbox,
 
 ## Future work (explicitly not done)
 
-- Time-dependent costs inside the solver search (curfew-aware
-  optimisation) instead of the post-solve feasibility restore; school
+- Time-dependent costs inside the LS/LNS *improvement* phases (curfew-aware
+  optimisation is now construction-aware via `--curfew-aware`; only the
+  metaheuristic improvement loops still use the static matrix), school
   zones and event closures as first-class curfew sources.
 - Permit-class route networks loaded from NHVR/state sources.
 - Automatic extraction of candidate constraints from street-view signage
