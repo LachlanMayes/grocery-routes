@@ -50,11 +50,41 @@ quality baseline.
 
 ```console
 cargo test --workspace
-# all 239 tests pass (as of 2026-11-06)
+# all 254 tests pass (as of 2026-11-08)
 
 cargo clippy --workspace --all-targets
-# exits 0 with warnings; clippy is not enforced with -D warnings
+# exits 0 with zero warnings
 ```
+
+## Harder benchmark (Task 6, 2026-11-08)
+
+C101 cannot tell the two metaheuristics apart at the top: its windows are
+wide (102–138 minutes; depot aside) and its best known is 828.94, while LS
+sits at 621.42. `crates/solver/tests/harder_benchmark.rs` builds a 200-
+customer synthetic problem the same way `solomon_to_problem` builds C101
+(single depot at (40, 50), ambient-only capacity 200, unit-time = unit-
+distance at 60 km/h) but with tight, spatially-coherent windows:
+`ready = d × 2.4` (round-trip minutes), `due = ready + 60–100`, demand
+16–26 per customer, 25 vehicles, horizon 700.
+
+Measured (single run each, same config as the C101 tests, 2026-11-08):
+
+| Solver | Routes | Distance | Served |
+|---|---|---|---|
+| Greedy | 0 | — | 0/200 (fixture not tuned for greedy) |
+| Local search (500 no-improve, 2 restarts, 10 s) | 25 | **1372.06** | 187/200 |
+| LNS single (30 s budget) | 25 | **1827.32** | 136/200 |
+
+On the harder fixture, local search wins by 25% (33% fewer dropped stores
+**and** shorter distance). The fixture violates base-greedy entirely at
+production cost settings, but both metaheuristics beat greedy by a wide
+margin and remain valid. Windows derived from distance are the binding
+constraint on LNS service rate.
+
+**Conclusion (no solver change):** on both C101 and the harder fixture, LS
+is the quality path and LNS stays opt-in. The "measured win" condition for
+LNS did not hold; per the plan, solver code does not change. See
+[PLAN.md](PLAN.md) "Next sprint plan" item 6.
 
 ## Deviations from PLAN.md
 
@@ -87,4 +117,5 @@ priorities. As of 2026-11-05:
 | `crates/solver/src/savings.rs` | Clarke-Wright prototype; retained but not used (the module carries a dead-code allow; see the note at the top of the file). |
 | `crates/solver/src/lib.rs` | Exports `solve_with_local_search`, `solve_with_lns`, `LNSConfig`, `LSConfig`, `improve`. |
 | `crates/solver/tests/greedy.rs` | C101 calibration gates (greedy, local search, LNS) and M0/M1 end-to-end tests. |
+| `crates/solver/tests/harder_benchmark.rs` | Harder 200-customer synthetic benchmark that reports (does not gate) LS vs LNS; see "Harder benchmark" above. |
 | `data/solomon/C101.txt` | Tracked benchmark instance; gates fail loudly if missing. |
