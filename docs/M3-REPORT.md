@@ -21,17 +21,30 @@ Scope and gates per [PLAN.md](PLAN.md).
 - **Corridor audit**: `audit` lists every traversed way and flags those with
   no truck-limit data.
 
-## Measured (synthetic)
+## Measured (real extract, 2026-11-09)
 
-Contraction hierarchy on a synthetic 15×15 grid (50,625 ordered pairs):
+OSM extract: Geofabrik NSW (`nsw-latest.osm.pbf`, 258 MB). Problem:
+`data/demo/console-test-problem.json` (8 stores, 2 depots, 4 vehicles).
 
-| Method | Time |
-|---|---|
-| Dijkstra all-pairs | 22.08 s |
-| CH prepare | 15 ms |
-| CH queries | 0.68 s |
+Ingest now collects only nodes that lie on a drivable way (and handles
+dense nodes, which Geofabrik extracts use); the NSW graph has **4.89 M
+road nodes** (down from 36 M when every OSM node was loaded).
 
-~30× speed-up. CH is opt-in (`solve --ch`).
+Release-mode wall times (incl. cargo cache hit, solve only):
+
+| Method | Wall time | Routes | Served | Distance |
+|---|---|---|---|---|
+| Dijkstra (`--osm`) | 205.9 s | 2 | 7/8 | 320.2 km |
+| CH (`--osm --ch`) | 126.8 s | 2 | 7/8 | 359.6 km |
+
+CH is ~1.6× faster on this extract. 18 of 100 problem-pair entries are
+unreachable (nearest-node snapping onto a disconnected road component); the
+matrix still covers 82 % of pairs. CH remains opt-in, and the per-pair
+distance differs slightly between methods because CH is time-optimal while
+Dijkstra here is distance-based.
+
+The full Australia extract (928 MB) is not tractable for interactive use
+in debug mode; NSW is the recommended granularity for development.
 
 ## Not done (data, not code)
 

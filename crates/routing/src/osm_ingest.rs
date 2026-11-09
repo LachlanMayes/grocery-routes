@@ -19,44 +19,61 @@ use domain::LatLon;
 /// One-way tags are respected: a one-way way adds a single directed edge; a
 /// two-way way adds edges in both directions.
 pub fn ingest_pbf(path: &Path) -> anyhow::Result<Graph> {
-    // First pass: collect all nodes with coordinates.
-    let nodes = collect_nodes(path)?;
-
-    // Re-open for the ways pass (ElementReader is single-pass).
-    let mut graph = Graph::new();
-    for (id, (lat, lon)) in &nodes {
-        if *id < 0 {
-            return Err(anyhow::anyhow!(
-                "negative OSM node id {} cannot be represented as NodeId (u64)",
-                id
-            ));
-        }
-        graph.add_node(NodeId(*id as u64), LatLon::new(*lat, *lon));
-    }
-
+    // First pass: collect drivable ways and the set of node ids they reference.
+    // We deliberately do NOT load every OSM node (there can be tens of
+    // millions in a regional extract); only nodes that lie on a drivable way
+    // are ever needed.
+    let mut drivable_ways: Vec<DrivableWay> = Vec::new();
+    let mut wanted: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let reader = ElementReader::from_path(path)?;
     reader.for_each(|element| {
         if let Element::Way(w) = element
             && let Some(way) = drivable_way(&w)
         {
-            add_way_to_graph(&mut graph, &nodes, way);
+            for &id in &way.nodes {
+                wanted.insert(id);
+            }
+            drivable_ways.push(way);
         }
     })?;
+
+    // Second pass: collect coordinates only for the wanted nodes.
+    let mut all_nodes: HashMap<i64, (f64, f64)> = HashMap::with_capacity(wanted.len());
+    let reader = ElementReader::from_path(path)?;
+    reader.for_each(|element| match element {
+        Element::Node(n) if wanted.contains(&n.id()) => {
+            all_nodes.insert(n.id(), (n.lat(), n.lon()));
+        }
+        Element::DenseNode(n) if wanted.contains(&n.id()) => {
+            all_nodes.insert(n.id(), (n.lat(), n.lon()));
+        }
+        _ => {}
+    })?;
+
+    // Materialise graph nodes (only those referenced by a drivable way).
+    let mut graph = Graph::new();
+    for way in &drivable_ways {
+        for &id in &way.nodes {
+            if id < 0 {
+                continue;
+            }
+            if let Some(&(lat, lon)) = all_nodes.get(&id)
+                && graph.node(NodeId(id as u64)).is_none()
+            {
+                graph.add_node(NodeId(id as u64), LatLon::new(lat, lon));
+            }
+        }
+    }
+
+    for way in drivable_ways {
+        add_way_to_graph(&mut graph, &all_nodes, way);
+    }
 
     Ok(graph)
 }
 
-/// Collects all OSM nodes with coordinates from a PBF file.
-fn collect_nodes(path: &Path) -> anyhow::Result<HashMap<i64, (f64, f64)>> {
-    let reader = ElementReader::from_path(path)?;
-    let mut nodes: HashMap<i64, (f64, f64)> = HashMap::new();
-    reader.for_each(|element| {
-        if let Element::Node(n) = element {
-            nodes.insert(n.id(), (n.lat(), n.lon()));
-        }
-    })?;
-    Ok(nodes)
-}
+// collect_nodes removed: ingest now collects coordinates lazily for nodes
+// referenced by drivable ways only (see ingest_pbf).
 
 /// OSM highway tags considered drivable for general truck routing.
 const DRIVABLE_HIGHWAY: &[&str] = &[

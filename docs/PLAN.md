@@ -178,8 +178,13 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    queries are `LIKE` scans with no FTS/R-tree; wiring geocoding into store
    import is not started (the next engineering step once a real release is
    available).
-6. **CH memory/timing on a real extract is unmeasured**; the hierarchy is
-   opt-in and documented as such. `CachedMatrix` caches per strategy.
+6. **CH memory/timing on a real extract — measured** (2026-11-09): NSW
+   extract (258 MB, 4.89 M road nodes after filtering). CH solve 126.8 s
+   vs Dijkstra 205.9 s (~1.6×) on an 8-store problem; 18/100 matrix
+   entries unreachable. The full Australia extract (928 MB) is not
+   tractable interactively in debug mode; use state-level extracts. The
+   hierarchy stays opt-in. Ingest now handles dense nodes and restricts
+   the graph to nodes on drivable ways (`osm_ingest.rs`).
 7. **LNS decision closed** (`a263534`): harder 200-customer benchmark
    (`crates/solver/tests/harder_benchmark.rs`) measured LS 1372.06/187
    served vs LNS 1827.32/136 served — LS wins by ~25%. LS stays the
