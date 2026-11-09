@@ -38,17 +38,26 @@ use crate::matrix::DistanceMatrix;
 /// `plan_with_matrix`/`schedule_shift` etc. take `&mut Legs<'_>` so providers
 /// can be reborrowed per schedule attempt without `Option<&mut T>` lifetime
 /// gymnastics.
-pub(crate) enum Legs<'a> {
+pub enum Legs<'a> {
     /// Static matrix legs (the default solver path).
     Static(&'a DistanceMatrix),
     /// Time-dependent legs from a [`LegTimes`] provider.
     Dynamic(&'a mut (dyn LegTimes + 'a)),
 }
 
+impl std::fmt::Debug for Legs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Legs::Static(_) => f.write_str("Legs::Static(..)"),
+            Legs::Dynamic(_) => f.write_str("Legs::Dynamic(..)"),
+        }
+    }
+}
+
 impl Legs<'_> {
     /// `(distance_km, arrival)` for a leg departing `previous` at `time`, or
     /// `None` when the leg is infeasible.
-    pub(crate) fn leg(
+    pub fn leg(
         &mut self,
         previous: Node,
         node: Node,

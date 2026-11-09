@@ -355,7 +355,9 @@ fn c101_calibration_local_search() {
         total_dist
     );
 
-    // TODO: tighten route count once fleet cost is non-zero (best-known=10 routes)
+    // Fleet cost is now non-zero (15_000 cents/route, matching gen-sim); the
+    // solver still emits 11 routes on C101 (best-known 10). Route-count gating
+    // would need a route-elimination operator; distance gate remains authoritative.
 }
 
 /// C101 calibration with multi-start LNS: do eight parallel seeds beat the
@@ -501,7 +503,9 @@ fn c101_calibration_lns() {
         total_dist
     );
 
-    // TODO: tighten route count once fleet cost is non-zero (best-known=10 routes)
+    // Fleet cost is now non-zero (15_000 cents/route, matching gen-sim); the
+    // solver still emits 11 routes on C101 (best-known 10). Route-count gating
+    // would need a route-elimination operator; distance gate remains authoritative.
 }
 
 /// One depot, one vehicle with `capacity` and one driver on a 10-hour shift;

@@ -36,6 +36,7 @@ mod savings; // Solomon/VRPLib parser (vendored for M1)
 
 pub use curfew::{BreachKind, CurfewDrop, CurfewReport, LegTimes, StaticLegs, enforce_curfews};
 pub use curfew_aware::solve_greedy_with_curfews;
+pub use greedy::Legs;
 pub use lns::{LNSConfig, solve_lns};
 pub use local_search::{LSConfig, improve};
 pub use matrix::{
@@ -102,7 +103,8 @@ pub fn solve_with_local_search(
     matrix: DistanceMatrix,
 ) -> Solution {
     let greedy_solution = greedy::plan_with_matrix(problem, matrix.clone());
-    let solution = local_search::improve(problem, &matrix, greedy_solution, config);
+    let mut legs = crate::greedy::Legs::Static(&matrix);
+    let solution = local_search::improve(problem, &matrix, &mut legs, greedy_solution, config);
     assert!(
         solution.validate(problem).is_ok(),
         "solver produced an invalid solution"

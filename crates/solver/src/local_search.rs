@@ -64,6 +64,7 @@ impl Default for LSConfig {
 pub fn improve(
     problem: &Problem,
     matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     greedy_solution: Solution,
     config: LSConfig,
 ) -> Solution {
@@ -86,7 +87,7 @@ pub fn improve(
 
         // Perturb the current solution slightly for diversification
         if restart > 0 {
-            current = perturb_solution(problem, matrix, current, &mut rng);
+            current = perturb_solution(problem, legs, current, &mut rng);
         }
 
         // Hill climbing with first-improvement strategy
@@ -99,10 +100,10 @@ pub fn improve(
             }
 
             // Try moves in order: 2-opt (fastest), then relocate, exchange, cross-exchange
-            let improved = two_opt(problem, matrix, &mut current)
-                || relocate(problem, matrix, &mut current, &mut rng)
-                || exchange(problem, matrix, &mut current, &mut rng)
-                || cross_exchange(problem, matrix, &mut current, &mut rng);
+            let improved = two_opt(problem, legs, &mut current)
+                || relocate(problem, legs, &mut current, &mut rng)
+                || exchange(problem, legs, &mut current, &mut rng)
+                || cross_exchange(problem, legs, &mut current, &mut rng);
 
             if improved {
                 no_improve = 0;
@@ -265,7 +266,7 @@ fn hash_problem(problem: &Problem) -> u64 {
 /// Perturbs a solution by randomly relocating a few stores.
 fn perturb_solution(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     mut solution: LSSolution,
     rng: &mut StdRng,
 ) -> LSSolution {
@@ -311,7 +312,7 @@ fn perturb_solution(
             let insert_pos = rng.random_range(1..dest_route.scheduled.steps.len() - 1);
             if try_relocate_direct(
                 problem,
-                matrix,
+                legs,
                 &mut solution,
                 route_idx,
                 pos,
@@ -329,14 +330,13 @@ fn perturb_solution(
 /// Helper to try a direct relocation during perturbation.
 fn try_relocate_direct(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     solution: &mut LSSolution,
     src_idx: usize,
     src_pos: usize,
     dst_idx: usize,
     insert_pos: usize,
 ) -> bool {
-    let mut legs = Legs::Static(matrix);
     let src_route = &solution.routes[src_idx];
     let src_vehicle = &problem.vehicles[src_route.vehicle_index];
     let src_driver = src_route.scheduled.driver;
@@ -352,7 +352,7 @@ fn try_relocate_direct(
 
     let Some(src_scheduled) = schedule_shift_candidate(
         problem,
-        &mut legs,
+        legs,
         src_vehicle,
         src_driver,
         &new_src_nodes,
@@ -381,7 +381,7 @@ fn try_relocate_direct(
 
     let Some(dst_scheduled) = schedule_shift_candidate(
         problem,
-        &mut legs,
+        legs,
         dst_vehicle,
         dst_driver,
         &new_dst_nodes,
@@ -415,8 +415,7 @@ fn store_id_from_steps(steps: &[PlannedStop], pos: usize) -> Option<StoreId> {
 }
 
 /// 2-opt: reverse a subsequence within a single route.
-fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution) -> bool {
-    let mut legs = Legs::Static(matrix);
+fn two_opt(problem: &Problem, legs: &mut Legs<'_>, solution: &mut LSSolution) -> bool {
     for route_idx in 0..solution.routes.len() {
         let route = &solution.routes[route_idx];
         let vehicle_idx = route.vehicle_index;
@@ -440,7 +439,7 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
 
                 if let Some(scheduled) = schedule_shift_candidate(
                     problem,
-                    &mut legs,
+                    legs,
                     vehicle,
                     driver,
                     &candidate_nodes,
@@ -462,24 +461,16 @@ fn two_opt(problem: &Problem, matrix: &DistanceMatrix, solution: &mut LSSolution
 }
 
 /// Builds the static leg source, or `None` when the solution cannot use a
-/// two-route move (too few routes).
-fn legs_or_none<'a>(matrix: &'a DistanceMatrix, solution: &LSSolution) -> Option<Legs<'a>> {
-    if solution.routes.len() < 2 {
-        return None;
-    }
-    Some(Legs::Static(matrix))
-}
-
 /// Relocate: move a store from one route to another.
 fn relocate(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     solution: &mut LSSolution,
     rng: &mut StdRng,
 ) -> bool {
-    let Some(mut legs) = legs_or_none(matrix, solution) else {
+    if solution.routes.len() < 2 {
         return false;
-    };
+    }
 
     // Collect all movable stores
     let mut candidates = Vec::new();
@@ -515,7 +506,7 @@ fn relocate(
         let src_driver = src_route.scheduled.driver;
         let Some(src_scheduled) = schedule_shift_candidate(
             problem,
-            &mut legs,
+            legs,
             src_vehicle,
             src_driver,
             &new_src_nodes,
@@ -551,7 +542,7 @@ fn relocate(
                 let dst_driver = dst_route.scheduled.driver;
                 let Some(dst_scheduled) = schedule_shift_candidate(
                     problem,
-                    &mut legs,
+                    legs,
                     dst_vehicle,
                     dst_driver,
                     &new_dst_nodes,
@@ -583,13 +574,13 @@ fn relocate(
 /// Exchange: swap a store between two routes.
 fn exchange(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     solution: &mut LSSolution,
     rng: &mut StdRng,
 ) -> bool {
-    let Some(mut legs) = legs_or_none(matrix, solution) else {
+    if solution.routes.len() < 2 {
         return false;
-    };
+    }
 
     let mut pairs = Vec::new();
     for i in 0..solution.routes.len() {
@@ -647,7 +638,7 @@ fn exchange(
         if let (Some(si_sched), Some(sj_sched)) = (
             schedule_shift_candidate(
                 problem,
-                &mut legs,
+                legs,
                 vi,
                 driver_i,
                 &new_i_nodes,
@@ -656,7 +647,7 @@ fn exchange(
             ),
             schedule_shift_candidate(
                 problem,
-                &mut legs,
+                legs,
                 vj,
                 driver_j,
                 &new_j_nodes,
@@ -683,11 +674,10 @@ fn exchange(
 /// Cross-exchange: swap subsequences of length 1..2 between two routes.
 fn cross_exchange(
     problem: &Problem,
-    matrix: &DistanceMatrix,
+    legs: &mut Legs<'_>,
     solution: &mut LSSolution,
     _rng: &mut StdRng,
 ) -> bool {
-    let mut legs = Legs::Static(matrix);
     if solution.routes.len() < 2 {
         return false;
     }
@@ -729,7 +719,7 @@ fn cross_exchange(
                         if let (Some(si_sched), Some(sj_sched)) = (
                             schedule_shift_candidate(
                                 problem,
-                                &mut legs,
+                                legs,
                                 vi,
                                 driver_i,
                                 &new_i,
@@ -738,7 +728,7 @@ fn cross_exchange(
                             ),
                             schedule_shift_candidate(
                                 problem,
-                                &mut legs,
+                                legs,
                                 vj,
                                 driver_j,
                                 &new_j,
@@ -881,7 +871,8 @@ mod tests {
             time_limit_ms: 5000,
         };
 
-        let improved = improve(&problem, &matrix, greedy, config);
+        let mut legs = Legs::Static(&matrix);
+        let improved = improve(&problem, &matrix, &mut legs, greedy, config);
 
         // Should still be valid
         assert_eq!(improved.validate(&problem), Ok(()));

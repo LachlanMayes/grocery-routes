@@ -108,7 +108,25 @@ data. Add `--ch` when the plan was solved with `solve --ch`.
 | `--ch` | bool | false | replay CH (time-optimal) paths |
 | `--out-dir` | path | required | alias `--out` |
 
-## `constraints` — validate + export curated truck constraints
+## `import-stores` — geocode a CSV of store addresses into a problem
+
+```
+cargo run -p cli -- import-stores \
+  --gnaf-db data/gnaf.sqlite \
+  --addresses data/demo/addresses.csv \
+  --out data/demo/problem.json
+```
+
+CSV format: `name,address` header, one row per store. Each address is
+geocoded against the G-NAF database; stores with no match are skipped.
+The depot is placed at the centroid of the geocoded stores.
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--gnaf-db` | path | required | G-NAF SQLite DB from `import-gnaf` |
+| `--addresses` | path | required | CSV with `name,address` header |
+| `--out` | path | required | problem JSON output |
+| `--vehicles` | usize | 4 | one driver per vehicle |
 
 ```
 cargo run -p cli -- constraints --file constraints/truck-constraints.json \

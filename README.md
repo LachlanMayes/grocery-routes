@@ -110,7 +110,7 @@ The workspace builds with zero `clippy::all` warnings as of 2026-11-09
 | `crates/solver` | haversine/road matrices, greedy insertion, local search, LNS/ALNS with multi-start, curfew re-scheduling and curfew-aware construction (`Legs`), relay post-pass |
 | `crates/routing` | OSM PBF ingest, directed graph, truck constraints (OSM tags + `curated` per-way limits), cached matrices, contraction hierarchy (`ch`), time-dependent curfews (`timed`), corridor audit (`audit`) |
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
-| `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-gnaf`, `geocode`, `reverse` |
+| `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-stores`, `import-gnaf`, `geocode`, `reverse` |
 | `crates/api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
 | `apps/console` | egui operator console (`cargo run -p console`), talks to the API on `127.0.0.1:8080` |
 | `constraints/` | curated truck-constraints file (schema + provenance rules) |

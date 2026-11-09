@@ -48,6 +48,9 @@ pub enum Command {
     /// Validate a curated truck-constraints JSON file and optionally write it
     /// to SQLite.
     Constraints(ConstraintsArgs),
+    /// Geocode a CSV of store addresses (name,address) into a problem JSON
+    /// using a G-NAF database.
+    ImportStores(ImportStoresArgs),
 }
 
 /// Arguments of `constraints`.
@@ -60,6 +63,23 @@ pub struct ConstraintsArgs {
     /// (replaced if it exists).
     #[arg(long)]
     pub sqlite: Option<PathBuf>,
+}
+
+/// Arguments of `import-stores`.
+#[derive(Debug, Args)]
+pub struct ImportStoresArgs {
+    /// G-NAF SQLite database built by `import-gnaf`.
+    #[arg(long)]
+    pub gnaf_db: PathBuf,
+    /// CSV file with columns `name,address` (header row required).
+    #[arg(long)]
+    pub addresses: PathBuf,
+    /// File the generated problem JSON is written to.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Number of vehicles (one driver per vehicle).
+    #[arg(long, default_value_t = 4)]
+    pub vehicles: usize,
 }
 
 /// Arguments of `import-gnaf`.
@@ -274,6 +294,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Geocode(args) => run_geocode(&args),
         Command::Reverse(args) => run_reverse(&args),
         Command::Constraints(args) => run_constraints(&args),
+        Command::ImportStores(args) => run_import_stores(&args),
     }
 }
 
@@ -409,6 +430,147 @@ pub fn run_constraints(args: &ConstraintsArgs) -> anyhow::Result<()> {
         drop(stmt);
         println!("wrote {} to {}", curated.len(), db_path.display());
     }
+    Ok(())
+}
+
+/// `import-stores`: geocode a CSV of store addresses (name,address) with a
+/// G-NAF database and write a problem JSON whose stores use the resolved
+/// coordinates.
+pub fn run_import_stores(args: &ImportStoresArgs) -> anyhow::Result<()> {
+    use domain::{
+        Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
+        LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+    };
+    use geo_au::geocode;
+    use rusqlite::Connection;
+
+    let conn = Connection::open(&args.gnaf_db)
+        .with_context(|| format!("open G-NAF db {}", args.gnaf_db.display()))?;
+
+    // Read CSV: header `name,address`, then one row per store.
+    let raw = std::fs::read_to_string(&args.addresses)
+        .with_context(|| format!("read addresses {}", args.addresses.display()))?;
+    let mut lines = raw.lines();
+    let header = lines.next().context("addresses CSV is empty")?;
+    anyhow::ensure!(
+        header.trim().eq_ignore_ascii_case("name,address"),
+        "addresses CSV header must be `name,address` (got `{}`)",
+        header.trim()
+    );
+
+    // Collect geocoded stores.
+    let mut stores: Vec<Store> = Vec::new();
+    let mut skipped = 0usize;
+    for (idx, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Split on first comma so addresses may contain commas.
+        let (name, address) = match line.split_once(',') {
+            Some((n, a)) => (n.trim().to_string(), a.trim().to_string()),
+            None => {
+                eprintln!("  row {}: missing comma, skipping: {}", idx + 2, line);
+                skipped += 1;
+                continue;
+            }
+        };
+        let q = geo_au::parse_query(&address);
+        let hits = geocode(&conn, &q, 1)?;
+        let Some(top) = hits.first() else {
+            eprintln!("  no geocode for `{}` ({}), skipping", name, address);
+            skipped += 1;
+            continue;
+        };
+        stores.push(Store {
+            id: StoreId(stores.len() as u32),
+            chain: Chain::Coles,
+            name: if name.is_empty() {
+                format!("Store {}", stores.len())
+            } else {
+                name
+            },
+            location: LatLon::new(top.address.lat, top.address.lon),
+            timezone: None,
+            demand: Load::new(10, 1, 0),
+            service: Minutes::from_minutes(15),
+            receiving: vec![TimeWindow::new(
+                Minutes::ZERO,
+                Minutes::from_minutes(12 * 60),
+            )],
+        });
+    }
+
+    anyhow::ensure!(
+        !stores.is_empty(),
+        "no stores geocoded from {}",
+        args.addresses.display()
+    );
+
+    // Depot at the centroid of the geocoded stores.
+    let (sum_lat, sum_lon) = stores.iter().fold((0.0f64, 0.0f64), |(la, lo), s| {
+        (la + s.location.lat, lo + s.location.lon)
+    });
+    let n = stores.len() as f64;
+    let depot_loc = LatLon::new(sum_lat / n, sum_lon / n);
+    let depots = vec![Depot {
+        id: DepotId(0),
+        name: "Imported depot".into(),
+        location: depot_loc,
+        timezone: None,
+    }];
+
+    let vehicles: Vec<Vehicle> = (0..args.vehicles)
+        .map(|i| Vehicle {
+            id: VehicleId(i as u32),
+            name: format!("Vehicle {}", i + 1),
+            depot: DepotId(0),
+            capacity: Load::new(200, 100, 50),
+            max_duration: Minutes::from_minutes(12 * 60),
+            avg_speed_kmh: 40.0,
+        })
+        .collect();
+    let drivers: Vec<Driver> = (0..args.vehicles)
+        .map(|i| Driver {
+            id: DriverId(i as u32),
+            name: format!("Driver {}", i + 1),
+            shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(12 * 60))],
+            fatigue_rules: FatigueRules::default(),
+        })
+        .collect();
+
+    let problem = Problem {
+        name: format!("imported ({} stores)", stores.len()),
+        depots,
+        stores,
+        vehicles,
+        drivers,
+        cost: CostModel {
+            fixed_per_route_cents: 15_000,
+            per_km_cents: 100,
+            per_hour_cents: 0,
+            late_per_min_cents: 0,
+        },
+        chain_rules: ChainRules::default(),
+        curfews: CurfewRules::default(),
+        horizon_start: None,
+    };
+
+    // Validate timezones (none set here).
+    anyhow::ensure!(
+        problem.validate_timezones().is_empty(),
+        "invalid problem timezones"
+    );
+
+    let json = serde_json::to_string_pretty(&problem)?;
+    std::fs::write(&args.out, json).with_context(|| format!("write {}", args.out.display()))?;
+
+    println!(
+        "import-stores: {} of {} addresses geocoded ({} skipped) -> {}",
+        problem.stores.len(),
+        problem.stores.len() + skipped,
+        skipped,
+        args.out.display()
+    );
     Ok(())
 }
 
@@ -574,7 +736,7 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         hgv: args.hgv,
     };
 
-    let (solution, cache) = match &args.osm {
+    let (solution, mut cache) = match &args.osm {
         Some(osm_path) => {
             let (solution, cache) = solve_with_osm(args, &problem, osm_path, profile, strategy)?;
             (solution, Some(cache))
@@ -583,12 +745,12 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
     };
     if args.curfew_aware {
         let cache = cache
-            .as_ref()
+            .as_mut()
             .context("--curfew-aware requires --osm (curfews need the road graph)")?;
         let Some(timezone) = curfew_timezone else {
             anyhow::bail!("--curfew-aware requires a curfew timezone");
         };
-        let solution = solve_aware_osm(&problem, cache, timezone, profile)?;
+        let solution = solve_aware_osm(&problem, cache, timezone, profile, args.ls)?;
         check_solution(&problem, &solution)?;
         write_solution_json(&args.out, &solution)?;
         print_solve_summary(args, &problem, &solution);
@@ -800,13 +962,34 @@ fn graph_provider<'a>(
 /// time-dependent during insertion.
 fn solve_aware_osm(
     problem: &Problem,
-    cache: &routing::CachedMatrix,
+    cache: &mut routing::CachedMatrix,
     timezone: jiff::tz::TimeZone,
     profile: routing::TruckProfile,
+    ls: bool,
 ) -> anyhow::Result<Solution> {
+    let matrix = if ls {
+        let entries = cache
+            .matrix_for_with(problem, profile, routing::MatrixStrategy::Dijkstra)?
+            .context("curfew-aware LS requires a road matrix")?;
+        let node_count = problem.depots.len() + problem.stores.len();
+        Some(solver::DistanceMatrix::from_routing(
+            problem.depots.len(),
+            node_count,
+            &entries,
+        ))
+    } else {
+        None
+    };
     let mut provider = graph_provider(problem, cache, timezone, profile)?;
-    let solution = solver::solve_greedy_with_curfews(problem, &mut provider);
+    let mut solution = solver::solve_greedy_with_curfews(problem, &mut provider);
     println!("  curfew-aware construction: legs scored with curfew waits");
+    if ls {
+        let matrix = matrix.unwrap();
+        let mut legs = solver::Legs::Dynamic(&mut provider);
+        let config = solver::LSConfig::default();
+        solution = solver::improve(problem, &matrix, &mut legs, solution, config);
+        println!("  curfew-aware local search applied");
+    }
     Ok(solution)
 }
 

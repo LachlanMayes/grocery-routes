@@ -275,7 +275,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
         vehicles,
         drivers,
         cost: CostModel {
-            fixed_per_route_cents: 0,
+            fixed_per_route_cents: 15_000,
             per_km_cents: 100, // 1 per unit distance
             per_hour_cents: 0,
             late_per_min_cents: 0,

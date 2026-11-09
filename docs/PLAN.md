@@ -173,8 +173,9 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    days and part-day holidays are out of scope; every authority's own
    calendar is authoritative.
 5. **G-NAF**: validated against the Aug 2026 release (16,970,406 addresses,
-   0 skipped); `geocode`/`reverse` return sensible results. Queries are `LIKE`
-   scans with no FTS/R-tree; wiring geocoding into store import is not started.
+   0 skipped); `geocode`/`reverse` return sensible results. Store import now
+   geocodes addresses via the `import-stores` CLI command. Queries are `LIKE`
+   scans with no FTS/R-tree.
 6. **CH memory/timing on a real extract — measured** (2026-11-09): NSW
    extract (258 MB, 4.89 M road nodes after filtering). CH solve 126.8 s
    vs Dijkstra 205.9 s (~1.6×) on an 8-store problem; 18/100 matrix
