@@ -126,12 +126,10 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 - **M2 — Solver v2** — **done**. LNS validity fixed (`fbca088`); multi-start
   added and measured (`2b88822`); local search remains the quality path and
   LNS stays opt-in. `rayon` was not added — scoped threads are used.
-- **M3 — Road reality** — **done in software, with operator-verified data
-  outstanding**. `osmpbf` → graph → CachedMatrix, directed edges,
-  weight/height/HGV/access filters, Dijkstra **and** contraction
-  hierarchies, curated per-way constraints, time-dependent curfew
-  enforcement, and the corridor-audit report. What remains is data, not
-  code: a real OSM extract and human verification of corridor legality.
+- **M3 — Road reality** — **done in software; CH timing now measured on a
+  real extract** (NSW, 258 MB, 4.89 M road nodes: CH 126.8 s vs Dijkstra
+  205.9 s). Corridor legality still needs human verification of truck
+  limits (data, not code).
 - **M4 — Product shell** — **done**. axum + SQLite endpoints, SSE solve
   events, import validation, request body limit, OSM cache per path; egui
   console covers import/solve/solutions/KPIs/events.
@@ -174,10 +172,9 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    sourced table only for 2026–2027 (other years omit it); regional show
    days and part-day holidays are out of scope; every authority's own
    calendar is authoritative.
-5. **G-NAF**: validated against synthetic fixtures, not a real release;
-   queries are `LIKE` scans with no FTS/R-tree; wiring geocoding into store
-   import is not started (the next engineering step once a real release is
-   available).
+5. **G-NAF**: validated against the Aug 2026 release (16,970,406 addresses,
+   0 skipped); `geocode`/`reverse` return sensible results. Queries are `LIKE`
+   scans with no FTS/R-tree; wiring geocoding into store import is not started.
 6. **CH memory/timing on a real extract — measured** (2026-11-09): NSW
    extract (258 MB, 4.89 M road nodes after filtering). CH solve 126.8 s
    vs Dijkstra 205.9 s (~1.6×) on an 8-store problem; 18/100 matrix

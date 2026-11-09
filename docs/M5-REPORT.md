@@ -18,16 +18,16 @@ Scope and gates per [PLAN.md](PLAN.md).
 - **Relay/rest placement** (Task 4, `b17b5a0`): `solver::relay` post-pass
   with backtracking over (driver, shift) pairs; `solve --relay`.
 - **G-NAF geocoder** (`crates/geo-au`): flat-file ingest → SQLite,
-  `geocode`/`reverse`; validated against synthetic fixtures only.
+  `geocode`/`reverse`; validated against the Aug 2026 release
+  (16,970,406 addresses, 0 skipped).
 
 ## What remains (operator steps / optional)
 
-- Real G-NAF release validation and wiring geocoding into store import.
-- Real OSM extract for CH timing.
 - Human verification of corridor legality.
 - Curfew-aware LS/LNS improvement phases (construction is aware; improvement
   loops still use the static matrix).
 - LNS promotion (closed negatively; see [M1-REPORT.md](M1-REPORT.md)).
+- Wiring geocoding into store import (optional engineering).
 
 ## Checks
 

@@ -59,6 +59,9 @@ repository ships **no** G-NAF data, only the importer.
 
 ## Status
 
-Software side complete and tested; real-data validation and the decision to
-wire geocoding into store import are operator steps, tracked in
-[docs/PLAN.md](PLAN.md).
+Validated against the G-NAF Aug 2026 release (GDA2020, `g-naf_aug26_allstates_gda2020_psv_110.zip`,
+16,970,406 addresses imported, 0 incomplete rows, 0 without a geocode).
+`geocode` and `reverse` return sensible results (e.g. "1 Pitt Street, Sydney NSW 2000"
+→ 18 PITT STREET; reverse at (-33.8688, 151.2093) → nearest addresses within
+metres). Wiring geocoding into store import remains an optional engineering step
+(tracked in [docs/PLAN.md](PLAN.md)).

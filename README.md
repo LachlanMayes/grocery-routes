@@ -65,9 +65,9 @@ cargo run -p cli -- import-gnaf --dir data/gnaf --db data/gnaf.sqlite
 cargo run -p cli -- geocode --db data/gnaf.sqlite "12 Smith St, Sydney NSW 2000"
 ```
 
-The audit report is not legal verification. The G-NAF importer has not
-been validated against a real release yet — read
-[docs/GNAF.md](docs/GNAF.md) first.
+The audit report is not legal verification. The G-NAF importer has been
+validated against the Aug 2026 release (16.97 M addresses, 0 skipped) — read
+[docs/GNAF.md](docs/GNAF.md).
 
 `data/demo/` is gitignored; `data/solomon/C101.txt` is tracked so the C101
 calibration gates run in a clean checkout. Everything generated is synthetic; no
