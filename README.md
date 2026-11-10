@@ -8,6 +8,8 @@ Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
 - HTTP API reference: [docs/API.md](docs/API.md)
 - Truck-constraint enforcement model (what is and is not verified):
   [docs/TRUCK-CONSTRAINTS.md](docs/TRUCK-CONSTRAINTS.md)
+- Corridor research (desktop findings for the synthetic Sydney plan):
+  [docs/CORRIDOR-RESEARCH.md](docs/CORRIDOR-RESEARCH.md)
 - G-NAF geocoding (acquisition, licensing, limits): [docs/GNAF.md](docs/GNAF.md)
 - Security and dependency audit: [docs/SECURITY.md](docs/SECURITY.md)
 - Milestone reports: [docs/M0-REPORT.md](docs/M0-REPORT.md) ·

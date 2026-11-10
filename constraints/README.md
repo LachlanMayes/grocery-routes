@@ -65,3 +65,11 @@ limits silently.
   (see `docs/TRUCK-CONSTRAINTS.md`).
 
 See `docs/TRUCK-CONSTRAINTS.md` for the full enforcement model.
+
+## Desktop research draft
+
+`draft-desktop-research-2026-11.json` holds entries researched from published
+sources (TfNSW, Linkt) for the synthetic Sydney plan corridor. Every entry is
+marked `verified_by: "desktop-research (AI-assisted)..."` — it is not on-site
+verified and must not be copied into `truck-constraints.json` without human
+review. See `docs/CORRIDOR-RESEARCH.md`.

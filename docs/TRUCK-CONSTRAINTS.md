@@ -146,6 +146,14 @@ Rules:
 
 The OSM coverage that motivates this file (M0 Overpass study of the Sydney bbox, 2026-11-03): `maxweight` on 3.2% of drivable ways, `maxheight` on 0.8%, `hgv` on 0.4%. The rest need a human.
 
+## Desktop research (2026-11-10)
+
+Desktop research for the synthetic Sydney plan corridor (tunnel clearances
+from TfNSW/Linkt published sources, bridge-register check outstanding) is in
+[docs/CORRIDOR-RESEARCH.md](CORRIDOR-RESEARCH.md). Draft constraint entries
+live in `constraints/draft-desktop-research-2026-11.json` and carry
+AI-desktop provenance only — see the doc before loading them anywhere.
+
 ## Future work (explicitly not done)
 
 - Time-dependent costs inside the LS/LNS *improvement* phases (curfew-aware
