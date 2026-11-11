@@ -93,9 +93,9 @@ and launch the console with `--no-embedded-api`; if port 8080 is already in
 use, the console falls back to the external API automatically. Pass `--db` or
 `--addr` to change the embedded database or address (`console --help`).
 
-In the Import tab, load a problem from a file (path field, default
-`data/demo/problem.json`) or paste a JSON document, then use the problem ID
-it reports in the Solve tab. Successful imports and solves pre-fill the following
+In the Import tab, click **Browse…** to pick a problem JSON from a native
+Windows file dialog (or type/paste the path directly), then use the problem
+ID it reports in the Solve tab. Successful imports and solves pre-fill the following
 tab, and each success row has a **Copy ID** button.
 
 ## Checks

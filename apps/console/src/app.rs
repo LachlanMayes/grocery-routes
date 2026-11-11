@@ -238,12 +238,22 @@ impl ConsoleApp {
     fn render_import_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Import Problem");
 
-        ui.label("Load from a file on disk:");
+        ui.label("Load a file on disk:");
         ui.horizontal(|ui| {
+            if ui.button("Browse…").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_title("Choose a problem JSON file")
+                    .add_filter("JSON", &["json"])
+                    .set_directory(self.browse_dir())
+                    .pick_file()
+            {
+                self.import_path = path.display().to_string();
+                self.start_import_from_file();
+            }
             ui.label("Path:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.import_path)
-                    .desired_width(400.0)
+                    .desired_width(320.0)
                     .hint_text("data/demo/problem.json"),
             );
             if ui.button("Import from file").clicked() {
@@ -295,6 +305,23 @@ impl ConsoleApp {
 
     /// Read the JSON from `self.import_path`, load it into the editor and
     /// start the import.
+    /// Directory the file dialog should open in: the parent of the current
+    /// path if it exists, otherwise the repo root if it has a demo folder,
+    /// otherwise the current directory.
+    fn browse_dir(&self) -> std::path::PathBuf {
+        let current = std::path::PathBuf::from(&self.import_path);
+        if let Some(parent) = current
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty() && parent.exists())
+        {
+            return parent.to_path_buf();
+        }
+        if std::path::Path::new("data/demo").is_dir() {
+            return std::path::PathBuf::from("data/demo");
+        }
+        std::path::PathBuf::from(".")
+    }
+
     fn start_import_from_file(&mut self) {
         let path = self.import_path.trim().to_string();
         self.import_status = None;

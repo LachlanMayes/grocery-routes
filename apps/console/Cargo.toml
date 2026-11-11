@@ -15,6 +15,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 domain = { path = "../../crates/domain" }
 chrono.workspace = true
+rfd = "0.15"
 api = { path = "../../crates/api" }
 clap = { workspace = true }
 
