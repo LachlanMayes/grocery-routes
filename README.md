@@ -97,7 +97,10 @@ In the Import tab, click **Browse…** to pick a problem JSON from a native
 Windows file dialog (or type/paste the path directly), then pick it from the
 **Recent problems** dropdown in the Solve tab (no need to copy IDs by hand).
 Successful imports and solves pre-fill the following tab, and each success row
-has a **Copy ID** button.
+has a **Copy ID** button. The Solutions tab shows a structured view: stat
+cards (served/routes/distance/cost), a per-route table (vehicle, drivers,
+stops, km, duration, cost) with a named stop timeline for the selected route,
+an unassigned-stores list, and a collapsible raw-JSON debug section.
 
 ## Checks
 

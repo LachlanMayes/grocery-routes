@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::api_client::{
-    ApiClient, Kpis, ProblemSummary, SolutionSummary, SolveRequest, SolveResponse,
+    ApiClient, Kpis, ProblemSummary, SolutionSummary, SolveRequest, SolveResponse, from_json,
 };
 use eframe::egui;
 use tokio::runtime::Handle;
@@ -22,11 +22,22 @@ use tokio_stream::StreamExt;
 enum Msg {
     ProblemImported(Result<String, anyhow::Error>),
     SolutionSolved(Result<SolveResponse, anyhow::Error>),
-    SolutionFetched(Result<serde_json::Value, anyhow::Error>),
+    SolutionFetched(Result<Box<SolutionBundle>, anyhow::Error>),
     KpisFetched(Result<Kpis, anyhow::Error>),
     SolveEvent(crate::api_client::SolveEvent),
     ProblemsLoaded(Result<Vec<ProblemSummary>, anyhow::Error>),
     SolutionsLoaded(Result<Vec<SolutionSummary>, anyhow::Error>),
+}
+
+/// A solution plus its problem, parsed for the structured view. Holds the
+/// raw solution JSON too, for the collapsible debug section.
+#[derive(Clone)]
+struct SolutionBundle {
+    id: String,
+    problem_id: String,
+    problem: domain::Problem,
+    solution: domain::Solution,
+    raw: serde_json::Value,
 }
 
 /// Tab selection for the console.
@@ -64,7 +75,8 @@ pub struct ConsoleApp {
 
     // Solutions tab state
     solution_id_input: String,
-    solution_status: Option<Result<serde_json::Value, anyhow::Error>>,
+    solution_status: Option<Result<Box<SolutionBundle>, anyhow::Error>>,
+    selected_route: usize,
 
     // KPIs tab state
     kpis_id_input: String,
@@ -123,6 +135,7 @@ impl ConsoleApp {
             solve_status: None,
             solution_id_input: String::new(),
             solution_status: None,
+            selected_route: 0,
             kpis_id_input: String::new(),
             kpis_status: None,
             events: Vec::new(),
@@ -423,7 +436,7 @@ impl ConsoleApp {
                 let mut go_to_solve = false;
                 ui.horizontal(|ui| {
                     ui.colored_label(egui::Color32::GREEN, format!("Imported: {id}"));
-                    copy_button(ui, id);
+                    copy_button(ui, "Copy problem ID", id);
                     if ui.button("Go to Solve").clicked() {
                         go_to_solve = true;
                     }
@@ -525,7 +538,7 @@ impl ConsoleApp {
                             resp.id, resp.served, resp.total, resp.distance_km
                         ),
                     );
-                    copy_button(ui, &resp.id);
+                    copy_button(ui, "Copy solution ID", &resp.id);
                     if ui.button("View Solution").clicked() {
                         next_tab = Some(Tab::Solutions);
                     }
@@ -568,32 +581,159 @@ impl ConsoleApp {
                 let tx = self.msg_tx.clone();
                 let client = self.client.clone();
                 self.solution_status = None;
+                self.selected_route = 0;
                 self.runtime.spawn(async move {
-                    match client.get_solution(&id).await {
-                        Ok(resp) => {
-                            tx.send(Msg::SolutionFetched(Ok(resp.solution))).ok();
-                        }
-                        Err(e) => {
-                            tx.send(Msg::SolutionFetched(Err(e))).ok();
-                        }
+                    let result = async {
+                        let resp = client.get_solution(&id).await?;
+                        let problem_raw = client.get_problem(&resp.problem_id).await?;
+                        let problem: domain::Problem = from_json(&problem_raw)?;
+                        let solution: domain::Solution = from_json(&resp.solution)?;
+                        Ok::<_, anyhow::Error>(Box::new(SolutionBundle {
+                            id,
+                            problem_id: resp.problem_id,
+                            problem,
+                            solution,
+                            raw: resp.solution,
+                        }))
                     }
+                    .await;
+                    tx.send(Msg::SolutionFetched(result)).ok();
                 });
             }
         });
 
         ui.add_space(8.0);
         match &self.solution_status {
-            Some(Ok(sol)) => {
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.label(serde_json::to_string_pretty(sol).unwrap_or_default());
-                });
-            }
+            Some(Ok(bundle)) => Self::render_solution_view(ui, bundle, &mut self.selected_route),
             Some(Err(e)) => {
                 ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
             }
             None => {}
         }
+    }
+
+    /// Render the structured solution view: summary strip, route table with a
+    /// per-route timeline, unassigned stores, and a collapsible raw JSON
+    /// debug section.
+    fn render_solution_view(
+        ui: &mut egui::Ui,
+        bundle: &SolutionBundle,
+        selected_route: &mut usize,
+    ) {
+        ui.separator();
+
+        // Summary strip of stat cards.
+        ui.horizontal(|ui| {
+            stat_card(
+                ui,
+                "Served",
+                &format!(
+                    "{}/{}",
+                    served_store_count(&bundle.solution),
+                    total_store_count(bundle)
+                ),
+            );
+            stat_card(ui, "Routes", &bundle.solution.routes.len().to_string());
+            stat_card(
+                ui,
+                "Distance",
+                &format!("{:.1} km", bundle.solution.total_distance_km),
+            );
+            stat_card(
+                ui,
+                "Cost",
+                &format!("${:.2}", bundle.solution.total_cost_cents as f64 / 100.0),
+            );
+            copy_button(ui, "Copy solution ID", &bundle.id);
+            copy_button(ui, "Copy problem ID", &bundle.problem_id);
+        });
+        ui.weak(format!("problem: {}", bundle.problem.name));
+
+        ui.add_space(8.0);
+
+        // Route table.
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            egui::Grid::new("solution_routes_grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("");
+                    ui.strong("Vehicle");
+                    ui.strong("Drivers");
+                    ui.strong("Stops");
+                    ui.strong("Distance");
+                    ui.strong("Duration");
+                    ui.strong("Cost");
+                    ui.end_row();
+
+                    for (index, route) in bundle.solution.routes.iter().enumerate() {
+                        let selected = *selected_route == index;
+                        if ui
+                            .selectable_label(selected, format!("Route {}", index + 1))
+                            .clicked()
+                        {
+                            *selected_route = index;
+                        }
+                        ui.label(vehicle_name(&bundle.problem, route));
+                        ui.label(driver_names(&bundle.problem, route));
+                        ui.label(store_stop_count(route).to_string());
+                        ui.label(format!("{:.1} km", route.distance_km));
+                        ui.label(route.duration.to_string());
+                        ui.label(format!("${:.2}", route.cost_cents as f64 / 100.0));
+                        ui.end_row();
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
+
+        // Timeline for the selected route.
+        if let Some(route) = bundle.solution.routes.get(*selected_route) {
+            ui.strong(format!(
+                "Route {} timeline ({})",
+                *selected_route + 1,
+                vehicle_name(&bundle.problem, route)
+            ));
+            egui::Grid::new("route_timeline_grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("#");
+                    ui.strong("Stop");
+                    ui.strong("Arrive");
+                    ui.strong("Depart");
+                    ui.end_row();
+                    for (index, stop) in route.steps.iter().enumerate() {
+                        ui.label((index + 1).to_string());
+                        ui.label(node_label(&bundle.problem, stop.node));
+                        ui.label(stop.arrive.to_string());
+                        ui.label(stop.depart.to_string());
+                        ui.end_row();
+                    }
+                });
+        }
+
+        // Unassigned stores, if any.
+        if !bundle.solution.unassigned.is_empty() {
+            ui.add_space(8.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 120, 0),
+                format!("Unassigned ({}):", bundle.solution.unassigned.len()),
+            );
+            for store_id in &bundle.solution.unassigned {
+                ui.label(format!("• {}", store_name(&bundle.problem, *store_id)));
+            }
+        }
+
+        // Raw JSON, collapsed by default.
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("Raw solution JSON (debug)")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        ui.label(serde_json::to_string_pretty(&bundle.raw).unwrap_or_default());
+                    });
+            });
     }
 
     // ── KPIs tab ────────────────────────────────────────────────────────
@@ -796,6 +936,87 @@ fn recent_solutions_dropdown(
     refresh
 }
 
+/// A stat card for summary strips (solution view and the KPIs tab).
+fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
+    egui::Frame::default()
+        .inner_margin(egui::Margin::same(8))
+        .fill(ui.visuals().faint_bg_color)
+        .corner_radius(egui::CornerRadius::same(6))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(label).small().strong());
+                ui.label(egui::RichText::new(value).strong().monospace());
+            });
+        });
+}
+
+fn served_store_count(solution: &domain::Solution) -> usize {
+    solution
+        .routes
+        .iter()
+        .flat_map(|route| &route.steps)
+        .filter(|stop| matches!(stop.node, domain::Node::Store(_)))
+        .count()
+}
+
+fn total_store_count(bundle: &SolutionBundle) -> usize {
+    served_store_count(&bundle.solution) + bundle.solution.unassigned.len()
+}
+
+fn store_stop_count(route: &domain::RoutePlan) -> usize {
+    route
+        .steps
+        .iter()
+        .filter(|stop| matches!(stop.node, domain::Node::Store(_)))
+        .count()
+}
+
+fn vehicle_name<'a>(problem: &'a domain::Problem, route: &domain::RoutePlan) -> &'a str {
+    problem
+        .vehicles
+        .get(route.vehicle.0 as usize)
+        .map(|vehicle| vehicle.name.as_str())
+        .unwrap_or("?")
+}
+
+fn driver_names(problem: &domain::Problem, route: &domain::RoutePlan) -> String {
+    route
+        .drivers
+        .iter()
+        .map(|driver_id| {
+            problem
+                .drivers
+                .get(driver_id.0 as usize)
+                .map(|driver| driver.name.as_str())
+                .unwrap_or("?")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn store_name(problem: &domain::Problem, id: domain::StoreId) -> String {
+    problem
+        .stores
+        .get(id.0 as usize)
+        .map(|store| format!("{} (#{})", store.name, id.0))
+        .unwrap_or_else(|| format!("Store #{}", id.0))
+}
+
+fn depot_label(problem: &domain::Problem, id: domain::DepotId) -> String {
+    problem
+        .depots
+        .get(id.0 as usize)
+        .map(|depot| format!("Depot — {}", depot.name))
+        .unwrap_or_else(|| format!("Depot #{}", id.0))
+}
+
+fn node_label(problem: &domain::Problem, node: domain::Node) -> String {
+    match node {
+        domain::Node::Depot(id) => depot_label(problem, id),
+        domain::Node::Store(id) => store_name(problem, id),
+    }
+}
+
 fn solution_option_label(solution: &SolutionSummary) -> String {
     format!(
         "{}/{} served · {:.1} km · ${:.2} ({})",
@@ -807,10 +1028,10 @@ fn solution_option_label(solution: &SolutionSummary) -> String {
     )
 }
 
-/// A button that copies `text` to the system clipboard.
-fn copy_button(ui: &mut egui::Ui, text: &str) {
+/// A button that copies `text` to the system clipboard, labelled `label`.
+fn copy_button(ui: &mut egui::Ui, label: &str, text: &str) {
     if ui
-        .button("Copy ID")
+        .button(label)
         .on_hover_text("Copy to the clipboard")
         .clicked()
     {
