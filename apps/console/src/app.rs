@@ -39,6 +39,7 @@ enum Tab {
 pub struct ConsoleApp {
     runtime: Handle,
     client: ApiClient,
+    api_base_url: String,
 
     // Navigation
     tab: Tab,
@@ -90,12 +91,14 @@ struct SolveEventDisplay {
 }
 
 impl ConsoleApp {
-    /// Create a new console app backed by the given Tokio runtime handle.
-    pub fn new(runtime: Handle) -> Self {
+    /// Create a new console app backed by the given Tokio runtime handle,
+    /// talking to the API at `api_base_url`.
+    pub fn new(runtime: Handle, api_base_url: String) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
             runtime,
-            client: ApiClient::default_local(),
+            client: ApiClient::new(&api_base_url),
+            api_base_url,
             tab: Tab::Import,
             import_json: String::new(),
             import_status: None,
@@ -133,7 +136,8 @@ impl eframe::App for ConsoleApp {
         if !self.sse_started {
             self.sse_started = true;
             let tx = self.msg_tx.clone();
-            self.runtime.spawn(sse_loop(tx));
+            let base_url = self.api_base_url.clone();
+            self.runtime.spawn(sse_loop(base_url, tx));
         }
 
         egui::Panel::left("sidebar").show(ui, |ui| {
@@ -162,7 +166,7 @@ impl ConsoleApp {
         ui.separator();
         ui.label(format!("API: {}", self.client.base_url()));
         if ui.button("Reconnect").clicked() {
-            self.client = ApiClient::default_local();
+            self.client = ApiClient::new(&self.api_base_url);
         }
     }
 
@@ -569,8 +573,8 @@ fn parse_optional(text: &str) -> Option<f64> {
 /// reconnect waits with exponential backoff (starting at 1 second, capped at
 /// 30 seconds), so a slow or unavailable server does not lead to duplicate
 /// connections or unbounded polling.
-async fn sse_loop(tx: mpsc::Sender<Msg>) {
-    let client = crate::api_client::ApiClient::default_local();
+async fn sse_loop(base_url: String, tx: mpsc::Sender<Msg>) {
+    let client = ApiClient::new(base_url);
     let mut backoff = Duration::from_secs(1);
 
     loop {
@@ -607,7 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_import_success() {
-        let mut app = ConsoleApp::new(Handle::current());
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
         app.handle_msg(Msg::ProblemImported(Ok("problem-123".into())));
 
         match app.import_status {
@@ -620,7 +624,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_import_error() {
-        let mut app = ConsoleApp::new(Handle::current());
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
         app.problem_id_input = "previous-problem".into();
         app.handle_msg(Msg::ProblemImported(Err(anyhow::anyhow!("server said no"))));
 
@@ -634,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_solve_response() {
-        let mut app = ConsoleApp::new(Handle::current());
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
         let response = SolveResponse {
             id: "solution-123".into(),
             served: 2,
@@ -656,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_kpis_response() {
-        let mut app = ConsoleApp::new(Handle::current());
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
         let kpis = Kpis {
             served: 2,
             total: 2,
@@ -676,7 +680,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_are_bounded_to_max_events() {
-        let mut app = ConsoleApp::new(Handle::current());
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
 
         for index in 0..60 {
             app.handle_msg(Msg::SolveEvent(crate::api_client::SolveEvent {

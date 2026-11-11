@@ -2,7 +2,10 @@
 
 Run with `cargo run -p api -- --db data/demo/api.sqlite` (creates the SQLite DB
 if missing). Default listen address `127.0.0.1:8080`; override with `--addr`.
-Request bodies are capped at 16 MiB. The console (`cargo run -p console`)
+Request bodies are capped at 16 MiB. The standalone API is launched with
+`cargo run -p api -- --db <path>`; the desktop console (`cargo run -p
+console`) embeds this API in-process by default, and `--no-embedded-api`
+points it at a standalone API instead.
 talks to this API.
 
 ## Endpoints

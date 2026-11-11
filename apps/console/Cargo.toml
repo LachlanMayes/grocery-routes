@@ -15,6 +15,8 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 domain = { path = "../../crates/domain" }
 chrono.workspace = true
+api = { path = "../../crates/api" }
+clap = { workspace = true }
 
 [dev-dependencies]
 axum.workspace = true

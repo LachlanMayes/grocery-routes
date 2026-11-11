@@ -79,17 +79,21 @@ real store addresses are shipped.
 
 ## Operator console
 
-The console is an egui client for the local API, so it needs two processes.
-Start the API first (it creates the SQLite database if missing), then the
-console in a second terminal:
+The console is a single app that embeds the API in-process — one command,
+no second terminal:
 
 ```console
-cargo run -p api -- --db data/demo/api.sqlite
 cargo run -p console
 ```
 
-The console connects to `http://127.0.0.1:8080`; pass `--addr` to the API if
-you move it. In the Import tab, paste a problem JSON document (`gen-sim` in the
+It starts an embedded API on `127.0.0.1:8080` backed by
+`data/demo/api.sqlite` (created if missing). To run the UI against a
+standalone API instead, start it (`cargo run -p api -- --db data/demo/api.sqlite`)
+and launch the console with `--no-embedded-api`; if port 8080 is already in
+use, the console falls back to the external API automatically. Pass `--db` or
+`--addr` to change the embedded database or address (`console --help`).
+
+In the Import tab, paste a problem JSON document (`gen-sim` in the
 Quickstart writes one), then use the problem ID it reports in the Solve tab.
 Successful imports and solves pre-fill the following tab, and each success row
 has a **Copy ID** button.
@@ -116,6 +120,6 @@ The workspace builds with zero `clippy::all` warnings as of 2026-11-09
 | `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
 | `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-stores`, `import-gnaf`, `geocode`, `reverse` |
 | `crates/api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
-| `apps/console` | egui operator console (`cargo run -p console`), talks to the API on `127.0.0.1:8080` |
+| `apps/console` | egui operator console (`cargo run -p console`) — embeds the API in-process on `127.0.0.1:8080` |
 | `constraints/` | curated truck-constraints file (schema + provenance rules) |
 | `docs/` | roadmap, plan status, milestone reports, truck-constraint model, G-NAF notes |
