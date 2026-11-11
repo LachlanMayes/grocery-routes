@@ -1,4 +1,13 @@
-# Corridor legality checklist — task completion guide (2026-11-10)
+# Corridor legality checklist — simulated-project edition (2026-11-10)
+
+> **Scope decision (2026-11-11): load ratings and human sign-off are out of
+> scope. This is a simulated pet project — no real truck is dispatched.**
+> This checklist is kept for completeness and for anyone who later wants
+> legal verification for a real run. Nothing on it is required to consider
+> the project complete.
+>
+> Honesty note: none of the entries in the draft file were on-site verified;
+> they are desktop research only.
 
 This is everything you need to complete the corridor legality task for the
 synthetic Sydney plan. It is a work checklist, not legal verification. The

@@ -21,13 +21,14 @@ Scope and gates per [PLAN.md](PLAN.md).
   `geocode`/`reverse`; validated against the Aug 2026 release
   (16,970,406 addresses, 0 skipped).
 
-## What remains (operator steps / optional)
+## What remains (out of scope for this project)
 
-- Human verification of corridor legality.
+- Corridor legality verification (simulated pet project — no real truck
+  dispatches; see [PLAN.md](PLAN.md) known gaps item 1).
 - Curfew-aware LS/LNS improvement phases (construction is aware; improvement
   loops still use the static matrix).
 - LNS promotion (closed negatively; see [M1-REPORT.md](M1-REPORT.md)).
-- Wiring geocoding into store import (optional engineering).
+- G-NAF store-import wiring (done; `import-stores` command).
 
 ## Checks
 

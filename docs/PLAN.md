@@ -147,14 +147,14 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 
 ## Known gaps and next priorities
 
-1. **Corridor legality needs human verification.** The `audit` command
-   reports every traversed way and which ones carry no truck-limit data;
-   `constraints/truck-constraints.json` stays empty until someone verifies
-   real limits, but the tooling now exists: `constraints --file <json>
-   [--sqlite <db>]` validates a curated file and exports
-   `curated_entries`/`curated_entry` tables (`03b984d`). Until then, plans
-   through un-annotated ways are not legally verified (see
-   [TRUCK-CONSTRAINTS.md](TRUCK-CONSTRAINTS.md)).
+1. **Corridor legality — out of scope (simulated pet project, 2026-11-11).**
+   This project never dispatches a real truck, so per-bridge load ratings and
+   human sign-off of `constraints/truck-constraints.json` are not required
+   for it to be complete. The `audit` command, the curated-constraints
+   tooling (`03b984d`), the research report (`docs/CORRIDOR-RESEARCH.md`)
+   and the draft desktop-research entries remain available for anyone who
+   later wants legal verification for a real run — see
+   [CORRIDOR-CHECKLIST.md](CORRIDOR-CHECKLIST.md).
 2. **Curfew enforcement has two modes now.** `--enforce-curfews` is still a
    post-solve feasibility restore (route order and fleet assignment fixed;
    waits and drops are the only remedies). `--curfew-aware` builds routes
