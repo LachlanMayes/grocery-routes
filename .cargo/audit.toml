@@ -7,4 +7,9 @@ ignore = [
     # rsa: upstream has no fixed release, and no workspace target reaches it
     # (feature-gated lockfile entry only).
     "RUSTSEC-2023-0071",
+    # libsqlite3-sys: sqlx-sqlite (latest 0.9.0 included) caps
+    # libsqlite3-sys at <0.38.0, and cargo links="sqlite3" forbids a second
+    # bundled copy, so the patched >=0.39.0 cannot enter the graph today.
+    # See docs/SECURITY.md (2026-11-12).
+    "RUSTSEC-2026-0459",
 ]

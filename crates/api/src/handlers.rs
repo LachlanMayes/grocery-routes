@@ -1,16 +1,18 @@
 //! HTTP request handlers for the M4 product shell API.
 //!
 //! Endpoints:
-//! - POST /problems — import a problem JSON
-//! - GET /problems/{id} — retrieve a problem
-//! - POST /solve — solve a problem (greedy or LNS, optional OSM routing)
-//! - GET /solutions/{id} — retrieve a solution
-//! - GET /solutions/{id}/kpis — KPI summary for a solution
-//! - GET /events — SSE stream of live solve events
+//! - POST /problems - import a problem JSON
+//! - GET /problems - list recent imported problems (summaries)
+//! - GET /problems/{id} - retrieve a problem
+//! - POST /solve - solve a problem (greedy or LNS, optional OSM routing)
+//! - GET /solutions - list recent solutions (summaries, optional ?problem_id filter)
+//! - GET /solutions/{id} - retrieve a solution
+//! - GET /solutions/{id}/kpis - KPI summary for a solution
+//! - GET /events - SSE stream of live solve events
 
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Json, sse::Event, sse::Sse},
     routing::{get, post},
@@ -24,7 +26,10 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 use tower_http::limit::RequestBodyLimitLayer;
 
-use crate::db::{import_problem, load_problem, load_solution_with_problem, store_solution};
+use crate::db::{
+    import_problem, list_problems, list_solutions, load_problem, load_solution_with_problem,
+    store_solution,
+};
 use domain::{Problem, Solution};
 use routing::{CachedMatrix, TruckProfile};
 
@@ -109,6 +114,39 @@ pub struct Kpis {
     pub routes: usize,
 }
 
+/// Summary of one imported problem, for GET /problems.
+#[derive(Serialize, Debug)]
+pub struct ProblemSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub stores: usize,
+    pub vehicles: usize,
+    pub depots: usize,
+}
+
+/// Summary of one solved solution, for GET /solutions.
+#[derive(Serialize, Debug)]
+pub struct SolutionSummary {
+    pub id: String,
+    pub problem_id: String,
+    pub served: i64,
+    pub total: i64,
+    pub distance_km: f64,
+    pub cost_cents: i64,
+    pub solved_at: String,
+    pub used_lns: bool,
+}
+
+/// Query parameters for the list endpoints. `limit` defaults to 20 and is
+/// clamped to 1..=100 by the db layer; `problem_id` is only meaningful for
+/// GET /solutions.
+#[derive(Deserialize, Debug, Default)]
+pub struct ListParams {
+    pub limit: Option<u32>,
+    pub problem_id: Option<String>,
+}
+
 /// Build the axum router with all API routes.
 pub fn router(pool: sqlx::SqlitePool) -> Router {
     let (events, _rx) = broadcast::channel(16);
@@ -118,9 +156,13 @@ pub fn router(pool: sqlx::SqlitePool) -> Router {
         osm_caches: AsyncMutex::new(HashMap::new()),
     });
     Router::new()
-        .route("/problems", post(import_problem_handler))
+        .route(
+            "/problems",
+            post(import_problem_handler).get(list_problems_handler),
+        )
         .route("/problems/{id}", get(get_problem_handler))
         .route("/solve", post(solve_handler))
+        .route("/solutions", get(list_solutions_handler))
         .route("/solutions/{id}", get(get_solution_handler))
         .route("/solutions/{id}/kpis", get(get_kpis_handler))
         .route("/events", get(sse_events_handler))
@@ -279,7 +321,56 @@ async fn import_problem_handler(
     Ok(Json(ImportResponse { id }))
 }
 
-/// GET /problems/{id} — retrieve a problem.
+/// GET /problems - list recent imported problems, newest first.
+async fn list_problems_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<Vec<ProblemSummary>>, StatusCode> {
+    let limit = params.limit.unwrap_or(20);
+    let rows = list_problems(&state.pool, limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| ProblemSummary {
+                id: row.id,
+                name: row.name,
+                created_at: row.created_at,
+                stores: row.stores,
+                vehicles: row.vehicles,
+                depots: row.depots,
+            })
+            .collect(),
+    ))
+}
+
+/// GET /solutions - list recent solutions, newest first, optionally
+/// filtered to one problem with `?problem_id=`.
+async fn list_solutions_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListParams>,
+) -> Result<Json<Vec<SolutionSummary>>, StatusCode> {
+    let limit = params.limit.unwrap_or(20);
+    let rows = list_solutions(&state.pool, params.problem_id.as_deref(), limit)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| SolutionSummary {
+                id: row.id,
+                problem_id: row.problem_id,
+                served: row.served,
+                total: row.total,
+                distance_km: row.distance_km,
+                cost_cents: row.cost_cents,
+                solved_at: row.solved_at,
+                used_lns: row.used_lns,
+            })
+            .collect(),
+    ))
+}
+
+/// GET /problems/{id} - retrieve a problem.
 async fn get_problem_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

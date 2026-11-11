@@ -70,6 +70,30 @@ pub struct Kpis {
     pub routes: usize,
 }
 
+/// Summary of one imported problem, for GET /problems.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProblemSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub stores: usize,
+    pub vehicles: usize,
+    pub depots: usize,
+}
+
+/// Summary of one solved solution, for GET /solutions.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SolutionSummary {
+    pub id: String,
+    pub problem_id: String,
+    pub served: i64,
+    pub total: i64,
+    pub distance_km: f64,
+    pub cost_cents: i64,
+    pub solved_at: String,
+    pub used_lns: bool,
+}
+
 /// SSE solve event broadcast by the server.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SolveEvent {
@@ -108,6 +132,47 @@ impl ApiClient {
     /// Returns the base URL of the API.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// GET /problems — list recent imported problems, newest first.
+    pub async fn list_problems(&self, limit: u32) -> Result<Vec<ProblemSummary>> {
+        let resp = self
+            .inner
+            .get(format!("{}/problems", self.base_url))
+            .query(&[("limit", limit.max(1))])
+            .send()
+            .await
+            .context("GET /problems")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("GET /problems failed: {}", resp.status());
+        }
+        let json: Vec<ProblemSummary> = resp.json().await.context("parsing problems list")?;
+        Ok(json)
+    }
+
+    /// GET /solutions — list recent solutions, newest first. Pass
+    /// `problem_id` to only list solutions for one problem.
+    pub async fn list_solutions(
+        &self,
+        problem_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<SolutionSummary>> {
+        let mut query = vec![("limit".to_string(), limit.max(1).to_string())];
+        if let Some(problem_id) = problem_id {
+            query.push(("problem_id".to_string(), problem_id.to_string()));
+        }
+        let resp = self
+            .inner
+            .get(format!("{}/solutions", self.base_url))
+            .query(&query)
+            .send()
+            .await
+            .context("GET /solutions")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("GET /solutions failed: {}", resp.status());
+        }
+        let json: Vec<SolutionSummary> = resp.json().await.context("parsing solutions list")?;
+        Ok(json)
     }
 
     /// POST /problems — import a problem JSON.
@@ -239,6 +304,32 @@ mod tests {
             Json(json!({"id": "problem-123"})).into_response()
         }
 
+        async fn list_problems() -> impl IntoResponse {
+            Json(json!([{
+                "id": "problem-123",
+                "name": "stub problem",
+                "created_at": "2026-11-01 10:00:00",
+                "stores": 8,
+                "vehicles": 2,
+                "depots": 1,
+            }]))
+            .into_response()
+        }
+
+        async fn list_solutions() -> impl IntoResponse {
+            Json(json!([{
+                "id": "solution-123",
+                "problem_id": "problem-123",
+                "served": 2,
+                "total": 2,
+                "distance_km": 12.5,
+                "cost_cents": 1000,
+                "solved_at": "2026-11-01 10:05:00",
+                "used_lns": false,
+            }]))
+            .into_response()
+        }
+
         async fn get_problem(Path(id): Path<String>) -> impl IntoResponse {
             if id == "bad" {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "bad problem").into_response();
@@ -292,9 +383,10 @@ mod tests {
         }
 
         let router = Router::new()
-            .route("/problems", post(import_problem))
+            .route("/problems", post(import_problem).get(list_problems))
             .route("/problems/{id}", get(get_problem))
             .route("/solve", post(solve))
+            .route("/solutions", get(list_solutions))
             .route("/solutions/{id}", get(get_solution))
             .route("/solutions/{id}/kpis", get(get_kpis))
             .route("/events", get(events));
@@ -334,6 +426,39 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("500"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_lists_problems() {
+        let (base_url, server) = spawn_stub().await;
+        let client = ApiClient::new(base_url);
+
+        let problems = client.list_problems(10).await.unwrap();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].name, "stub problem");
+        assert_eq!(problems[0].stores, 8);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_lists_solutions() {
+        let (base_url, server) = spawn_stub().await;
+        let client = ApiClient::new(base_url);
+
+        let solutions = client.list_solutions(None, 10).await.unwrap();
+        assert_eq!(solutions.len(), 1);
+        assert_eq!(solutions[0].problem_id, "problem-123");
+        assert_eq!(solutions[0].served, 2);
+        assert!(!solutions[0].used_lns);
+
+        let filtered = client
+            .list_solutions(Some("problem-123"), 10)
+            .await
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
 
         server.abort();
     }

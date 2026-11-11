@@ -94,9 +94,10 @@ use, the console falls back to the external API automatically. Pass `--db` or
 `--addr` to change the embedded database or address (`console --help`).
 
 In the Import tab, click **Browse…** to pick a problem JSON from a native
-Windows file dialog (or type/paste the path directly), then use the problem
-ID it reports in the Solve tab. Successful imports and solves pre-fill the following
-tab, and each success row has a **Copy ID** button.
+Windows file dialog (or type/paste the path directly), then pick it from the
+**Recent problems** dropdown in the Solve tab (no need to copy IDs by hand).
+Successful imports and solves pre-fill the following tab, and each success row
+has a **Copy ID** button.
 
 ## Checks
 

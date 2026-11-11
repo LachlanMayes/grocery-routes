@@ -11,7 +11,9 @@ use std::result::Result;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::api_client::{ApiClient, Kpis, SolveRequest, SolveResponse};
+use crate::api_client::{
+    ApiClient, Kpis, ProblemSummary, SolutionSummary, SolveRequest, SolveResponse,
+};
 use eframe::egui;
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
@@ -23,6 +25,8 @@ enum Msg {
     SolutionFetched(Result<serde_json::Value, anyhow::Error>),
     KpisFetched(Result<Kpis, anyhow::Error>),
     SolveEvent(crate::api_client::SolveEvent),
+    ProblemsLoaded(Result<Vec<ProblemSummary>, anyhow::Error>),
+    SolutionsLoaded(Result<Vec<SolutionSummary>, anyhow::Error>),
 }
 
 /// Tab selection for the console.
@@ -77,6 +81,12 @@ pub struct ConsoleApp {
     // True once the background SSE task has been started. The task owns the
     // connection and reconnects with backoff, instead of polling on a timer.
     sse_started: bool,
+
+    // Recent-problem/solution dropdowns, fetched from the list endpoints.
+    recent_problems: Vec<ProblemSummary>,
+    recent_solutions: Vec<SolutionSummary>,
+    problems_error: Option<String>,
+    solutions_error: Option<String>,
 }
 
 /// A solved event for display in the events tab.
@@ -96,7 +106,7 @@ impl ConsoleApp {
     /// talking to the API at `api_base_url`.
     pub fn new(runtime: Handle, api_base_url: String) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self {
+        let app = Self {
             runtime,
             client: ApiClient::new(&api_base_url),
             api_base_url,
@@ -120,7 +130,30 @@ impl ConsoleApp {
             msg_rx: rx,
             msg_tx: tx,
             sse_started: false,
-        }
+            recent_problems: Vec::new(),
+            recent_solutions: Vec::new(),
+            problems_error: None,
+            solutions_error: None,
+        };
+        app.refresh_lists();
+        app
+    }
+
+    /// Fetch both recent-item lists in the background. The results arrive as
+    /// messages; a missing/unreachable API just leaves the dropdowns empty.
+    fn refresh_lists(&self) {
+        let tx = self.msg_tx.clone();
+        let client = self.client.clone();
+        self.runtime.spawn(async move {
+            let problems = client.list_problems(20).await;
+            tx.send(Msg::ProblemsLoaded(problems)).ok();
+        });
+        let tx = self.msg_tx.clone();
+        let client = self.client.clone();
+        self.runtime.spawn(async move {
+            let solutions = client.list_solutions(None, 20).await;
+            tx.send(Msg::SolutionsLoaded(solutions)).ok();
+        });
     }
 }
 
@@ -200,9 +233,10 @@ impl ConsoleApp {
         match msg {
             Msg::ProblemImported(res) => {
                 // Pre-fill the solve tab so the ID does not have to be copied
-                // by hand after every import.
+                // by hand after every import, and refresh the dropdowns.
                 if let Ok(id) = &res {
                     self.problem_id_input.clone_from(id);
+                    self.refresh_lists();
                 }
                 self.import_status = Some(res);
             }
@@ -211,9 +245,24 @@ impl ConsoleApp {
                 if let Ok(resp) = &res {
                     self.solution_id_input.clone_from(&resp.id);
                     self.kpis_id_input.clone_from(&resp.id);
+                    self.refresh_lists();
                 }
                 self.solve_status = Some(res);
             }
+            Msg::ProblemsLoaded(res) => match res {
+                Ok(problems) => {
+                    self.recent_problems = problems;
+                    self.problems_error = None;
+                }
+                Err(e) => self.problems_error = Some(format!("{e}")),
+            },
+            Msg::SolutionsLoaded(res) => match res {
+                Ok(solutions) => {
+                    self.recent_solutions = solutions;
+                    self.solutions_error = None;
+                }
+                Err(e) => self.solutions_error = Some(format!("{e}")),
+            },
             Msg::SolutionFetched(res) => self.solution_status = Some(res),
             Msg::KpisFetched(res) => self.kpis_status = Some(res),
             Msg::SolveEvent(ev) => {
@@ -396,6 +445,20 @@ impl ConsoleApp {
 
         ui.add_space(8.0);
         ui.label("Problem ID:");
+        if recent_problems_dropdown(
+            ui,
+            "recent_problems",
+            &self.recent_problems,
+            &mut self.problem_id_input,
+        ) {
+            self.refresh_lists();
+        }
+        if let Some(err) = &self.problems_error {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!("problem list unavailable: {err}"),
+            );
+        }
         ui.text_edit_singleline(&mut self.problem_id_input);
 
         ui.add_space(8.0);
@@ -487,6 +550,15 @@ impl ConsoleApp {
 
         ui.add_space(8.0);
         ui.label("Solution ID:");
+        if solutions_picker(
+            ui,
+            "recent_solutions_solutions",
+            &self.recent_solutions,
+            &self.solutions_error,
+            &mut self.solution_id_input,
+        ) {
+            self.refresh_lists();
+        }
         ui.text_edit_singleline(&mut self.solution_id_input);
 
         ui.add_space(8.0);
@@ -532,6 +604,15 @@ impl ConsoleApp {
 
         ui.add_space(8.0);
         ui.label("Solution ID:");
+        if solutions_picker(
+            ui,
+            "recent_solutions_kpis",
+            &self.recent_solutions,
+            &self.solutions_error,
+            &mut self.kpis_id_input,
+        ) {
+            self.refresh_lists();
+        }
         ui.text_edit_singleline(&mut self.kpis_id_input);
 
         ui.add_space(8.0);
@@ -608,6 +689,122 @@ impl ConsoleApp {
             ui.label("(no events yet — connect to a running API server)");
         }
     }
+}
+
+/// Truncate `text` for display in a dropdown, appending an ellipsis when
+/// it does not fit.
+fn truncate_for_dropdown(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut short: String = text.chars().take(max_chars).collect();
+    short.push('…');
+    short
+}
+
+/// ComboBox of recent imported problems; selecting one writes its id into
+/// `target`. Returns true when the operator clicked Refresh.
+fn recent_problems_dropdown(
+    ui: &mut egui::Ui,
+    salt: &str,
+    problems: &[ProblemSummary],
+    target: &mut String,
+) -> bool {
+    let current = target.trim().to_string();
+    let selected = problems
+        .iter()
+        .find(|problem| problem.id == current)
+        .map(|problem| truncate_for_dropdown(&problem.name, 48))
+        .unwrap_or_else(|| format!("choose a recent problem ({})…", problems.len()));
+    let mut refresh = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                if problems.is_empty() {
+                    ui.label("(no imported problems yet)");
+                }
+                for problem in problems {
+                    let label = format!(
+                        "{} — {} stores, {} vehicles ({})",
+                        truncate_for_dropdown(&problem.name, 40),
+                        problem.stores,
+                        problem.vehicles,
+                        problem.created_at
+                    );
+                    ui.selectable_value(target, problem.id.clone(), label);
+                }
+            });
+        if ui.small_button("Refresh").clicked() {
+            refresh = true;
+        }
+    });
+    refresh
+}
+
+/// Recent-solutions dropdown plus its error label. Used by the Solution-ID
+/// inputs in the Solutions and KPIs tabs; returns true when the operator
+/// clicked Refresh.
+fn solutions_picker(
+    ui: &mut egui::Ui,
+    salt: &str,
+    solutions: &[SolutionSummary],
+    error: &Option<String>,
+    target: &mut String,
+) -> bool {
+    let refresh = recent_solutions_dropdown(ui, salt, solutions, target);
+    if let Some(err) = error {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            format!("solutions list unavailable: {err}"),
+        );
+    }
+    refresh
+}
+
+/// ComboBox of recent solved solutions; selecting one writes its id into
+/// `target`. Returns true when the operator clicked Refresh.
+fn recent_solutions_dropdown(
+    ui: &mut egui::Ui,
+    salt: &str,
+    solutions: &[SolutionSummary],
+    target: &mut String,
+) -> bool {
+    let current = target.trim().to_string();
+    let selected = solutions
+        .iter()
+        .find(|solution| solution.id == current)
+        .map(solution_option_label)
+        .unwrap_or_else(|| format!("choose a recent solution ({})…", solutions.len()));
+    let mut refresh = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                if solutions.is_empty() {
+                    ui.label("(no solutions yet)");
+                }
+                for solution in solutions {
+                    let label = solution_option_label(solution);
+                    ui.selectable_value(target, solution.id.clone(), label);
+                }
+            });
+        if ui.small_button("Refresh").clicked() {
+            refresh = true;
+        }
+    });
+    refresh
+}
+
+fn solution_option_label(solution: &SolutionSummary) -> String {
+    format!(
+        "{}/{} served · {:.1} km · ${:.2} ({})",
+        solution.served,
+        solution.total,
+        solution.distance_km,
+        solution.cost_cents as f64 / 100.0,
+        solution.solved_at
+    )
 }
 
 /// A button that copies `text` to the system clipboard.
