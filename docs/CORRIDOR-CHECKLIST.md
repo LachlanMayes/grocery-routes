@@ -49,9 +49,17 @@ desktop research only):
 
 ### Step 3 — Verify the 92 bridge ways (the biggest open exposure)
 
-All 92 are untagged in OSM and none matched public restricted-access notices.
-They must be checked against the TfNSW bridge register / Council registers
-(or on-site signage). Grouped by road:
+**First, the published data.** TfNSW's NSW State Roads Vertical Clearances
+dataset (XLSX, Oct 2026, CC-BY, 1,214 structures) can be matched to the
+corridor: 93 clearances within 60 m, minimum **4.36 m (Cooks River)** (see
+[docs/CORRIDOR-RESEARCH.md](CORRIDOR-RESEARCH.md)). That clears the 4.3 m
+height question for under-bridges on State Roads from an official source. It
+is State Roads only, height only, and information-purpose only — no load
+ratings, and regional/local roads are excluded.
+
+**What's left** is the load-rating check for the 92 bridge ways (structures
+our road passes over, not under — i.e. the OSM `bridge=yes` ways) plus
+structures on regional/local roads. Grouped by road:
 
 | Road | # | way IDs |
 |---|---|---|
@@ -132,7 +140,7 @@ out of this repo — the repo ships no verified limits by design.
 
 ## Source list
 
-- Transport for NSW — "Using Sydney's tunnels" (tunnel clearances): https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels
+- NSW State Roads Vertical Clearances (CC-BY, Oct 2026) — bridge clearances over State Roads, via CKAN API: https://opendata.transport.nsw.gov.au/data/dataset/nsw-state-roads-vertical-clearances
 - Linkt vehicle height limits (Sydney toll roads): https://www.linkt.com.au/help/travelling-toll-roads/vehicle-height-limits/sydney
 - Transport for NSW — 4.6m high vehicles / heavy vehicles road access: https://www.transport.nsw.gov.au/operations/roads-and-waterways/business-and-industry/heavy-vehicles
 - NHVR (National Heavy Vehicle Regulator) — notices and OSOM: https://www.nhvr.gov.au/

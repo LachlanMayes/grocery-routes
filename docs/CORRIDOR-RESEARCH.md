@@ -38,6 +38,34 @@ access, bridge, tunnel) and cross-checked against published sources.
 
 The 4.3 m HGV planned for this problem clears every tunnel traversed.
 
+### Bridge clearances — published dataset matched to the corridor (2026-11-10)
+
+Transport for NSW publishes **NSW State Roads Vertical Clearances** (XLSX,
+October 2026, CC-BY, 1,214 structures, `https://opendata.transport.nsw.gov.au/data/dataset/nsw-state-roads-vertical-clearances`;
+the file is loadable via the CKAN API). Matching its bridge locations by
+geometry to all 1,277 traversed ways (within 60 m) gave **93 matches, every
+one ≥ 4.36 m**. Thirteen are below 4.6 m:
+
+- 4.36 m UNDER COOKS RIVER → way 4331862
+- 4.39 m ON EASTERN DISTRIBUTOR → way 105038171
+- 4.41 m HARBOUR GOODS YARD → way 782822601
+- 4.42 m WB CR CTY TUNNEL → way 244269360 (Cross City Tunnel)
+- 4.43 m ANZAC RD → way 173396362
+- 4.48 m MR165-VICTORIA ROAD → way 1227240768
+- 4.52 m ON GEN.HOLMES DRIVE → way 383319524
+- 4.52 m G HOLMES DRIVE → way 156273325
+- 4.54 m ROSLYN ST → way 2956653
+- 4.55 m OVER MR173 → way 389141181 (×2, also "OV WILLIAM ST")
+- 4.55 m OVER MR173 → way 2956653
+- 4.56 m OVER GEORGE'S RIVER → way 147103906
+
+All clear the 4.3 m vehicle, with the tightest at **4.36 m (Cooks River)**.
+Caveats: the dataset gives the clearance of bridges over State Roads (i.e.
+structures you pass under on State Roads), is not published for
+regional/local roads, and carries TfNSW's "information purposes only, no
+liability" disclaimer. It does **not** provide bridge load ratings — weight
+checks still need the road manager.
+
 ### Load limits
 
 No bridge on the traversed corridor appears in restricted-access notices found
