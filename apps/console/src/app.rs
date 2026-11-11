@@ -46,6 +46,7 @@ pub struct ConsoleApp {
 
     // Import tab state
     import_json: String,
+    import_path: String,
     import_status: Option<Result<String, anyhow::Error>>,
 
     // Solve tab state
@@ -101,6 +102,7 @@ impl ConsoleApp {
             api_base_url,
             tab: Tab::Import,
             import_json: String::new(),
+            import_path: "data/demo/problem.json".to_string(),
             import_status: None,
             problem_id_input: String::new(),
             solve_lns: false,
@@ -235,9 +237,24 @@ impl ConsoleApp {
 
     fn render_import_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Import Problem");
-        ui.label("Paste a problem JSON document (serialized [`domain::Problem`]):");
+
+        ui.label("Load from a file on disk:");
+        ui.horizontal(|ui| {
+            ui.label("Path:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.import_path)
+                    .desired_width(400.0)
+                    .hint_text("data/demo/problem.json"),
+            );
+            if ui.button("Import from file").clicked() {
+                self.start_import_from_file();
+            }
+        });
 
         ui.add_space(8.0);
+        ui.label("…or paste a problem JSON document (serialized [`domain::Problem`]):");
+
+        ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .id_salt("import_scroll")
             .max_height(300.0)
@@ -267,7 +284,32 @@ impl ConsoleApp {
 
     /// Start the background import of the JSON currently in the editor.
     fn start_import(&mut self) {
-        let json = self.import_json.clone();
+        if self.import_json.trim().is_empty() {
+            self.import_status = Some(Err(anyhow::anyhow!(
+                "the paste box is empty — paste a JSON document or use 'Import from file'"
+            )));
+            return;
+        }
+        self.spawn_import(self.import_json.clone());
+    }
+
+    /// Read the JSON from `self.import_path`, load it into the editor and
+    /// start the import.
+    fn start_import_from_file(&mut self) {
+        let path = self.import_path.trim().to_string();
+        self.import_status = None;
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                self.import_json = contents.clone();
+                self.spawn_import(contents);
+            }
+            Err(err) => {
+                self.import_status = Some(Err(anyhow::anyhow!("{path}: {err}")));
+            }
+        }
+    }
+
+    fn spawn_import(&mut self, json: String) {
         let tx = self.msg_tx.clone();
         let client = self.client.clone();
         self.import_status = None;
