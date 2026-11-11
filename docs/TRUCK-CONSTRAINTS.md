@@ -110,7 +110,7 @@ See `constraints/README.md`. The file is loaded with:
 
 ```console
 cargo run -p cli -- solve --problem problem.json --out solution.json \
-  --osm data/osm/australia-latest.osm.pbf \
+  --osm data/osm/nsw-latest.osm.pbf \
   --constraints constraints/truck-constraints.json \
   --maxweight 42.5 --maxheight 4.3 --hgv
 ```

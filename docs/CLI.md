@@ -36,7 +36,7 @@ Road-network variant:
 ```
 cargo run -p cli -- solve --problem data/demo/problem.json \
   --out data/demo/solution.json \
-  --osm data/osm/australia-latest.osm.pbf --hgv \
+  --osm data/osm/nsw-latest.osm.pbf --hgv \
   --maxweight 42.5 --maxheight 4.3 \
   --constraints constraints/truck-constraints.json
 ```
@@ -90,7 +90,7 @@ cargo run -p cli -- holidays --year 2026 --state VIC
 
 ```
 cargo run -p cli -- audit --problem data/demo/problem.json \
-  --solution data/demo/solution.json --osm data/osm/australia-latest.osm.pbf \
+  --solution data/demo/solution.json --osm data/osm/nsw-latest.osm.pbf \
   --hgv --maxweight 42.5 --out-dir data/demo
 ```
 
