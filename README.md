@@ -100,7 +100,9 @@ Successful imports and solves pre-fill the following tab, and each success row
 has a **Copy ID** button. The Solutions tab shows a structured view: stat
 cards (served/routes/distance/cost), a per-route table (vehicle, drivers,
 stops, km, duration, cost) with a named stop timeline for the selected route,
-an unassigned-stores list, and a collapsible raw-JSON debug section.
+an unassigned-stores list, and a collapsible raw-JSON debug section. The
+KPIs tab shows card-style stats, a serve-rate progress bar and a per-route
+bar chart (egui_plot; Cost or Distance metric).
 
 ## Checks
 

@@ -13,7 +13,9 @@ falls back to the external API automatically. Covers import via a native Windows
 dialog (Browse…) or a typed/pasted path, or pasted JSON, plus solve,
 solutions, KPIs and events. The Solutions tab shows a structured view -
 stat cards, a per-route table with a named stop timeline, an unassigned-stores
-list, and a collapsible raw-JSON debug section. Recent-problem/solution dropdowns (backed by
+list, and a collapsible raw-JSON debug section. The KPIs tab shows card-style
+stats, a serve-rate progress bar and a per-route bar chart (Cost or
+Distance). Recent-problem/solution dropdowns (backed by
 `GET /problems` and `GET /solutions`, Refresh button to re-fetch) mean IDs rarely need
 copying by hand; IDs still auto-fill across tabs on success, and each success row offers a
 copy button. See `docs/API.md`.

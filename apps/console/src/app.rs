@@ -23,7 +23,7 @@ enum Msg {
     ProblemImported(Result<String, anyhow::Error>),
     SolutionSolved(Result<SolveResponse, anyhow::Error>),
     SolutionFetched(Result<Box<SolutionBundle>, anyhow::Error>),
-    KpisFetched(Result<Kpis, anyhow::Error>),
+    KpisFetched(Result<Box<KpisBundle>, anyhow::Error>),
     SolveEvent(crate::api_client::SolveEvent),
     ProblemsLoaded(Result<Vec<ProblemSummary>, anyhow::Error>),
     SolutionsLoaded(Result<Vec<SolutionSummary>, anyhow::Error>),
@@ -38,6 +38,20 @@ struct SolutionBundle {
     problem: domain::Problem,
     solution: domain::Solution,
     raw: serde_json::Value,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KpiMetric {
+    Cost,
+    Distance,
+}
+
+/// KPI summary plus the full solution/problem, so the per-route chart has
+/// something to plot. Boxed to keep [`Msg::KpisFetched`] small.
+#[derive(Clone)]
+struct KpisBundle {
+    kpis: Kpis,
+    detail: SolutionBundle,
 }
 
 /// Tab selection for the console.
@@ -80,7 +94,8 @@ pub struct ConsoleApp {
 
     // KPIs tab state
     kpis_id_input: String,
-    kpis_status: Option<Result<Kpis, anyhow::Error>>,
+    kpis_status: Option<Result<Box<KpisBundle>, anyhow::Error>>,
+    kpis_metric: KpiMetric,
 
     // Events tab state
     events: Vec<SolveEventDisplay>,
@@ -138,6 +153,7 @@ impl ConsoleApp {
             selected_route: 0,
             kpis_id_input: String::new(),
             kpis_status: None,
+            kpis_metric: KpiMetric::Cost,
             events: Vec::new(),
             max_events: 50,
             msg_rx: rx,
@@ -763,32 +779,106 @@ impl ConsoleApp {
                 let client = self.client.clone();
                 self.kpis_status = None;
                 self.runtime.spawn(async move {
-                    match client.get_kpis(&id).await {
-                        Ok(kpis) => {
-                            tx.send(Msg::KpisFetched(Ok(kpis))).ok();
-                        }
-                        Err(e) => {
-                            tx.send(Msg::KpisFetched(Err(e))).ok();
-                        }
+                    let result = async {
+                        let resp = client.get_solution(&id).await?;
+                        let problem_raw = client.get_problem(&resp.problem_id).await?;
+                        let kpis = client.get_kpis(&id).await?;
+                        let problem: domain::Problem = from_json(&problem_raw)?;
+                        let solution: domain::Solution = from_json(&resp.solution)?;
+                        let detail = SolutionBundle {
+                            id,
+                            problem_id: resp.problem_id,
+                            problem,
+                            solution,
+                            raw: resp.solution,
+                        };
+                        Ok::<_, anyhow::Error>(Box::new(KpisBundle { kpis, detail }))
                     }
+                    .await;
+                    tx.send(Msg::KpisFetched(result)).ok();
                 });
             }
         });
 
         ui.add_space(8.0);
         match &self.kpis_status {
-            Some(Ok(kpis)) => {
-                ui.label(format!("Served: {} / {}", kpis.served, kpis.total));
-                ui.label(format!("Serve rate: {:.1}%", kpis.serve_rate * 100.0));
-                ui.label(format!("Distance: {:.1} km", kpis.distance_km));
-                ui.label(format!("Routes: {}", kpis.routes));
-                ui.label(format!("Cost: {:.0} cents", kpis.cost_cents));
-            }
+            Some(Ok(bundle)) => Self::render_kpis_view(ui, bundle, &mut self.kpis_metric),
             Some(Err(e)) => {
                 ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
             }
             None => {}
         }
+    }
+
+    /// Render the KPI view: stat cards, a serve-rate progress bar and a
+    /// per-route bar chart for the chosen metric.
+    fn render_kpis_view(ui: &mut egui::Ui, bundle: &KpisBundle, metric: &mut KpiMetric) {
+        ui.separator();
+        let kpis = &bundle.kpis;
+
+        ui.horizontal(|ui| {
+            stat_card(ui, "Served", &format!("{}/{}", kpis.served, kpis.total));
+            stat_card(
+                ui,
+                "Serve rate",
+                &format!("{:.1}%", kpis.serve_rate * 100.0),
+            );
+            stat_card(ui, "Distance", &format!("{:.1} km", kpis.distance_km));
+            stat_card(ui, "Routes", &kpis.routes.to_string());
+            stat_card(
+                ui,
+                "Cost",
+                &format!("${:.2}", kpis.cost_cents as f64 / 100.0),
+            );
+            copy_button(ui, "Copy solution ID", &bundle.detail.id);
+        });
+
+        ui.add_space(8.0);
+        ui.label("Serve rate");
+        ui.add(
+            egui::ProgressBar::new(kpis.serve_rate as f32)
+                .desired_width(400.0)
+                .text(format!("{:.0}% of stores served", kpis.serve_rate * 100.0)),
+        );
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Per-route chart:");
+            ui.selectable_value(metric, KpiMetric::Cost, "Cost ($)");
+            ui.selectable_value(metric, KpiMetric::Distance, "Distance (km)");
+        });
+        ui.add_space(4.0);
+
+        let bars: Vec<egui_plot::Bar> = bundle
+            .detail
+            .solution
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                let value = match metric {
+                    KpiMetric::Cost => route.cost_cents as f64 / 100.0,
+                    KpiMetric::Distance => route.distance_km,
+                };
+                egui_plot::Bar::new(index as f64, value)
+                    .width(0.6)
+                    .name(format!("Route {}", index + 1))
+            })
+            .collect();
+        let y_label = match metric {
+            KpiMetric::Cost => "Cost ($)",
+            KpiMetric::Distance => "Distance (km)",
+        };
+        let chart = egui_plot::BarChart::new(y_label, bars)
+            .vertical()
+            .color(egui::Color32::from_rgb(200, 150, 60));
+        egui_plot::Plot::new("kpis_per_route_chart")
+            .height(180.0)
+            .x_axis_label("Route")
+            .x_axis_formatter(|mark, _| format!("R{}", mark.value.round() as i64 + 1))
+            .y_axis_label(y_label)
+            .legend(egui_plot::Legend::default())
+            .show(ui, |plot_ui| plot_ui.bar_chart(chart));
     }
 
     // ── Events tab ──────────────────────────────────────────────────────
@@ -1145,6 +1235,81 @@ mod tests {
         assert_eq!(app.kpis_id_input, "solution-123");
     }
 
+    // Fixture mirrors the Problem literals shared by the domain/routing test
+    // suites (see the code-quality skill on test-fixture duplication); marked
+    // explicitly rather than restructured.
+    // jscpd:ignore-start
+    fn test_solution_bundle() -> SolutionBundle {
+        use domain::{
+            Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId,
+            FatigueRules, Load, Minutes, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
+        };
+        let problem = domain::Problem {
+            name: "test".into(),
+            depots: vec![Depot {
+                id: DepotId(0),
+                name: "Depot".into(),
+                location: domain::LatLon::new(-33.87, 151.21),
+                timezone: None,
+            }],
+            stores: vec![Store {
+                id: StoreId(0),
+                chain: Chain::Coles,
+                name: "Store 0".into(),
+                location: domain::LatLon::new(-33.92, 151.23),
+                timezone: None,
+                demand: Load::new(1, 0, 0),
+                service: Minutes::from_minutes(15),
+                receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+            }],
+            vehicles: vec![Vehicle {
+                id: VehicleId(0),
+                name: "Rigid".into(),
+                depot: DepotId(0),
+                capacity: Load::new(8, 8, 4),
+                max_duration: Minutes::from_minutes(600),
+                avg_speed_kmh: 60.0,
+            }],
+            drivers: vec![Driver {
+                id: DriverId(0),
+                name: "Sam".into(),
+                shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+                fatigue_rules: FatigueRules::default(),
+            }],
+            cost: CostModel {
+                fixed_per_route_cents: 0,
+                per_km_cents: 0,
+                per_hour_cents: 0,
+                late_per_min_cents: 0,
+            },
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
+            horizon_start: None,
+        };
+        let solution = domain::Solution {
+            routes: vec![domain::RoutePlan {
+                vehicle: VehicleId(0),
+                drivers: vec![DriverId(0)],
+                steps: vec![],
+                distance_km: 12.5,
+                duration: Minutes::from_minutes(125),
+                cost_cents: 1000,
+            }],
+            unassigned: vec![],
+            total_distance_km: 12.5,
+            total_duration: Minutes::from_minutes(125),
+            total_cost_cents: 1000,
+        };
+        SolutionBundle {
+            id: "solution-123".into(),
+            problem_id: "problem-123".into(),
+            problem,
+            solution,
+            raw: serde_json::json!({}),
+        }
+    }
+    // jscpd:ignore-end
+
     #[tokio::test]
     async fn handles_kpis_response() {
         let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
@@ -1157,11 +1322,18 @@ mod tests {
             routes: 1,
         };
 
-        app.handle_msg(Msg::KpisFetched(Ok(kpis)));
+        app.handle_msg(Msg::KpisFetched(Ok(Box::new(KpisBundle {
+            kpis,
+            detail: test_solution_bundle(),
+        }))));
 
         match app.kpis_status {
-            Some(Ok(kpis)) => assert_eq!(kpis.routes, 1),
-            other => panic!("unexpected KPI status: {other:?}"),
+            Some(Ok(bundle)) => {
+                assert_eq!(bundle.kpis.routes, 1);
+                assert_eq!(bundle.detail.solution.routes.len(), 1);
+                assert_eq!(bundle.detail.id, "solution-123");
+            }
+            _ => panic!("unexpected KPI status (expected Ok with 1 route)"),
         }
     }
 
