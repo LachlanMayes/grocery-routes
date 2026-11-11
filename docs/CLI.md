@@ -73,7 +73,7 @@ section; `export` also writes `returnables.csv`.
 |---|---|---|---|
 | `--problem` | path | required | |
 | `--solution` | path | required | |
-| `--out-dir` | path | required | alias `--out` |
+| `--out-dir` | path | required | |
 
 ## `holidays` — print a public holiday calendar
 
