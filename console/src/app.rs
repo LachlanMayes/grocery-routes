@@ -1013,6 +1013,7 @@ fn render_map_body(
     hidden_routes: &mut HashSet<usize>,
 ) {
     route_chips(ui, bundle, map_fit_pending, hidden_routes);
+    zoom_controls(ui, map_memory);
 
     // Tiles are created lazily on first paint; downloading starts when
     // the tab is actually shown.
@@ -1033,10 +1034,16 @@ fn render_map_body(
 
     ui.separator();
     ui.add(
-        Map::new(Some(tiles), map_memory, lon_lat(151.21, -33.87)).with_plugin(RouteOverlay {
-            bundle,
-            hidden: hidden_routes,
-        }),
+        Map::new(Some(tiles), map_memory, lon_lat(151.21, -33.87))
+            // Wheel zooms without needing Ctrl; double-click zooms in,
+            // right-double-click zooms out. Drag still pans.
+            .zoom_with_ctrl(false)
+            .double_click_to_zoom(true)
+            .double_click_to_zoom_out(true)
+            .with_plugin(RouteOverlay {
+                bundle,
+                hidden: hidden_routes,
+            }),
     );
     ui.horizontal(|ui| {
         ui.weak("© OpenStreetMap contributors — tile.openstreetmap.org");
@@ -1045,6 +1052,20 @@ fn render_map_body(
             bundle.solution.routes.len() - hidden_routes.len(),
             bundle.solution.routes.len()
         ));
+        ui.weak(format!("· zoom {:.1}", map_memory.zoom()));
+    });
+}
+
+/// Zoom in/out buttons plus the current zoom level.
+fn zoom_controls(ui: &mut egui::Ui, map_memory: &mut MapMemory) {
+    ui.horizontal(|ui| {
+        if ui.button("Zoom −").clicked() {
+            let _ = map_memory.zoom_out();
+        }
+        if ui.button("Zoom +").clicked() {
+            let _ = map_memory.zoom_in();
+        }
+        ui.weak(format!("zoom {:.1}", map_memory.zoom()));
     });
 }
 

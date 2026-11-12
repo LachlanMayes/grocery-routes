@@ -30,6 +30,10 @@ a filled square for depots and a dot for stores. The coloured `R1..Rn`
 chips above the map toggle route visibility, and **Fit extents** re-centres
 the camera.
 
+Zoom: the **Zoom −** / **Zoom +** buttons step the zoom level (shown beside
+them), the mouse wheel zooms without holding Ctrl, double-click zooms in and
+right-double-click zooms out; drag still pans.
+
 Two honest caveats:
 
 - Legs are **straight lines** between stops, not road-following geometry.
