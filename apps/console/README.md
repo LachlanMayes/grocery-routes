@@ -19,3 +19,24 @@ Distance). Recent-problem/solution dropdowns (backed by
 `GET /problems` and `GET /solutions`, Refresh button to re-fetch) mean IDs rarely need
 copying by hand; IDs still auto-fill across tabs on success, and each success row offers a
 copy button. See `docs/API.md`.
+
+## Map tab
+
+The Map tab draws a solution's routes on OpenStreetMap raster tiles via the
+`walkers` crate (`HttpTiles` + `sources::OpenStreetMap`). Load a solution by
+ID (or from the recent-solutions dropdown), and the camera auto-fits the
+solution's extent; each route is a coloured polyline through its stops, with
+a filled square for depots and a dot for stores. The coloured `R1..Rn`
+chips above the map toggle route visibility, and **Fit extents** re-centres
+the camera.
+
+Two honest caveats:
+
+- Legs are **straight lines** between stops, not road-following geometry.
+  Drawing true road geometry would need a new API endpoint that returns the
+  routed polyline for each leg (the OSM router's `CachedMatrix` holds
+  distances/durations, not geometry); that is follow-up work.
+- Tiles are downloaded from `tile.openstreetmap.org` at runtime, so the tab
+  needs network access and must respect the OpenStreetMap tile usage policy
+  (attribution is shown under the map). No tiles are cached to disk beyond
+  the in-memory session.

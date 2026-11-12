@@ -5,8 +5,10 @@
 //! - **Solve**: select a problem, choose solver options, kick off a solve
 //! - **Solutions**: list and inspect solved plans
 //! - **KPIs**: view KPI summary for a solution
+//! - **Map**: see routes drawn on an OpenStreetMap layer
 //! - **Live Events**: SSE stream of solve completions
 
+use std::collections::HashSet;
 use std::result::Result;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use crate::api_client::{
 use eframe::egui;
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
+use walkers::{Map, MapMemory, Plugin, Projector, lon_lat};
 
 /// Messages passed from background tasks to the UI thread.
 enum Msg {
@@ -24,6 +27,7 @@ enum Msg {
     SolutionSolved(Result<SolveResponse, anyhow::Error>),
     SolutionFetched(Result<Box<SolutionBundle>, anyhow::Error>),
     KpisFetched(Result<Box<KpisBundle>, anyhow::Error>),
+    MapLoaded(Result<Box<SolutionBundle>, anyhow::Error>),
     SolveEvent(crate::api_client::SolveEvent),
     ProblemsLoaded(Result<Vec<ProblemSummary>, anyhow::Error>),
     SolutionsLoaded(Result<Vec<SolutionSummary>, anyhow::Error>),
@@ -61,6 +65,7 @@ enum Tab {
     Solve,
     Solutions,
     Kpis,
+    Map,
     Events,
 }
 
@@ -86,6 +91,7 @@ pub struct ConsoleApp {
     maxheight: String,
     hgv: bool,
     solve_status: Option<Result<SolveResponse, anyhow::Error>>,
+    solve_in_flight: bool,
 
     // Solutions tab state
     solution_id_input: String,
@@ -96,6 +102,14 @@ pub struct ConsoleApp {
     kpis_id_input: String,
     kpis_status: Option<Result<Box<KpisBundle>, anyhow::Error>>,
     kpis_metric: KpiMetric,
+
+    // Map tab state
+    map_id_input: String,
+    map_status: Option<Result<Box<SolutionBundle>, anyhow::Error>>,
+    map_tiles: Option<walkers::HttpTiles>,
+    map_memory: MapMemory,
+    map_fit_pending: bool,
+    hidden_routes: HashSet<usize>,
 
     // Events tab state
     events: Vec<SolveEventDisplay>,
@@ -148,12 +162,19 @@ impl ConsoleApp {
             maxheight: String::new(),
             hgv: false,
             solve_status: None,
+            solve_in_flight: false,
             solution_id_input: String::new(),
             solution_status: None,
             selected_route: 0,
             kpis_id_input: String::new(),
             kpis_status: None,
             kpis_metric: KpiMetric::Cost,
+            map_id_input: String::new(),
+            map_status: None,
+            map_tiles: None,
+            map_memory: MapMemory::default(),
+            map_fit_pending: true,
+            hidden_routes: HashSet::new(),
             events: Vec::new(),
             max_events: 50,
             msg_rx: rx,
@@ -225,6 +246,7 @@ impl ConsoleApp {
         self.tab_button(ui, "Solve", Tab::Solve);
         self.tab_button(ui, "Solutions", Tab::Solutions);
         self.tab_button(ui, "KPIs", Tab::Kpis);
+        self.tab_button(ui, "Map", Tab::Map);
         self.tab_button(ui, "Events", Tab::Events);
 
         ui.separator();
@@ -253,6 +275,7 @@ impl ConsoleApp {
             Tab::Solve => self.render_solve_tab(ui),
             Tab::Solutions => self.render_solutions_tab(ui),
             Tab::Kpis => self.render_kpis_tab(ui),
+            Tab::Map => self.render_map_tab(ui),
             Tab::Events => self.render_events_tab(ui),
         }
     }
@@ -271,9 +294,11 @@ impl ConsoleApp {
             }
             Msg::SolutionSolved(res) => {
                 // Pre-fill the solutions and KPIs tabs with the new solution.
+                self.solve_in_flight = false;
                 if let Ok(resp) = &res {
                     self.solution_id_input.clone_from(&resp.id);
                     self.kpis_id_input.clone_from(&resp.id);
+                    self.map_id_input.clone_from(&resp.id);
                     self.refresh_lists();
                 }
                 self.solve_status = Some(res);
@@ -294,6 +319,17 @@ impl ConsoleApp {
             },
             Msg::SolutionFetched(res) => self.solution_status = Some(res),
             Msg::KpisFetched(res) => self.kpis_status = Some(res),
+            Msg::MapLoaded(res) => {
+                if let Ok(bundle) = &res {
+                    // Fit the map to the solution's extent on first paint;
+                    // the handler does not know the map width yet, so the
+                    // actual camera move happens in the map's render pass.
+                    self.map_fit_pending = true;
+                    self.hidden_routes.clear();
+                    self.map_id_input.clone_from(&bundle.id);
+                }
+                self.map_status = Some(res);
+            }
             Msg::SolveEvent(ev) => {
                 self.events.push(SolveEventDisplay {
                     time: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -505,8 +541,15 @@ impl ConsoleApp {
         ui.checkbox(&mut self.hgv, "Heavy goods vehicle");
 
         ui.add_space(8.0);
-        if ui.button("Solve").clicked() {
+        if ui
+            .add_enabled(!self.solve_in_flight, egui::Button::new("Solve"))
+            .clicked()
+        {
             self.start_solve();
+        }
+        if self.solve_in_flight {
+            ui.spinner();
+            ui.label("Solving…");
         }
 
         if let Some(tab) = self.render_solve_status(ui) {
@@ -527,6 +570,7 @@ impl ConsoleApp {
         let tx = self.msg_tx.clone();
         let client = self.client.clone();
         self.solve_status = None;
+        self.solve_in_flight = true;
         self.runtime.spawn(async move {
             match client.solve(&req).await {
                 Ok(resp) => {
@@ -561,6 +605,9 @@ impl ConsoleApp {
                     if ui.button("View KPIs").clicked() {
                         next_tab = Some(Tab::Kpis);
                     }
+                    if ui.button("View Route Map").clicked() {
+                        next_tab = Some(Tab::Map);
+                    }
                 });
                 next_tab
             }
@@ -594,25 +641,12 @@ impl ConsoleApp {
         ui.horizontal(|ui| {
             if ui.button("Fetch Solution").clicked() {
                 let id = self.solution_id_input.clone();
-                let tx = self.msg_tx.clone();
                 let client = self.client.clone();
+                let tx = self.msg_tx.clone();
                 self.solution_status = None;
                 self.selected_route = 0;
                 self.runtime.spawn(async move {
-                    let result = async {
-                        let resp = client.get_solution(&id).await?;
-                        let problem_raw = client.get_problem(&resp.problem_id).await?;
-                        let problem: domain::Problem = from_json(&problem_raw)?;
-                        let solution: domain::Solution = from_json(&resp.solution)?;
-                        Ok::<_, anyhow::Error>(Box::new(SolutionBundle {
-                            id,
-                            problem_id: resp.problem_id,
-                            problem,
-                            solution,
-                            raw: resp.solution,
-                        }))
-                    }
-                    .await;
+                    let result = fetch_solution_bundle(client, id).await;
                     tx.send(Msg::SolutionFetched(result)).ok();
                 });
             }
@@ -780,19 +814,12 @@ impl ConsoleApp {
                 self.kpis_status = None;
                 self.runtime.spawn(async move {
                     let result = async {
-                        let resp = client.get_solution(&id).await?;
-                        let problem_raw = client.get_problem(&resp.problem_id).await?;
+                        let bundle = fetch_solution_bundle(client.clone(), id.clone()).await?;
                         let kpis = client.get_kpis(&id).await?;
-                        let problem: domain::Problem = from_json(&problem_raw)?;
-                        let solution: domain::Solution = from_json(&resp.solution)?;
-                        let detail = SolutionBundle {
-                            id,
-                            problem_id: resp.problem_id,
-                            problem,
-                            solution,
-                            raw: resp.solution,
-                        };
-                        Ok::<_, anyhow::Error>(Box::new(KpisBundle { kpis, detail }))
+                        Ok::<_, anyhow::Error>(Box::new(KpisBundle {
+                            kpis,
+                            detail: *bundle,
+                        }))
                     }
                     .await;
                     tx.send(Msg::KpisFetched(result)).ok();
@@ -881,6 +908,147 @@ impl ConsoleApp {
             .show(ui, |plot_ui| plot_ui.bar_chart(chart));
     }
 
+    // ── Map tab ──────────────────────────────────────────────────────
+
+    fn render_map_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Route Map");
+        ui.label("Draw a solution's routes on OpenStreetMap tiles.");
+
+        ui.add_space(8.0);
+        ui.label("Solution ID:");
+        if recent_solutions_dropdown(
+            ui,
+            "recent_solutions_map",
+            &self.recent_solutions,
+            &mut self.map_id_input,
+        ) {
+            self.refresh_lists();
+        }
+        if let Some(err) = &self.solutions_error {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!("solutions list unavailable: {err}"),
+            );
+        }
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.map_id_input);
+            if ui.button("Load Map").clicked() {
+                let id = self.map_id_input.clone();
+                let tx = self.msg_tx.clone();
+                let client = self.client.clone();
+                self.map_status = None;
+                self.map_fit_pending = true;
+                self.hidden_routes.clear();
+                self.runtime.spawn(async move {
+                    let result = fetch_solution_bundle(client, id).await;
+                    tx.send(Msg::MapLoaded(result)).ok();
+                });
+            }
+        });
+
+        ui.add_space(8.0);
+        match &self.map_status {
+            Some(Ok(bundle)) => render_map_body(
+                ui,
+                bundle,
+                &mut self.map_tiles,
+                &mut self.map_memory,
+                &mut self.map_fit_pending,
+                &mut self.hidden_routes,
+            ),
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+            }
+            None => {
+                ui.weak("(no solution loaded - pick one above and click Load Map)");
+            }
+        }
+    }
+}
+
+/// The per-route colour chips plus the Fit-extents button, above the map.
+fn route_chips(
+    ui: &mut egui::Ui,
+    bundle: &SolutionBundle,
+    map_fit_pending: &mut bool,
+    hidden_routes: &mut HashSet<usize>,
+) {
+    ui.horizontal(|ui| {
+        for index in 0..bundle.solution.routes.len() {
+            route_chip(ui, index, hidden_routes);
+        }
+        if ui.button("Fit extents").clicked() {
+            *map_fit_pending = true;
+        }
+    });
+}
+
+/// One coloured route-visibility chip; clicking it toggles the route.
+fn route_chip(ui: &mut egui::Ui, index: usize, hidden_routes: &mut HashSet<usize>) {
+    let hidden = hidden_routes.contains(&index);
+    egui::Frame::default()
+        .fill(route_color(index))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(4, 2))
+        .show(ui, |ui| {
+            let text = egui::RichText::new(format!("R{}", index + 1)).color(egui::Color32::WHITE);
+            let text = if hidden { text } else { text.strong() };
+            if ui.selectable_label(!hidden, text).clicked() {
+                if hidden {
+                    hidden_routes.remove(&index);
+                } else {
+                    hidden_routes.insert(index);
+                }
+            }
+        });
+}
+
+/// Render the loaded map body: route chips, the map itself, attribution.
+fn render_map_body(
+    ui: &mut egui::Ui,
+    bundle: &SolutionBundle,
+    map_tiles: &mut Option<walkers::HttpTiles>,
+    map_memory: &mut MapMemory,
+    map_fit_pending: &mut bool,
+    hidden_routes: &mut HashSet<usize>,
+) {
+    route_chips(ui, bundle, map_fit_pending, hidden_routes);
+
+    // Tiles are created lazily on first paint; downloading starts when
+    // the tab is actually shown.
+    let tiles = map_tiles.get_or_insert_with(|| {
+        walkers::HttpTiles::new(walkers::sources::OpenStreetMap, ui.ctx().clone())
+    });
+
+    if *map_fit_pending {
+        let available = ui.available_size();
+        fit_map_to_extents(
+            map_memory,
+            bundle,
+            f64::from(available.x),
+            f64::from(available.y),
+        );
+        *map_fit_pending = false;
+    }
+
+    ui.separator();
+    ui.add(
+        Map::new(Some(tiles), map_memory, lon_lat(151.21, -33.87)).with_plugin(RouteOverlay {
+            bundle,
+            hidden: hidden_routes,
+        }),
+    );
+    ui.horizontal(|ui| {
+        ui.weak("© OpenStreetMap contributors — tile.openstreetmap.org");
+        ui.weak(format!(
+            "· showing {} of {} routes",
+            bundle.solution.routes.len() - hidden_routes.len(),
+            bundle.solution.routes.len()
+        ));
+    });
+}
+
+impl ConsoleApp {
     // ── Events tab ──────────────────────────────────────────────────────
 
     fn render_events_tab(&mut self, ui: &mut egui::Ui) {
@@ -1026,6 +1194,135 @@ fn recent_solutions_dropdown(
     refresh
 }
 
+/// Distinct colours per route index, cycling if there are more than ten.
+const ROUTE_COLORS: [egui::Color32; 10] = [
+    egui::Color32::from_rgb(31, 119, 180),
+    egui::Color32::from_rgb(255, 127, 14),
+    egui::Color32::from_rgb(44, 160, 44),
+    egui::Color32::from_rgb(214, 39, 40),
+    egui::Color32::from_rgb(148, 103, 189),
+    egui::Color32::from_rgb(140, 86, 75),
+    egui::Color32::from_rgb(227, 119, 194),
+    egui::Color32::from_rgb(127, 127, 127),
+    egui::Color32::from_rgb(188, 189, 34),
+    egui::Color32::from_rgb(23, 190, 207),
+];
+
+fn route_color(index: usize) -> egui::Color32 {
+    ROUTE_COLORS[index % ROUTE_COLORS.len()]
+}
+
+/// The (lon, lat) of a depot or store node, if it exists in the problem.
+fn node_lon_lat(problem: &domain::Problem, node: domain::Node) -> Option<(f64, f64)> {
+    match node {
+        domain::Node::Depot(id) => problem
+            .depots
+            .get(id.0 as usize)
+            .map(|depot| (depot.location.lon, depot.location.lat)),
+        domain::Node::Store(id) => problem
+            .stores
+            .get(id.0 as usize)
+            .map(|store| (store.location.lon, store.location.lat)),
+    }
+}
+
+/// Fit the camera to the solution's extent. Runs at map-paint time, when
+/// the available width is known.
+fn fit_map_to_extents(memory: &mut MapMemory, bundle: &SolutionBundle, width: f64, height: f64) {
+    let mut min_lon = f64::INFINITY;
+    let mut max_lon = f64::NEG_INFINITY;
+    let mut min_lat = f64::INFINITY;
+    let mut max_lat = f64::NEG_INFINITY;
+    let mut include = |lon: f64, lat: f64| {
+        min_lon = min_lon.min(lon);
+        max_lon = max_lon.max(lon);
+        min_lat = min_lat.min(lat);
+        max_lat = max_lat.max(lat);
+    };
+    for route in &bundle.solution.routes {
+        for stop in &route.steps {
+            if let Some((lon, lat)) = node_lon_lat(&bundle.problem, stop.node) {
+                include(lon, lat);
+            }
+        }
+    }
+    for store_id in &bundle.solution.unassigned {
+        if let Some(store) = bundle.problem.stores.get(store_id.0 as usize) {
+            include(store.location.lon, store.location.lat);
+        }
+    }
+    if !min_lon.is_finite() || width <= 0.0 || height <= 0.0 {
+        return;
+    }
+
+    let center_lon = (min_lon + max_lon) / 2.0;
+    let center_lat = (min_lat + max_lat) / 2.0;
+    memory.center_at(lon_lat(center_lon, center_lat));
+
+    let lon_span = (max_lon - min_lon).max(0.01);
+    let lat_span = (max_lat - min_lat).max(0.01);
+    let zoom_lon = (width * 360.0 / (256.0 * lon_span)).log2();
+    let lat_span_eff = lat_span / center_lat.to_radians().cos().abs().max(0.1);
+    let zoom_lat = (height * 170.1 / (256.0 * lat_span_eff)).log2();
+    let zoom = (zoom_lon.min(zoom_lat) - 0.4).clamp(3.0, 14.0);
+    let _ = memory.set_zoom(zoom);
+}
+
+/// Draws depot markers, stop dots and per-route polylines on the map.
+struct RouteOverlay<'a> {
+    bundle: &'a SolutionBundle,
+    hidden: &'a HashSet<usize>,
+}
+
+impl Plugin for RouteOverlay<'_> {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &Projector,
+        _memory: &MapMemory,
+    ) {
+        let painter = ui.painter();
+        for (index, route) in self.bundle.solution.routes.iter().enumerate() {
+            if self.hidden.contains(&index) {
+                continue;
+            }
+            let color = route_color(index);
+            let stroke = egui::Stroke::new(2.5_f32, color);
+            let mut previous = None;
+            for stop in &route.steps {
+                let Some((lon, lat)) = node_lon_lat(&self.bundle.problem, stop.node) else {
+                    continue;
+                };
+                let projected = projector.project(lon_lat(lon, lat));
+                let pos = egui::pos2(projected.x, projected.y);
+                if let Some(p) = previous {
+                    painter.line_segment([p, pos], stroke);
+                }
+                previous = Some(pos);
+                match stop.node {
+                    domain::Node::Depot(_) => {
+                        painter.circle(
+                            pos,
+                            6.0,
+                            egui::Color32::from_rgb(30, 60, 160),
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                        );
+                    }
+                    domain::Node::Store(_) => {
+                        painter.circle_filled(pos, 4.0, color);
+                        painter.circle_stroke(
+                            pos,
+                            4.0,
+                            egui::Stroke::new(1.0, egui::Color32::WHITE),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A stat card for summary strips (solution view and the KPIs tab).
 fn stat_card(ui: &mut egui::Ui, label: &str, value: &str) {
     egui::Frame::default()
@@ -1141,6 +1438,25 @@ fn parse_optional(text: &str) -> Option<f64> {
     } else {
         text.parse().ok()
     }
+}
+
+/// Fetch a solution and its problem into a [`SolutionBundle`], for the
+/// Solutions, KPIs and Map tabs (which all need the same pair).
+async fn fetch_solution_bundle(
+    client: ApiClient,
+    id: String,
+) -> Result<Box<SolutionBundle>, anyhow::Error> {
+    let resp = client.get_solution(&id).await?;
+    let problem_raw = client.get_problem(&resp.problem_id).await?;
+    let problem: domain::Problem = from_json(&problem_raw)?;
+    let solution: domain::Solution = from_json(&resp.solution)?;
+    Ok(Box::new(SolutionBundle {
+        id,
+        problem_id: resp.problem_id,
+        problem,
+        solution,
+        raw: resp.solution,
+    }))
 }
 
 /// Runs a single background SSE connection for the lifetime of the console.
