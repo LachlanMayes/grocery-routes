@@ -273,8 +273,75 @@ fn offset_km(origin: LatLon, east_km: f64, north_km: f64) -> LatLon {
     LatLon::new(origin.lat + dlat, origin.lon + dlon)
 }
 
+/// Approximate Sydney coastline: for each latitude, the easternmost longitude
+/// that is still land. East of it is the Tasman Sea. A coarse piecewise-linear
+/// fit between known coastal points — only used to keep synthetic depots and
+/// stores out of the ocean (the project is NSW-only, so other cities are left
+/// unclamped). Public so the generator tests can assert against the same
+/// coastline the generator uses.
+pub fn sydney_coast_lon(lat: f64) -> f64 {
+    // (latitude, coast longitude), north to south.
+    const COAST: [(f64, f64); 11] = [
+        (-33.80, 151.29),
+        (-33.85, 151.28),
+        (-33.87, 151.31),
+        (-33.90, 151.31),
+        (-33.95, 151.28),
+        (-34.00, 151.20),
+        (-34.05, 151.16),
+        (-34.10, 151.11),
+        (-34.15, 151.07),
+        (-34.20, 151.03),
+        (-34.25, 150.90),
+    ];
+    if lat >= COAST[0].0 {
+        return COAST[0].1;
+    }
+    if lat <= COAST[COAST.len() - 1].0 {
+        return COAST[COAST.len() - 1].1;
+    }
+    for pair in COAST.windows(2) {
+        let (lat1, lon1) = pair[0];
+        let (lat2, lon2) = pair[1];
+        if lat1 >= lat && lat >= lat2 {
+            let t = (lat - lat1) / (lat2 - lat1);
+            return lon1 + t * (lon2 - lon1);
+        }
+    }
+    COAST[COAST.len() - 1].1
+}
+
+/// Whether a generated point is on land. Only Sydney is modelled; other
+/// cities are treated as all-land (out of the NSW scope).
+fn on_land(city: City, point: LatLon) -> bool {
+    city != City::Sydney || point.lon <= sydney_coast_lon(point.lat)
+}
+
+/// Clamp an east/north offset (km from `centre`) so the point is on land,
+/// mirroring it across the north–south axis through `centre` when it would
+/// otherwise fall in the sea. Mirroring preserves the distance from `centre`,
+/// which the fringe-ring depot invariant depends on.
+fn clamp_offset_to_land(city: City, centre: LatLon, east_km: f64, north_km: f64) -> (f64, f64) {
+    if on_land(city, offset_km(centre, east_km, north_km)) {
+        return (east_km, north_km);
+    }
+    (-east_km, north_km)
+}
+
+/// Clamp an absolute point onto land by reflecting its longitude across the
+/// coastline (used for stores, which are placed by absolute coordinate).
+fn clamp_point_to_land(city: City, point: LatLon) -> LatLon {
+    if on_land(city, point) {
+        return point;
+    }
+    let coast = sydney_coast_lon(point.lat);
+    let lon = (2.0 * coast - point.lon).min(coast - 1e-3);
+    LatLon::new(point.lat, lon)
+}
+
 /// Depots on a ring 18–30 km from the city centre, spread evenly around it
-/// with a small angular jitter.
+/// with a small angular jitter. Points that would fall in the sea are mirrored
+/// inland so the ring stays on land.
 fn build_depots(rng: &mut StdRng, city: City, centre: LatLon, count: usize) -> Vec<Depot> {
     let display = city_display(city);
     let mut depots = Vec::with_capacity(count);
@@ -282,10 +349,16 @@ fn build_depots(rng: &mut StdRng, city: City, centre: LatLon, count: usize) -> V
         let bearing = TAU * index as f64 / count as f64
             + rng.random_range(-DEPOT_ANGLE_JITTER..=DEPOT_ANGLE_JITTER);
         let radius_km = rng.random_range(18.0..30.0);
+        let (east_km, north_km) = clamp_offset_to_land(
+            city,
+            centre,
+            radius_km * bearing.cos(),
+            radius_km * bearing.sin(),
+        );
         depots.push(Depot {
             id: DepotId(index as u32),
             name: format!("{display} DC {}", index + 1),
-            location: offset_km(centre, radius_km * bearing.cos(), radius_km * bearing.sin()),
+            location: offset_km(centre, east_km, north_km),
             timezone: None,
         });
     }
@@ -329,10 +402,13 @@ fn build_stores(
     let mut stores = Vec::with_capacity(count);
     for index in 0..count {
         let cluster = clusters[index % cluster_count];
-        let location = offset_km(
-            cluster,
-            standard_normal(rng) * STORE_SCATTER_KM,
-            standard_normal(rng) * STORE_SCATTER_KM,
+        let location = clamp_point_to_land(
+            city,
+            offset_km(
+                cluster,
+                standard_normal(rng) * STORE_SCATTER_KM,
+                standard_normal(rng) * STORE_SCATTER_KM,
+            ),
         );
 
         let mut demand = Load::new(

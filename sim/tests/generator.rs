@@ -112,6 +112,29 @@ fn reference_scenario_is_structurally_sound() {
 }
 
 #[test]
+fn sydney_points_stay_out_of_the_sea() {
+    let problem = generate(&reference_options());
+    // Reuse the generator's own coastline so the test asserts against the same
+    // definition the generator clamps to.
+    for store in &problem.stores {
+        assert!(
+            store.location.lon <= sim::sydney_coast_lon(store.location.lat),
+            "store {} at {:?} is east of the coast (in the sea)",
+            store.id,
+            store.location
+        );
+    }
+    for depot in &problem.depots {
+        assert!(
+            depot.location.lon <= sim::sydney_coast_lon(depot.location.lat),
+            "depot {} at {:?} is east of the coast (in the sea)",
+            depot.id,
+            depot.location
+        );
+    }
+}
+
+#[test]
 fn counts_below_one_are_clamped() {
     let problem = generate(&SimOptions {
         chain: Chain::Iga,
