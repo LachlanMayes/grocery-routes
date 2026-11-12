@@ -18,6 +18,7 @@ talks to this API.
 | `POST` | `/solve` | Solve a problem |
 | `GET` | `/solutions` | List recent solutions (summaries) |
 | `GET` | `/solutions/{id}` | Retrieve a solution |
+| `GET` | `/solutions/{id}/geometry` | Road polylines per route (OSM-solved plans) |
 | `GET` | `/solutions/{id}/kpis` | KPI summary for a solution |
 | `GET` | `/events` | SSE stream of live solve events |
 
@@ -88,6 +89,18 @@ restrict to one problem). Returns an array of:
 ### `GET /solutions/{id}`
 
 Returns `{ "id", "problem_id", "solution": <domain::Solution> }` (or `404`).
+
+### `GET /solutions/{id}/geometry`
+
+Returns the road geometry for a solution's routes: one polyline per route,
+each point `[lat, lon]`. Every consecutive pair of stops is routed over the
+road network (A*) and the node coordinates along the way are returned, so a
+map can draw the route following real streets instead of straight lines.
+
+Requires the solution to have been solved with `osm_path` (its extract is
+recorded); otherwise `routes` is empty. Geometry is computed on demand using
+the default truck profile, and each leg costs one point-to-point search (tens
+of milliseconds on a metro-area extract, seconds on the full NSW graph).
 
 ### `GET /solutions/{id}/kpis`
 

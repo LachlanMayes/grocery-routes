@@ -28,6 +28,7 @@ enum Msg {
     SolutionFetched(Result<Box<SolutionBundle>, anyhow::Error>),
     KpisFetched(Result<Box<KpisBundle>, anyhow::Error>),
     MapLoaded(Result<Box<SolutionBundle>, anyhow::Error>),
+    MapGeometryLoaded(Result<Vec<Vec<[f64; 2]>>, anyhow::Error>),
     SolveEvent(crate::api_client::SolveEvent),
     ProblemsLoaded(Result<Vec<ProblemSummary>, anyhow::Error>),
     SolutionsLoaded(Result<Vec<SolutionSummary>, anyhow::Error>),
@@ -106,6 +107,7 @@ pub struct ConsoleApp {
     // Map tab state
     map_id_input: String,
     map_status: Option<Result<Box<SolutionBundle>, anyhow::Error>>,
+    map_geometry: Vec<Vec<[f64; 2]>>,
     map_tiles: Option<walkers::HttpTiles>,
     map_memory: MapMemory,
     map_fit_pending: bool,
@@ -171,6 +173,7 @@ impl ConsoleApp {
             kpis_metric: KpiMetric::Cost,
             map_id_input: String::new(),
             map_status: None,
+            map_geometry: Vec::new(),
             map_tiles: None,
             map_memory: MapMemory::default(),
             map_fit_pending: true,
@@ -327,8 +330,21 @@ impl ConsoleApp {
                     self.map_fit_pending = true;
                     self.hidden_routes.clear();
                     self.map_id_input.clone_from(&bundle.id);
+                    // Fetch road geometry (empty if solved without an OSM
+                    // extract); the map falls back to straight legs.
+                    let tx = self.msg_tx.clone();
+                    let client = self.client.clone();
+                    let id = bundle.id.clone();
+                    self.map_geometry.clear();
+                    self.runtime.spawn(async move {
+                        let result = client.get_solution_geometry(&id).await;
+                        tx.send(Msg::MapGeometryLoaded(result)).ok();
+                    });
                 }
                 self.map_status = Some(res);
+            }
+            Msg::MapGeometryLoaded(res) => {
+                self.map_geometry = res.unwrap_or_default();
             }
             Msg::SolveEvent(ev) => {
                 self.events.push(SolveEventDisplay {
@@ -951,6 +967,7 @@ impl ConsoleApp {
             Some(Ok(bundle)) => render_map_body(
                 ui,
                 bundle,
+                &self.map_geometry,
                 &mut self.map_tiles,
                 &mut self.map_memory,
                 &mut self.map_fit_pending,
@@ -1007,6 +1024,7 @@ fn route_chip(ui: &mut egui::Ui, index: usize, hidden_routes: &mut HashSet<usize
 fn render_map_body(
     ui: &mut egui::Ui,
     bundle: &SolutionBundle,
+    geometry: &[Vec<[f64; 2]>],
     map_tiles: &mut Option<walkers::HttpTiles>,
     map_memory: &mut MapMemory,
     map_fit_pending: &mut bool,
@@ -1043,6 +1061,7 @@ fn render_map_body(
             .with_plugin(RouteOverlay {
                 bundle,
                 hidden: hidden_routes,
+                geometry,
             }),
     );
     ui.horizontal(|ui| {
@@ -1290,9 +1309,14 @@ fn fit_map_to_extents(memory: &mut MapMemory, bundle: &SolutionBundle, width: f6
 }
 
 /// Draws depot markers, stop dots and per-route polylines on the map.
+///
+/// When `geometry` has a polyline for a route, the route is drawn along those
+/// real road coordinates; otherwise (e.g. a haversine-solved plan with no OSM
+/// extract) it falls back to straight lines between stops.
 struct RouteOverlay<'a> {
     bundle: &'a SolutionBundle,
     hidden: &'a HashSet<usize>,
+    geometry: &'a [Vec<[f64; 2]>],
 }
 
 impl Plugin for RouteOverlay<'_> {
@@ -1310,36 +1334,62 @@ impl Plugin for RouteOverlay<'_> {
             }
             let color = route_color(index);
             let stroke = egui::Stroke::new(2.5_f32, color);
-            let mut previous = None;
+
+            // Prefer the real road polyline; fall back to straight legs.
+            let line: Vec<egui::Pos2> = match self.geometry.get(index).filter(|p| !p.is_empty()) {
+                Some(polyline) => polyline
+                    .iter()
+                    .map(|&[lat, lon]| project(projector, lon, lat))
+                    .collect(),
+                None => route
+                    .steps
+                    .iter()
+                    .filter_map(|stop| {
+                        node_lon_lat(&self.bundle.problem, stop.node)
+                            .map(|(lon, lat)| project(projector, lon, lat))
+                    })
+                    .collect(),
+            };
+            draw_polyline(painter, &line, stroke);
+
+            // Markers at the stops (always, on top of the polyline).
             for stop in &route.steps {
                 let Some((lon, lat)) = node_lon_lat(&self.bundle.problem, stop.node) else {
                     continue;
                 };
-                let projected = projector.project(lon_lat(lon, lat));
-                let pos = egui::pos2(projected.x, projected.y);
-                if let Some(p) = previous {
-                    painter.line_segment([p, pos], stroke);
-                }
-                previous = Some(pos);
-                match stop.node {
-                    domain::Node::Depot(_) => {
-                        painter.circle(
-                            pos,
-                            6.0,
-                            egui::Color32::from_rgb(30, 60, 160),
-                            egui::Stroke::new(2.0, egui::Color32::WHITE),
-                        );
-                    }
-                    domain::Node::Store(_) => {
-                        painter.circle_filled(pos, 4.0, color);
-                        painter.circle_stroke(
-                            pos,
-                            4.0,
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
-                        );
-                    }
-                }
+                draw_marker(painter, project(projector, lon, lat), color, stop.node);
             }
+        }
+    }
+}
+
+/// Project a lon/lat to a screen position.
+fn project(projector: &Projector, lon: f64, lat: f64) -> egui::Pos2 {
+    let projected = projector.project(lon_lat(lon, lat));
+    egui::pos2(projected.x, projected.y)
+}
+
+/// Draw a connected polyline through `points` (no-op for fewer than two).
+fn draw_polyline(painter: &egui::Painter, points: &[egui::Pos2], stroke: egui::Stroke) {
+    for pair in points.windows(2) {
+        painter.line_segment([pair[0], pair[1]], stroke);
+    }
+}
+
+/// Draw a depot (filled square) or store (dot) marker.
+fn draw_marker(painter: &egui::Painter, pos: egui::Pos2, color: egui::Color32, node: domain::Node) {
+    match node {
+        domain::Node::Depot(_) => {
+            painter.circle(
+                pos,
+                6.0,
+                egui::Color32::from_rgb(30, 60, 160),
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+            );
+        }
+        domain::Node::Store(_) => {
+            painter.circle_filled(pos, 4.0, color);
+            painter.circle_stroke(pos, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
         }
     }
 }

@@ -44,3 +44,9 @@ Two honest caveats:
   needs network access and must respect the OpenStreetMap tile usage policy
   (attribution is shown under the map). No tiles are cached to disk beyond
   the in-memory session.
+- Route lines follow real roads **only when the solution was solved with an
+  OSM extract** (`--osm`): the console then fetches `GET
+  /solutions/{id}/geometry` and draws the road polylines. Otherwise (a
+  haversine-solved plan) it falls back to straight lines between stops. The
+  geometry endpoint runs one point-to-point route search per leg, so a map
+  load on a big plan can take a few seconds.

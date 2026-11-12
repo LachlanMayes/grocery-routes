@@ -44,12 +44,19 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             distance_km  REAL NOT NULL,
             cost_cents   INTEGER NOT NULL,
             solved_at    TEXT NOT NULL DEFAULT (datetime('now')),
-            used_lns     INTEGER NOT NULL DEFAULT 0
+            used_lns     INTEGER NOT NULL DEFAULT 0,
+            osm_path     TEXT
         )
         "#,
     )
     .execute(pool)
     .await?;
+
+    // Add osm_path to databases created before it existed (SQLite has no
+    // "ADD COLUMN IF NOT EXISTS", so a duplicate-column error is ignored).
+    let _ = sqlx::query("ALTER TABLE solutions ADD COLUMN osm_path TEXT")
+        .execute(pool)
+        .await;
 
     Ok(())
 }
@@ -183,6 +190,7 @@ pub async fn store_solution(
     problem_id: &str,
     solution: &Solution,
     used_lns: bool,
+    osm_path: Option<&str>,
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let json = serde_json::to_string(solution).context("serializing solution")?;
@@ -194,7 +202,7 @@ pub async fn store_solution(
         .count() as i64;
     let total = problem_store_count(pool, problem_id).await?;
     sqlx::query(
-        "INSERT INTO solutions (id, problem_id, json, served, total, distance_km, cost_cents, used_lns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO solutions (id, problem_id, json, served, total, distance_km, cost_cents, used_lns, osm_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(&id)
     .bind(problem_id)
@@ -204,10 +212,22 @@ pub async fn store_solution(
     .bind(solution.total_distance_km)
     .bind(solution.total_cost_cents)
     .bind(used_lns as i64)
+    .bind(osm_path)
     .execute(pool)
     .await
     .context("inserting solution")?;
     Ok(id)
+}
+
+/// The OSM extract a solution was solved against, if any. Used to redraw its
+/// route geometry.
+pub async fn solution_osm_path(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT osm_path FROM solutions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(path,)| path))
 }
 
 /// Load a solution from the database by id, returning (problem_id, solution).
@@ -354,7 +374,7 @@ mod tests {
 
         let problem_id = import_problem(&pool, &problem).await.unwrap();
         let solution = solver::solve(&problem);
-        let sol_id1 = store_solution(&pool, &problem_id, &solution, false)
+        let sol_id1 = store_solution(&pool, &problem_id, &solution, false, None)
             .await
             .unwrap();
 
@@ -363,7 +383,7 @@ mod tests {
             ..problem
         };
         let other_id = import_problem(&pool, &other).await.unwrap();
-        let sol_id2 = store_solution(&pool, &other_id, &solution, true)
+        let sol_id2 = store_solution(&pool, &other_id, &solution, true, None)
             .await
             .unwrap();
 
@@ -391,7 +411,7 @@ mod tests {
         let problem_id = import_problem(&pool, &problem).await.unwrap();
 
         let solution = solver::solve(&problem);
-        let solution_id = store_solution(&pool, &problem_id, &solution, false)
+        let solution_id = store_solution(&pool, &problem_id, &solution, false, None)
             .await
             .unwrap();
 

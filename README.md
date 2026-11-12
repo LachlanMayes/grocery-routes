@@ -103,9 +103,10 @@ stops, km, duration, cost) with a named stop timeline for the selected route,
 an unassigned-stores list, and a collapsible raw-JSON debug section. The
 KPIs tab shows card-style stats, a serve-rate progress bar and a per-route
 bar chart (egui_plot; Cost or Distance metric). The Map tab draws each
-route as a coloured polyline on OpenStreetMap tiles (straight legs between
-stops) with depot/store markers, route visibility toggles, camera
-auto-fit to the solution's extent and the required OSM attribution.
+route on OpenStreetMap tiles - following real roads when the solution was
+solved with an OSM extract (road polylines via `GET /solutions/{id}/geometry`),
+or straight legs otherwise - with depot/store markers, route visibility
+toggles, camera auto-fit, zoom controls and the required OSM attribution.
 
 ## Checks
 

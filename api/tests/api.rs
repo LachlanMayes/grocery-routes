@@ -103,30 +103,34 @@ async fn import_problem(
         .expect("import request should complete")
 }
 
-#[tokio::test]
-async fn import_solve_read_flow() {
-    let (base_url, handle, _db_path) = spawn_app().await;
-    let client = reqwest::Client::new();
-    let problem = test_problem();
-
-    let import = import_problem(&client, &base_url, &problem).await;
-    assert_eq!(import.status(), StatusCode::OK);
+/// Import `problem` and solve it, returning `(problem_id, solution_id)`.
+async fn import_and_solve(
+    client: &reqwest::Client,
+    base_url: &str,
+    problem: &Problem,
+) -> (String, String) {
+    let import = import_problem(client, base_url, problem).await;
     let body: serde_json::Value = import.json().await.unwrap();
     let problem_id = body["id"].as_str().unwrap().to_owned();
-
     let solve = client
         .post(format!("{base_url}/solve"))
-        .json(&json!({
-            "problem_id": problem_id,
-            "lns": false,
-        }))
+        .json(&json!({ "problem_id": problem_id }))
         .send()
         .await
         .unwrap();
     assert_eq!(solve.status(), StatusCode::OK);
     let solve_body: serde_json::Value = solve.json().await.unwrap();
     let solution_id = solve_body["id"].as_str().unwrap().to_owned();
-    assert_eq!(solve_body["served"], 2);
+    (problem_id, solution_id)
+}
+
+#[tokio::test]
+async fn import_solve_read_flow() {
+    let (base_url, handle, _db_path) = spawn_app().await;
+    let client = reqwest::Client::new();
+    let problem = test_problem();
+
+    let (problem_id, solution_id) = import_and_solve(&client, &base_url, &problem).await;
 
     let solution = client
         .get(format!("{base_url}/solutions/{solution_id}"))
@@ -147,6 +151,31 @@ async fn import_solve_read_flow() {
     assert_eq!(kpis_body["served"], 2);
     assert_eq!(kpis_body["total"], 2);
     assert!(kpis_body["serve_rate"].as_f64().unwrap() > 0.99);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn geometry_is_empty_without_an_osm_extract() {
+    let (base_url, handle, _db_path) = spawn_app().await;
+    let client = reqwest::Client::new();
+    let problem = test_problem();
+
+    // Solve without osm_path: haversine routing, no road geometry recorded.
+    let (_problem_id, solution_id) = import_and_solve(&client, &base_url, &problem).await;
+
+    let geometry = client
+        .get(format!("{base_url}/solutions/{solution_id}/geometry"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(geometry.status(), StatusCode::OK);
+    let geometry_body: serde_json::Value = geometry.json().await.unwrap();
+    assert_eq!(
+        geometry_body["routes"].as_array().unwrap().len(),
+        0,
+        "haversine solutions have no road geometry"
+    );
 
     handle.abort();
 }

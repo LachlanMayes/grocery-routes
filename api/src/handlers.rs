@@ -28,7 +28,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::db::{
     import_problem, list_problems, list_solutions, load_problem, load_solution_with_problem,
-    store_solution,
+    solution_osm_path, store_solution,
 };
 use domain::{Problem, Solution};
 use routing::{CachedMatrix, TruckProfile};
@@ -114,6 +114,14 @@ pub struct Kpis {
     pub routes: usize,
 }
 
+/// Road geometry for a solution: one polyline per route, each point `[lat, lon]`.
+/// Returned by `GET /solutions/{id}/geometry` when the solution was solved
+/// against an OSM extract.
+#[derive(Serialize, Debug)]
+pub struct SolutionGeometry {
+    pub routes: Vec<Vec<[f64; 2]>>,
+}
+
 /// Summary of one imported problem, for GET /problems.
 #[derive(Serialize, Debug)]
 pub struct ProblemSummary {
@@ -147,6 +155,16 @@ pub struct ListParams {
     pub problem_id: Option<String>,
 }
 
+/// Count the store stops served across a solution's routes.
+fn served_store_count(solution: &domain::Solution) -> usize {
+    solution
+        .routes
+        .iter()
+        .flat_map(|r| &r.steps)
+        .filter(|s| matches!(s.node, domain::Node::Store(_)))
+        .count()
+}
+
 /// Build the axum router with all API routes.
 pub fn router(pool: sqlx::SqlitePool) -> Router {
     let (events, _rx) = broadcast::channel(16);
@@ -164,6 +182,10 @@ pub fn router(pool: sqlx::SqlitePool) -> Router {
         .route("/solve", post(solve_handler))
         .route("/solutions", get(list_solutions_handler))
         .route("/solutions/{id}", get(get_solution_handler))
+        .route(
+            "/solutions/{id}/geometry",
+            get(get_solution_geometry_handler),
+        )
         .route("/solutions/{id}/kpis", get(get_kpis_handler))
         .route("/events", get(sse_events_handler))
         .layer(RequestBodyLimitLayer::new(16 * 1024 * 1024))
@@ -429,16 +451,17 @@ async fn solve_handler(
         solver::solve(&problem)
     };
 
-    let served = solution
-        .routes
-        .iter()
-        .flat_map(|r| &r.steps)
-        .filter(|s| matches!(s.node, domain::Node::Store(_)))
-        .count();
+    let served = served_store_count(&solution);
 
-    let solution_id = store_solution(&state.pool, &payload.problem_id, &solution, run_lns)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let solution_id = store_solution(
+        &state.pool,
+        &payload.problem_id,
+        &solution,
+        run_lns,
+        payload.osm_path.as_deref(),
+    )
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Broadcast solve event to SSE subscribers.
     let event = SolveEvent {
@@ -476,7 +499,93 @@ async fn get_solution_handler(
     }))
 }
 
-/// GET /solutions/{id}/kpis — KPI summary for a solution.
+/// GET /solutions/{id}/geometry - road polylines for the solution's routes.
+///
+/// Requires the solution to have been solved against an OSM extract (its
+/// `osm_path` was recorded). For each route, every consecutive pair of stops is
+/// routed over the road network and the node coordinates are returned as a
+/// polyline. Returns an empty `routes` list when there is no recorded extract.
+async fn get_solution_geometry_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<SolutionGeometry>, StatusCode> {
+    let (problem_id, solution) = load_solution_with_problem(&state.pool, &id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let Some(osm_path) = solution_osm_path(&state.pool, &id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Ok(Json(SolutionGeometry { routes: Vec::new() }));
+    };
+
+    let cache = osm_cache_for(&state, &osm_path).await?;
+    let problem = load_problem(&state.pool, &problem_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let geometry = tokio::task::spawn_blocking(move || -> anyhow::Result<SolutionGeometry> {
+        let cache = cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("cached OSM graph lock poisoned"))?;
+        let graph = cache
+            .graph()
+            .ok_or_else(|| anyhow::anyhow!("no OSM graph loaded"))?;
+        let node_ids = cache.problem_node_ids(&problem)?;
+        Ok(compute_geometry(graph, &problem, &node_ids, &solution))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(geometry))
+}
+
+/// Build the road polyline for each route. Uses the default truck profile:
+/// geometry matches the distance-optimal routing the solver priced on for
+/// unfiltered vehicles (truck-filtered solves may take a different legal road).
+fn compute_geometry(
+    graph: &routing::Graph,
+    problem: &domain::Problem,
+    node_ids: &[routing::NodeId],
+    solution: &domain::Solution,
+) -> SolutionGeometry {
+    let depot_count = problem.depots.len();
+    let stop_index = |node: domain::Node| -> usize {
+        match node {
+            domain::Node::Depot(id) => id.0 as usize,
+            domain::Node::Store(id) => depot_count + id.0 as usize,
+        }
+    };
+    let profile = routing::TruckProfile::default();
+
+    let routes = solution
+        .routes
+        .iter()
+        .map(|route| {
+            let mut points: Vec<[f64; 2]> = Vec::new();
+            for pair in route.steps.windows(2) {
+                let (Some(&from), Some(&to)) = (
+                    node_ids.get(stop_index(pair[0].node)),
+                    node_ids.get(stop_index(pair[1].node)),
+                ) else {
+                    continue;
+                };
+                if let Some(coords) = routing::Router::path_geometry(graph, from, to, profile) {
+                    points.extend(coords.iter().map(|c| [c.lat, c.lon]));
+                }
+            }
+            points
+        })
+        .collect();
+
+    SolutionGeometry { routes }
+}
+
+/// GET /solutions/{id}/kpis - KPI summary for a solution.
 async fn get_kpis_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -486,20 +595,9 @@ async fn get_kpis_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let served = solution
-        .routes
-        .iter()
-        .flat_map(|r| &r.steps)
-        .filter(|s| matches!(s.node, domain::Node::Store(_)))
-        .count();
+    let served = served_store_count(&solution);
     let routes = solution.routes.len();
-    let total = solution
-        .routes
-        .iter()
-        .flat_map(|r| &r.steps)
-        .filter(|s| matches!(s.node, domain::Node::Store(_)))
-        .count()
-        + solution.unassigned.len();
+    let total = served + solution.unassigned.len();
     let serve_rate = if total > 0 {
         served as f64 / total as f64
     } else {

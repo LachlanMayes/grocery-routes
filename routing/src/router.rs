@@ -1,9 +1,14 @@
-//! Dijkstra shortest-path router over a [`crate::graph::Graph`].
+//! A* shortest-path router over a [`crate::graph::Graph`].
 //!
 //! Returns distance (km) and duration (minutes) between any two nodes, with an
-//! optional truck profile to filter edges.
+//! optional truck profile to filter edges. The search is A*: the priority is
+//! `g + h`, where `g` is the distance so far and `h` is the straight-line
+//! (haversine) distance to the target. Haversine never exceeds the road
+//! distance, so the heuristic is admissible and the returned path is the same
+//! distance-optimal path plain Dijkstra would find - it just explores far fewer
+//! nodes, which matters on the full NSW extract (millions of nodes).
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::graph::{EdgeId, Graph, NodeId};
 use crate::truck_constraints::{TruckProfile, edge_allowed_for};
@@ -19,7 +24,7 @@ pub struct RouteResult {
     pub nodes: Vec<NodeId>,
 }
 
-/// Internal priority-queue state: distance so far + node id.
+/// Internal priority-queue state: f-score (g + h) + node id.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct State {
     cost: f64,
@@ -45,12 +50,12 @@ impl PartialOrd for State {
 /// Eq is required for BinaryHeap; distance-based ordering is sufficient.
 impl Eq for State {}
 
-/// Dijkstra router over a graph.
+/// A* router over a graph.
 #[derive(Clone, Debug, Default)]
 pub struct Router;
 
 impl Router {
-    /// Computes the shortest path from `source` to `target` using Dijkstra,
+    /// Computes the shortest path from `source` to `target` using A*,
     /// respecting `profile` truck constraints.
     ///
     /// Returns `None` when no path exists.
@@ -84,62 +89,63 @@ impl Router {
                 Vec::new(),
             ));
         }
+        let target_location = graph.node(target)?.location;
 
-        let mut dist: HashMap<NodeId, f64> = HashMap::new();
+        // g-score: best distance from source found so far.
+        let mut g: HashMap<NodeId, f64> = HashMap::new();
         let mut total_time: HashMap<NodeId, i64> = HashMap::new();
         let mut prev: HashMap<NodeId, (NodeId, u64)> = HashMap::new(); // node -> (predecessor, edge_id)
-        let mut visited: HashMap<NodeId, bool> = HashMap::new();
+        let mut settled: HashSet<NodeId> = HashSet::new();
 
-        dist.insert(source, 0.0);
+        g.insert(source, 0.0);
         total_time.insert(source, 0);
 
         let mut heap: BinaryHeap<State> = BinaryHeap::new();
         heap.push(State {
-            cost: 0.0,
+            cost: heuristic(graph, source, target_location),
             node: source,
         });
 
         while let Some(State {
-            cost: current_dist,
+            cost: _f_score,
             node: current,
         }) = heap.pop()
         {
-            if visited.get(&current).copied().unwrap_or(false) {
+            // The first time a node is popped its g-score is optimal (the
+            // heuristic is consistent); later stale pops are skipped.
+            if !settled.insert(current) {
                 continue;
             }
-            visited.insert(current, true);
-
             if current == target {
                 break;
             }
 
+            let current_dist = g[&current];
             let current_time = *total_time
                 .get(&current)
                 .expect("popped node must have a time entry");
 
             for (edge_id, next_node, edge) in graph.out_edges(current) {
-                if visited.get(&next_node).copied().unwrap_or(false)
-                    || edge_allowed_for(edge, profile).is_err()
-                {
+                if settled.contains(&next_node) || edge_allowed_for(edge, profile).is_err() {
                     continue;
                 }
 
                 let new_dist = current_dist + edge.distance_km;
-                let known_dist = dist.get(&next_node).copied().unwrap_or(f64::INFINITY);
+                let known_dist = g.get(&next_node).copied().unwrap_or(f64::INFINITY);
 
                 if new_dist < known_dist {
-                    dist.insert(next_node, new_dist);
+                    g.insert(next_node, new_dist);
                     total_time.insert(next_node, current_time + edge.duration_minutes);
                     prev.insert(next_node, (current, edge_id.0));
                     heap.push(State {
-                        cost: new_dist,
+                        cost: new_dist + heuristic(graph, next_node, target_location),
                         node: next_node,
                     });
                 }
             }
         }
 
-        let final_dist = *dist.get(&target)?;
+        let final_dist = *g.get(&target)?;
         let final_time = *total_time.get(&target)?;
         reconstruct(source, target, final_dist, final_time, &prev)
     }
@@ -157,6 +163,33 @@ impl Router {
         let result = Self::shortest_path(graph, source, target, profile)?;
         Some((result.distance_km, result.duration_minutes))
     }
+
+    /// Ordered coordinates of the shortest road path from `source` to `target`
+    /// (one point per graph node along the way). This is the exact road
+    /// geometry the distance was priced on - use it to draw a route that
+    /// follows real streets instead of a straight line between stops.
+    pub fn path_geometry(
+        graph: &Graph,
+        source: NodeId,
+        target: NodeId,
+        profile: TruckProfile,
+    ) -> Option<Vec<domain::LatLon>> {
+        Self::shortest_path(graph, source, target, profile).map(|route| {
+            route
+                .nodes
+                .iter()
+                .filter_map(|id| graph.node(*id).map(|node| node.location))
+                .collect()
+        })
+    }
+}
+
+/// Straight-line distance from `node` to the target, in km. Never exceeds the
+/// road distance, so it is an admissible (and consistent) A* heuristic.
+fn heuristic(graph: &Graph, node: NodeId, target: domain::LatLon) -> f64 {
+    graph
+        .node(node)
+        .map_or(0.0, |n| domain::haversine_km(n.location, target))
 }
 
 /// Rebuilds the node and edge sequences from the predecessor map, target back

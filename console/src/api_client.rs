@@ -94,6 +94,12 @@ pub struct SolutionSummary {
     pub used_lns: bool,
 }
 
+/// Geometry response: one polyline per route, each point `[lat, lon]`.
+#[derive(Clone, Debug, Deserialize)]
+struct GeometryResponse {
+    routes: Vec<Vec<[f64; 2]>>,
+}
+
 /// SSE solve event broadcast by the server.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SolveEvent {
@@ -253,6 +259,25 @@ impl ApiClient {
         }
         let json: Kpis = resp.json().await.context("parsing kpis response")?;
         Ok(json)
+    }
+
+    /// GET /solutions/{id}/geometry — road polylines per route (each point
+    /// `[lat, lon]`); empty `routes` when the solution had no OSM extract.
+    pub async fn get_solution_geometry(&self, id: &str) -> Result<Vec<Vec<[f64; 2]>>> {
+        let resp = self
+            .inner
+            .get(format!("{}/solutions/{}/geometry", self.base_url, id))
+            .send()
+            .await
+            .context("GET /solutions/{id}/geometry")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("GET /solutions/{id}/geometry failed: {}", resp.status());
+        }
+        let json: GeometryResponse = resp
+            .json()
+            .await
+            .context("parsing solution geometry response")?;
+        Ok(json.routes)
     }
 
     /// Open an SSE event stream. Returns a stream of [`SolveEvent`]s.
