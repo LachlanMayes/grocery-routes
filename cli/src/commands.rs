@@ -200,6 +200,12 @@ pub struct GenSimArgs {
     /// receiving windows (illustrative fixture parameters).
     #[arg(long)]
     pub christmas_peak: bool,
+    /// OSM PBF extract to snap generated stores and depots onto the real road
+    /// network (nearest node within 20 km). Guarantees every point is on a
+    /// mapped road on land - use this for exact placement. Loading the extract
+    /// takes ~40 s (release build).
+    #[arg(long)]
+    pub osm: Option<PathBuf>,
     /// File the problem JSON is written to.
     #[arg(long)]
     pub out: PathBuf,
@@ -653,6 +659,9 @@ pub fn run_gen_sim(args: &GenSimArgs) -> anyhow::Result<()> {
         christmas_peak: args.christmas_peak,
     };
     let mut problem = sim::generate(&options);
+    if let Some(osm_path) = &args.osm {
+        snap_to_roads(&mut problem, osm_path)?;
+    }
     if args.timezones {
         let tz = options.city.iana_timezone();
         for depot in &mut problem.depots {
@@ -700,6 +709,42 @@ pub fn run_gen_sim(args: &GenSimArgs) -> anyhow::Result<()> {
         );
     }
     println!("wrote {}", args.out.display());
+    Ok(())
+}
+
+/// Snap every store and depot in `problem` to the nearest road-network node
+/// from the OSM extract at `osm_path`, so generated points sit on real mapped
+/// roads on land (exact placement). Points with no node within 20 km keep
+/// their generated (coast-clamped) location.
+fn snap_to_roads(problem: &mut domain::Problem, osm_path: &std::path::Path) -> anyhow::Result<()> {
+    /// Maximum snap distance: a generated point farther than this from any
+    /// road is left as-is rather than dragged across the map.
+    const MAX_SNAP_KM: f64 = 20.0;
+
+    let mut cache = routing::CachedMatrix::new();
+    cache
+        .load_pbf(osm_path)
+        .with_context(|| format!("loading OSM extract {}", osm_path.display()))?;
+    let graph = cache.graph().context("OSM graph not loaded after ingest")?;
+    let index = routing::NodeIndex::build(graph);
+
+    let mut snapped = 0usize;
+    let mut snap = |location: &mut domain::LatLon| {
+        if let Some((node, _)) = index.nearest(*location, MAX_SNAP_KM) {
+            *location = node;
+            snapped += 1;
+        }
+    };
+    for depot in &mut problem.depots {
+        snap(&mut depot.location);
+    }
+    for store in &mut problem.stores {
+        snap(&mut store.location);
+    }
+    println!(
+        "  snapped {snapped}/{} points onto the road network",
+        problem.depots.len() + problem.stores.len()
+    );
     Ok(())
 }
 

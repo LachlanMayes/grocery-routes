@@ -19,7 +19,8 @@ cargo run -p cli -- gen-sim --chain coles --city sydney --stores 40 \
 | `--depots` | usize | 3 | |
 | `--vehicles` | usize | 12 | one driver generated per vehicle |
 | `--seed` | u64 | 42 | deterministic: same seed → same problem |
-| `--horizon-start` | RFC 3339 | — | absolute instant of horizon minute zero (e.g. `2026-11-05T00:00:00Z`); resolves local civil times and holiday flags |
+| `--osm` | path | - | OSM PBF extract to snap stores/depots onto the real road network (nearest node within 20 km) for exact on-land placement; ~40 s in a release build |
+| `--horizon-start` | RFC 3339 | - | absolute instant of horizon minute zero (e.g. `2026-11-05T00:00:00Z`); resolves local civil times and holiday flags |
 | `--timezones` | bool | false | stamps the city's IANA timezone on every depot/store; pair with `--horizon-start` |
 | `--christmas-peak` | bool | false | higher demand + wider receiving windows (illustrative) |
 | `--out` | path | required | problem JSON output |

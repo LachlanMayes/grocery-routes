@@ -25,7 +25,7 @@ pub use audit::{AuditStrategy, CorridorAudit, CorridorRow, audit_solution, csv_f
 pub use cached_matrix::{CachedMatrix, MatrixEntry, MatrixKey, MatrixStrategy};
 pub use ch::{ChError, ContractionHierarchy};
 pub use curated::{CuratedConstraints, CuratedEntry, CuratedError};
-pub use graph::{EdgeId, Graph, NodeId};
+pub use graph::{EdgeId, Graph, NodeId, NodeIndex};
 pub use router::{RouteResult, Router};
 pub use timed::{CurfewContext, LegStep, TimedLeg, earliest_leg, plain_leg};
 pub use truck_constraints::TruckProfile;

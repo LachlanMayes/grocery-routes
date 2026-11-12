@@ -203,3 +203,132 @@ impl Graph {
         self.edges.values_mut()
     }
 }
+
+/// A uniform-grid spatial index over graph-node coordinates, for fast
+/// nearest-node queries (used to snap generated points onto the road network).
+#[derive(Clone, Debug)]
+pub struct NodeIndex {
+    /// Cell size in degrees.
+    cell_deg: f64,
+    /// Node coordinates bucketed by grid cell.
+    cells: HashMap<(i32, i32), Vec<LatLon>>,
+}
+
+impl NodeIndex {
+    /// Cell size in degrees (~5.5 km at Sydney's latitude).
+    pub const CELL_DEG: f64 = 0.05;
+
+    /// Build an index over every node in `graph`.
+    pub fn build(graph: &Graph) -> Self {
+        let mut cells: HashMap<(i32, i32), Vec<LatLon>> = HashMap::new();
+        for (_id, node) in graph.nodes() {
+            let key = Self::key(node.location);
+            cells.entry(key).or_default().push(node.location);
+        }
+        Self {
+            cell_deg: Self::CELL_DEG,
+            cells,
+        }
+    }
+
+    fn key(point: LatLon) -> (i32, i32) {
+        (
+            (point.lat / Self::CELL_DEG).floor() as i32,
+            (point.lon / Self::CELL_DEG).floor() as i32,
+        )
+    }
+
+    /// The nearest node to `point`, if one is within `max_km`. Returns the
+    /// node coordinate and its distance in kilometres. Searches outward ring
+    /// by ring and stops once the best hit is closer than the next ring.
+    pub fn nearest(&self, point: LatLon, max_km: f64) -> Option<(LatLon, f64)> {
+        let (base_lat, base_lon) = Self::key(point);
+        let km_per_cell = self.cell_deg * 111.0;
+        let max_ring = (max_km / km_per_cell).ceil() as i32 + 1;
+        let mut best: Option<(LatLon, f64)> = None;
+        for ring in 0..=max_ring {
+            self.scan_ring(point, base_lat, base_lon, ring, &mut best);
+            // Once the best hit is closer than the next ring's inner edge, no
+            // farther ring can improve it.
+            if let Some((_, best_distance)) = best
+                && best_distance <= ring as f64 * km_per_cell
+            {
+                break;
+            }
+        }
+        best.filter(|(_, distance)| *distance <= max_km)
+    }
+
+    /// Scan the cells at Chebyshev distance `ring` from `(base_lat, base_lon)`,
+    /// updating `best` with any closer node.
+    fn scan_ring(
+        &self,
+        point: LatLon,
+        base_lat: i32,
+        base_lon: i32,
+        ring: i32,
+        best: &mut Option<(LatLon, f64)>,
+    ) {
+        for d_lat in -ring..=ring {
+            for d_lon in -ring..=ring {
+                // Only the perimeter of this ring; the interior was scanned by
+                // an earlier ring.
+                if ring > 0 && d_lat.abs() != ring && d_lon.abs() != ring {
+                    continue;
+                }
+                let Some(bucket) = self.cells.get(&(base_lat + d_lat, base_lon + d_lon)) else {
+                    continue;
+                };
+                for &location in bucket {
+                    let distance = domain::haversine_km(point, location);
+                    if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+                        *best = Some((location, distance));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graph_with(nodes: &[(u64, f64, f64)]) -> Graph {
+        let mut graph = Graph::new();
+        for (id, lat, lon) in nodes {
+            graph.add_node(NodeId(*id), LatLon::new(*lat, *lon));
+        }
+        graph
+    }
+
+    #[test]
+    fn nearest_finds_the_closest_node() {
+        let graph = graph_with(&[
+            (1, -33.90, 151.10),
+            (2, -33.90, 151.30),
+            (3, -33.95, 151.20),
+        ]);
+        let index = NodeIndex::build(&graph);
+        let (location, distance) = index
+            .nearest(LatLon::new(-33.905, 151.305), 50.0)
+            .expect("a node is in range");
+        assert_eq!(location, LatLon::new(-33.90, 151.30));
+        assert!(distance < 1.0, "expected the close node, got {distance} km");
+    }
+
+    #[test]
+    fn nearest_respects_the_max_distance() {
+        let graph = graph_with(&[(1, -33.90, 151.10)]);
+        let index = NodeIndex::build(&graph);
+        // A point ~10 km away: in range at 20 km, out of range at 5 km.
+        assert!(index.nearest(LatLon::new(-33.99, 151.10), 20.0).is_some());
+        assert!(index.nearest(LatLon::new(-33.99, 151.10), 5.0).is_none());
+    }
+
+    #[test]
+    fn nearest_on_an_empty_index_is_none() {
+        let index = NodeIndex::build(&Graph::new());
+        assert!(index.nearest(LatLon::new(-33.87, 151.21), 50.0).is_none());
+    }
+}
