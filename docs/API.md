@@ -1,4 +1,4 @@
-# API reference (`crates/api`)
+# API reference (`api`)
 
 Run with `cargo run -p api -- --db data/demo/api.sqlite` (creates the SQLite DB
 if missing). Default listen address `127.0.0.1:8080`; override with `--addr`.

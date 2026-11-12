@@ -250,7 +250,7 @@ fn c101_calibration_greedy() {
 
     // The calibration dataset is tracked in the repository. Fail loudly when
     // it is missing rather than silently skipping the calibration gate.
-    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    let path = std::path::Path::new("../data/solomon/C101.txt");
     if !path.exists() {
         panic!(
             "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
@@ -304,7 +304,7 @@ fn c101_calibration_local_search() {
         LSConfig, euclidean_matrix, parse_solomon_file, solomon_to_problem, solve_with_local_search,
     };
 
-    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    let path = std::path::Path::new("../data/solomon/C101.txt");
     if !path.exists() {
         panic!(
             "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
@@ -369,7 +369,7 @@ fn c101_calibration_lns_multistart() {
         solve_with_lns_multistart,
     };
 
-    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    let path = std::path::Path::new("../data/solomon/C101.txt");
     if !path.exists() {
         panic!(
             "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",
@@ -429,7 +429,7 @@ fn c101_calibration_lns() {
         LNSConfig, euclidean_matrix, parse_solomon_file, solomon_to_problem, solve_with_lns,
     };
 
-    let path = std::path::Path::new("../../data/solomon/C101.txt");
+    let path = std::path::Path::new("../data/solomon/C101.txt");
     if !path.exists() {
         panic!(
             "C101 dataset is tracked in this repository at data/solomon/C101.txt; path {} does not exist from this test's working directory",

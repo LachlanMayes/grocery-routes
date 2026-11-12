@@ -1,4 +1,4 @@
-# G-NAF geocoding (`crates/geo-au`)
+# G-NAF geocoding (`geo-au`)
 
 G-NAF (Geoscape's Geocoded National Address File) is the open address
 register for Australia: every address, its coordinates and its
@@ -30,7 +30,7 @@ cargo run -p cli -- reverse --db data/gnaf.sqlite --lat=-33.8688 --lon=151.2093
 
 | Piece | Detail |
 |---|---|
-| Flat-file reader | Pipe-separated, header-driven, quote-aware (`crates/geo-au/src/flatfile.rs`). A missing column fails with the file name and the headers it saw. |
+| Flat-file reader | Pipe-separated, header-driven, quote-aware (`geo-au/src/flatfile.rs`). A missing column fails with the file name and the headers it saw. |
 | Ingest | STATE, LOCALITY, STREET_LOCALITY, ADDRESS_DETAIL and ADDRESS_DEFAULT_GEOCODE files, per state, into SQLite (`import.rs`). Supports maps are held in memory; address rows stream through the geocode table. |
 | Query | Simple parser (number, street + optional type, locality after a comma, state code, 4-digit postcode anywhere) plus a ranking heuristic (`query.rs`). |
 | Reverse | Bounding-box scan plus haversine, nearest first. |

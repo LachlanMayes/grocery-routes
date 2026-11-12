@@ -38,7 +38,7 @@ next-sprint plan (tasks 1–6) is also closed: truck-constraints tooling
   parallel and keeps the best. C101: 679.85 with 8 runs × 120 s versus
   709.10 for a single run; local search (621.42) remains the best measured
   path.
-- **G-NAF geocoder** — new `crates/geo-au`: flat-file ingest → SQLite,
+- **G-NAF geocoder** — new `geo-au`: flat-file ingest → SQLite,
   `geocode`/`reverse`; CLI `import-gnaf`, `geocode`, `reverse`. Validated
   against synthetic fixtures only; see [GNAF.md](GNAF.md).
 - **Corridor audit** — CLI `audit` lists every OSM way a plan traverses and
@@ -98,8 +98,8 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 |---|---|---|
 | Solomon C101 gap measurement | end of M1 | Measured repeatedly; current: greedy 841.68, local search 621.42, LNS 709.10 (single) / 679.85 (×8). The ≤5% gap gate (≤870.39) passes; local search remains the best path. |
 | Overpass truck-tag count (Sydney bbox; `maxweight`, `maxheight`, `hgv`) | M0 | PARTIAL, decision recorded: `maxweight` 5,612 (3.2% of drivable ways), `maxheight` 1,328 (0.8%), `hgv` 694 (0.4%). M3 uses OSM tags where present; curated way-specific limits via `routing::curated` (ships empty — no verified data); `audit` reports which corridors lack limit data. See `docs/TRUCK-CONSTRAINTS.md`. |
-| Two-shift multi-day fixture (Sydney→Melbourne overnight relay) | M0 | Complete — fixture passes in `crates/domain/tests/validation.rs`; multi-day horizons are the degenerate single-day case for the solver. Solver-side relay/rest *placement* remains unimplemented (see below). |
-| `vrp_parser` cross-check (optional) | M1 | Not adopted as a dependency; Solomon/VRPLib parser is vendored in `crates/solver/src/parser.rs`. |
+| Two-shift multi-day fixture (Sydney→Melbourne overnight relay) | M0 | Complete — fixture passes in `domain/tests/validation.rs`; multi-day horizons are the degenerate single-day case for the solver. Solver-side relay/rest *placement* remains unimplemented (see below). |
+| `vrp_parser` cross-check (optional) | M1 | Not adopted as a dependency; Solomon/VRPLib parser is vendored in `solver/src/parser.rs`. |
 | Contraction hierarchy measured win (all-pairs build) | M3 gap | Passed on a synthetic grid in the debug profile (~30×); opt-in via `solve --ch`. Real-extract timing is an operator measurement. |
 | LNS multi-start measured win over single-run LNS | M2 gap | Passed (679.85 vs 709.10 on C101) but not over local search; LNS stays opt-in. |
 
@@ -107,14 +107,14 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 
 | Crate | Role | Milestone | Status |
 |---|---|---|---|
-| `crates/domain` | Timeline model, chains/stores/vehicles/drivers, validation rules, multi-day fixture, horizon anchor + local-time conversion (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) | M0/M5 | Implemented; NHVR fatigue rules (between-shift rest and work caps), chain receiving defaults and returnables fixtures, DST-aware local times, national and per-jurisdiction holiday calendars, invalid IANA names rejected via `Problem::validate_timezones`. In-shift break placement is not modelled. |
-| `crates/sim` | Seeded synthetic network generator (city × chain), Christmas-peak profile | M0 | Implemented; `City::iana_timezone` with `gen-sim --timezones`; `--christmas-peak` uplift/windows are illustrative fixtures. |
-| `crates/solver` | Haversine/road matrices + deterministic greedy insertion → local search → LNS/ALNS, multi-start, curfew re-scheduling | M0–M2 | Implemented; greedy default; LS 621.42 / LNS 709.10 single / 679.85 ×8 on C101; `--repeat N` multi-start; curfew enforcement re-schedules and reports drops. |
-| `crates/routing` | OSM PBF ingest → directed graph → truck tag filtering → matrices; curated limits; contraction hierarchy; time-dependent curfews; corridor audit | M3 | Implemented; Dijkstra and CH strategies; `routing::timed` curfew waiting; `routing::audit` corridor report. No real extract ships in-repo; corridor legality stays human-verified. |
-| `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented and fixture-tested; not yet validated against a real G-NAF release (operator step, see `docs/GNAF.md`). |
-| `crates/cli` | `gen-sim` / `solve` / `export` plus `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented; C101 dataset is tracked. |
-| `crates/api` | axum + SQLite; SSE events; import/solve/solution/KPIs | M4 | Implemented; endpoint integration tests pass; OSM matrices default to Dijkstra (CH is CLI-only for now). |
-| `apps/console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer), backed by the API server binary (`cargo run -p api`); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
+| `domain` | Timeline model, chains/stores/vehicles/drivers, validation rules, multi-day fixture, horizon anchor + local-time conversion (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) | M0/M5 | Implemented; NHVR fatigue rules (between-shift rest and work caps), chain receiving defaults and returnables fixtures, DST-aware local times, national and per-jurisdiction holiday calendars, invalid IANA names rejected via `Problem::validate_timezones`. In-shift break placement is not modelled. |
+| `sim` | Seeded synthetic network generator (city × chain), Christmas-peak profile | M0 | Implemented; `City::iana_timezone` with `gen-sim --timezones`; `--christmas-peak` uplift/windows are illustrative fixtures. |
+| `solver` | Haversine/road matrices + deterministic greedy insertion → local search → LNS/ALNS, multi-start, curfew re-scheduling | M0–M2 | Implemented; greedy default; LS 621.42 / LNS 709.10 single / 679.85 ×8 on C101; `--repeat N` multi-start; curfew enforcement re-schedules and reports drops. |
+| `routing` | OSM PBF ingest → directed graph → truck tag filtering → matrices; curated limits; contraction hierarchy; time-dependent curfews; corridor audit | M3 | Implemented; Dijkstra and CH strategies; `routing::timed` curfew waiting; `routing::audit` corridor report. No real extract ships in-repo; corridor legality stays human-verified. |
+| `geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented and fixture-tested; not yet validated against a real G-NAF release (operator step, see `docs/GNAF.md`). |
+| `cli` | `gen-sim` / `solve` / `export` plus `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented; C101 dataset is tracked. |
+| `api` | axum + SQLite; SSE events; import/solve/solution/KPIs | M4 | Implemented; endpoint integration tests pass; OSM matrices default to Dijkstra (CH is CLI-only for now). |
+| `console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer), backed by the API server binary (`cargo run -p api`); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
 
 ## Milestones
 
@@ -122,7 +122,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
   Sydney→Melbourne relay fixture, sim generator, CLI and export are in place.
 - **M1 — Solver v1** — **done**. Vendored Solomon/VRPLib parser, C101 gate
   wired, greedy and local search validated, C101 dataset tracked.
-  [docs/M1-REPORT.md](M1-REPORT.md) is current as of 2026-11-06.
+  [docs/M1-REPORT.md](reports/M1-REPORT.md) is current as of 2026-11-06.
 - **M2 — Solver v2** — **done**. LNS validity fixed (`fbca088`); multi-start
   added and measured (`2b88822`); local search remains the quality path and
   LNS stays opt-in. `rayon` was not added — scoped threads are used.
@@ -154,7 +154,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    tooling (`03b984d`), the research report (`docs/CORRIDOR-RESEARCH.md`)
    and the draft desktop-research entries remain available for anyone who
    later wants legal verification for a real run — see
-   [CORRIDOR-CHECKLIST.md](CORRIDOR-CHECKLIST.md).
+   [CORRIDOR-CHECKLIST.md](research/CORRIDOR-CHECKLIST.md).
 2. **Curfew enforcement has two modes now.** `--enforce-curfews` is still a
    post-solve feasibility restore (route order and fleet assignment fixed;
    waits and drops are the only remedies). `--curfew-aware` builds routes
@@ -184,7 +184,7 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    hierarchy stays opt-in. Ingest now handles dense nodes and restricts
    the graph to nodes on drivable ways (`osm_ingest.rs`).
 7. **LNS decision closed** (`a263534`): harder 200-customer benchmark
-   (`crates/solver/tests/harder_benchmark.rs`) measured LS 1372.06/187
+   (`solver/tests/harder_benchmark.rs`) measured LS 1372.06/187
    served vs LNS 1827.32/136 served — LS wins by ~25%. LS stays the
    quality path, LNS stays opt-in. No solver change; the condition in
    `docs/M1-REPORT.md` ("Harder benchmark") is recorded there.

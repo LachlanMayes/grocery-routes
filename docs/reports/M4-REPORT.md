@@ -1,15 +1,15 @@
 # M4 report — product shell
 
-Date: 2026-11-07 (historical snapshot; current state in [PLAN.md](PLAN.md)).
-Scope and gates per [PLAN.md](PLAN.md).
+Date: 2026-11-07 (historical snapshot; current state in [PLAN.md](../PLAN.md)).
+Scope and gates per [PLAN.md](../PLAN.md).
 
 ## What was delivered
 
-- **API** (`crates/api`): axum + SQLite endpoints, SSE solve events, import
+- **API** (`api`): axum + SQLite endpoints, SSE solve events, import
   validation, 16 MiB request body limit, OSM graph cache keyed by canonical
   PBF path. Endpoints: `POST /problems`, `GET /problems/{id}`, `POST /solve`,
   `GET /solutions/{id}`, `GET /solutions/{id}/kpis`, `GET /events`.
-- **Console** (`apps/console`): egui operator client covering import/solve/
+- **Console** (`console`): egui operator client covering import/solve/
   solutions/KPIs/events, talks to the API on `127.0.0.1:8080`.
 - **Console usability pass** (2026-11-08): auto-fill of problem/solution IDs
   across tabs on success, `Copy ID` buttons, `Go to Solve` / `View Solution` /

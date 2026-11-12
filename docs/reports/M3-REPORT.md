@@ -1,10 +1,10 @@
 # M3 report — road reality
 
-Date: 2026-11-07 (historical snapshot; current state in [PLAN.md](PLAN.md)).
-Scope and gates per [PLAN.md](PLAN.md).
+Date: 2026-11-07 (historical snapshot; current state in [PLAN.md](../PLAN.md)).
+Scope and gates per [PLAN.md](../PLAN.md).
 
 > Historical snapshot. Real-extract timing/memory remain operator steps
-> (see [PLAN.md](PLAN.md) "Known gaps").
+> (see [PLAN.md](../PLAN.md) "Known gaps").
 
 ## What was delivered (in software)
 

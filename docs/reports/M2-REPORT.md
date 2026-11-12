@@ -1,7 +1,7 @@
 # M2 report — solver v2 (LNS + multi-start)
 
-Date: 2026-11-06 (historical snapshot; current state in [PLAN.md](PLAN.md)).
-Scope and gates per [PLAN.md](PLAN.md).
+Date: 2026-11-06 (historical snapshot; current state in [PLAN.md](../PLAN.md)).
+Scope and gates per [PLAN.md](../PLAN.md).
 
 > Historical snapshot. Test counts and lint claims reflect 2026-11-06; the
 > LNS decision was later closed by the harder benchmark in
@@ -31,7 +31,7 @@ Gate: distance ≤ 870.39, all 100 served — passes for all four.
 Local search (621.42) remains the best measured quality path; LNS stays
 opt-in. Multi-start helps LNS (709.10 → 679.85) but does not beat local
 search. The "measured win" condition for promoting LNS was later closed
-negatively by `crates/solver/tests/harder_benchmark.rs` (LS 1372.06 vs LNS
+negatively by `solver/tests/harder_benchmark.rs` (LS 1372.06 vs LNS
 1827.32 on a harder 200-customer instance).
 
 ## Checks

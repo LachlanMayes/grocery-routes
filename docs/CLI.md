@@ -1,4 +1,4 @@
-# CLI reference (`crates/cli`)
+# CLI reference (`cli`)
 
 Binary: `cargo run -p cli -- <COMMAND>` (or the built `grocery-routes` binary).
 Every subcommand accepts `--help`. Paths are relative to the current working

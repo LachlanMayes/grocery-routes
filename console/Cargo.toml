@@ -13,11 +13,11 @@ serde_json.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
-domain = { path = "../../crates/domain" }
+domain = { path = "../domain" }
 chrono.workspace = true
 rfd = "0.15"
 egui_plot = "0.38"
-api = { path = "../../crates/api" }
+api = { path = "../api" }
 clap = { workspace = true }
 walkers = { version = "0.65", default-features = false, features = ["rustls-aws-lc-rs"] }
 

@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn repo_constraints_file_is_valid() {
         // The tracked template must always parse (it ships empty).
-        let curated = load(include_str!("../../../constraints/truck-constraints.json")).unwrap();
+        let curated = load(include_str!("../../constraints/truck-constraints.json")).unwrap();
         assert!(curated.is_empty());
     }
 

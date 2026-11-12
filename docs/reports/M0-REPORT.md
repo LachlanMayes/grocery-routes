@@ -1,12 +1,12 @@
 # M0 report — foundations
 
-Date: 2026-11-03. Scope and gates per [PLAN.md](PLAN.md). Every measurement below
+Date: 2026-11-03. Scope and gates per [PLAN.md](../PLAN.md). Every measurement below
 was produced by the command shown next to it; anything not yet built is listed
 under "Not done (by design)".
 
 > Historical snapshot, not a current verification report. Test counts and lint
 > claims reflect 2026-11-03; the Solomon C101 rows were corrected on 2026-11-05
-> (see [M1-REPORT.md](M1-REPORT.md) and [PLAN.md](PLAN.md)).
+> (see [M1-REPORT.md](M1-REPORT.md) and [PLAN.md](../PLAN.md)).
 
 ## What exists
 
@@ -84,7 +84,7 @@ The calibration path was fixed after this report was written: the C101
 problem uses `solomon_to_problem(inst, 60.0)`, so one distance unit maps to
 one minute. Current state: greedy 841.68 with 100/100 served, local search
 621.42 with 100/100 served. See [M1-REPORT.md](M1-REPORT.md) and
-[PLAN.md](PLAN.md) for the current evidence.
+[PLAN.md](../PLAN.md) for the current evidence.
 
 ### 4. Benchmark parser — decision recorded, not yet written
 
@@ -98,7 +98,7 @@ M1 vendors a ~50-line Solomon/VRPLib parser in the bench harness.
   cannot link anything.
 - `criterion` is pinned to 0.5 with `default-features = false` (the registry
   offered 0.8.2; 0.5 was chosen for API stability in a stub bench, upgrade
-  deferred) and `crates/solver/Cargo.toml` gained
+  deferred) and `solver/Cargo.toml` gained
   `[[bench]] harness = false` so the bench actually executes.
 - sim fleet classes were re-tuned mid-integration — from
   (16,10,6)/(24,14,10)/(18,12,0) to (18,12,10)/(28,18,16)/(20,14,0) — after the
@@ -134,7 +134,7 @@ M1 vendors a ~50-line Solomon/VRPLib parser in the bench harness.
 Local search + metaheuristics, the C101 bench harness, OSM routing (`routing`),
 G-NAF geocoding (`geo-au`), the API, the egui console, and driver tools — all
 per the milestone plan. (As of 2026-11-05 the solver, routing, API and console
-are implemented; see [PLAN.md](PLAN.md).)
+are implemented; see [PLAN.md](../PLAN.md).)
 
 ## Reproduce
 

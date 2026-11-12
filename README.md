@@ -9,13 +9,13 @@ Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
 - Truck-constraint enforcement model (what is and is not verified):
   [docs/TRUCK-CONSTRAINTS.md](docs/TRUCK-CONSTRAINTS.md)
 - Corridor research (desktop findings for the synthetic Sydney plan):
-  [docs/CORRIDOR-RESEARCH.md](docs/CORRIDOR-RESEARCH.md)
+  [docs/CORRIDOR-RESEARCH.md](docs/research/CORRIDOR-RESEARCH.md)
 - Step-by-step completion guide for the corridor legality task:
-  [docs/CORRIDOR-CHECKLIST.md](docs/CORRIDOR-CHECKLIST.md)
+  [docs/CORRIDOR-CHECKLIST.md](docs/research/CORRIDOR-CHECKLIST.md)
 - G-NAF geocoding (acquisition, licensing, limits): [docs/GNAF.md](docs/GNAF.md)
 - Security and dependency audit: [docs/SECURITY.md](docs/SECURITY.md)
-- Milestone reports: [docs/M0-REPORT.md](docs/M0-REPORT.md) ·
-  [docs/M1-REPORT.md](docs/M1-REPORT.md)
+- Milestone reports: [docs/M0-REPORT.md](docs/reports/M0-REPORT.md) ·
+  [docs/M1-REPORT.md](docs/reports/M1-REPORT.md)
 
 ## Quickstart
 
@@ -122,13 +122,13 @@ The workspace builds with zero `clippy::all` warnings as of 2026-11-09
 
 | Path | Role |
 |---|---|
-| `crates/domain` | timeline model + validation rules (the contract), horizon→local clock (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) |
-| `crates/sim` | seeded synthetic network generator, Christmas-peak profile |
-| `crates/solver` | haversine/road matrices, greedy insertion, local search, LNS/ALNS with multi-start, curfew re-scheduling and curfew-aware construction (`Legs`), relay post-pass |
-| `crates/routing` | OSM PBF ingest, directed graph, truck constraints (OSM tags + `curated` per-way limits), cached matrices, contraction hierarchy (`ch`), time-dependent curfews (`timed`), corridor audit (`audit`) |
-| `crates/geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
-| `crates/cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-stores`, `import-gnaf`, `geocode`, `reverse` |
-| `crates/api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
-| `apps/console` | egui operator console (`cargo run -p console`) — embeds the API in-process on `127.0.0.1:8080` |
+| `domain` | timeline model + validation rules (the contract), horizon→local clock (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) |
+| `sim` | seeded synthetic network generator, Christmas-peak profile |
+| `solver` | haversine/road matrices, greedy insertion, local search, LNS/ALNS with multi-start, curfew re-scheduling and curfew-aware construction (`Legs`), relay post-pass |
+| `routing` | OSM PBF ingest, directed graph, truck constraints (OSM tags + `curated` per-way limits), cached matrices, contraction hierarchy (`ch`), time-dependent curfews (`timed`), corridor audit (`audit`) |
+| `geo-au` | G-NAF flat-file ingest → SQLite; geocode and reverse |
+| `cli` | `gen-sim`, `solve`, `export`, `holidays`, `audit`, `constraints`, `import-stores`, `import-gnaf`, `geocode`, `reverse` |
+| `api` | axum + SQLite API (`cargo run -p api`), SSE solve events, import/solve/solution/KPI endpoints |
+| `console` | egui operator console (`cargo run -p console`) — embeds the API in-process on `127.0.0.1:8080` |
 | `constraints/` | curated truck-constraints file (schema + provenance rules) |
-| `docs/` | roadmap, plan status, milestone reports, truck-constraint model, G-NAF notes |
+| `docs/` | roadmap + plan status (`PLAN.md`), reference (`API`, `CLI`, `GNAF`, `SECURITY`, `TRUCK-CONSTRAINTS`), `reports/` (milestone reports), `research/` (corridor legality) |

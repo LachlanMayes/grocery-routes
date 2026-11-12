@@ -1,7 +1,7 @@
 # M1 report — solver v1 + calibration gate
 
 Original date: 2026-11-04. Updated: 2026-11-09. Scope per
-[PLAN.md](PLAN.md).
+[PLAN.md](../PLAN.md).
 
 > **Verdict: M1 is delivered.** The C101 calibration path is now wired, the
 > benchmark instance is tracked, and the gate passes with 100/100 stores served.
@@ -10,13 +10,13 @@ Original date: 2026-11-04. Updated: 2026-11-09. Scope per
 
 | Item | Status | Notes |
 |---|---|---|
-| Vendored Solomon/VRPLib parser | ✅ | `crates/solver/src/parser.rs` parses the C101 format and converts it to `domain::Problem`. `solomon_to_problem` is called with `60.0` so one distance unit is one minute. |
+| Vendored Solomon/VRPLib parser | ✅ | `solver/src/parser.rs` parses the C101 format and converts it to `domain::Problem`. `solomon_to_problem` is called with `60.0` so one distance unit is one minute. |
 | C101 instance | ✅ | `data/solomon/C101.txt` is tracked in git (6391 bytes). The calibration gate can no longer silently skip. |
 | C101 greedy test | ✅ | `c101_calibration_greedy` — **11 routes, 841.68 distance, 100/100 served**. |
 | C101 local search test | ✅ | `c101_calibration_local_search` — **11 routes, 621.42 distance, 100/100 served**. |
 | C101 LNS test | ✅ | `c101_calibration_lns` — **11 routes, 709.10 distance, 100/100 served** (since commit `fbca088`). LNS is opt-in and is not the production default. |
 | Claims checked by the calibration gates | ✅ | `served == 100` is asserted and `distance <= 870.39` (≤5% gap to the 828.94 best-known instance). |
-| Local search | ✅ | `crates/solver/src/local_search.rs` — 2-opt, relocate, exchange, cross-exchange, multi-start, driver-occupancy tracking. |
+| Local search | ✅ | `solver/src/local_search.rs` — 2-opt, relocate, exchange, cross-exchange, multi-start, driver-occupancy tracking. |
 | Benchmark | ✅ | `greedy_insertion/metro_40` (historical measurement only; see `docs/PLAN.md` for current verification). |
 | C101 regression guard | ✅ | Missing dataset now panics instead of silently skipping the gate. |
 
@@ -60,7 +60,7 @@ cargo clippy --workspace --all-targets
 
 C101 cannot tell the two metaheuristics apart at the top: its windows are
 wide (102–138 minutes; depot aside) and its best known is 828.94, while LS
-sits at 621.42. `crates/solver/tests/harder_benchmark.rs` builds a 200-
+sits at 621.42. `solver/tests/harder_benchmark.rs` builds a 200-
 customer synthetic problem the same way `solomon_to_problem` builds C101
 (single depot at (40, 50), ambient-only capacity 200, unit-time = unit-
 distance at 60 km/h) but with tight, spatially-coherent windows:
@@ -84,7 +84,7 @@ constraint on LNS service rate.
 **Conclusion (no solver change):** on both C101 and the harder fixture, LS
 is the quality path and LNS stays opt-in. The "measured win" condition for
 LNS did not hold; per the plan, solver code does not change. See
-[PLAN.md](PLAN.md) "Next sprint plan" item 6.
+[PLAN.md](../PLAN.md) "Next sprint plan" item 6.
 
 ## Deviations from PLAN.md
 
@@ -97,7 +97,7 @@ LNS did not hold; per the plan, solver code does not change. See
 
 ## Current status
 
-See [PLAN.md](PLAN.md) for the current milestone state, known gaps and next
+See [PLAN.md](../PLAN.md) for the current milestone state, known gaps and next
 priorities. As of 2026-11-05:
 
 - M0 and M1 are complete.
@@ -111,11 +111,11 @@ priorities. As of 2026-11-05:
 
 | Path | Role |
 |---|---|
-| `crates/solver/src/parser.rs` | Vendored Solomon/VRPLib parser + `solomon_to_problem`. |
-| `crates/solver/src/local_search.rs` | 2-opt, relocate, exchange, cross-exchange, multi-start; driver-occupancy tracking. |
-| `crates/solver/src/lns.rs` | LNS/ALNS implementation (opt-in; invalid candidates are rejected during search, and the final plan is validated — falls back to greedy only as a last resort). |
-| `crates/solver/src/savings.rs` | Clarke-Wright prototype; retained but not used (the module carries a dead-code allow; see the note at the top of the file). |
-| `crates/solver/src/lib.rs` | Exports `solve_with_local_search`, `solve_with_lns`, `LNSConfig`, `LSConfig`, `improve`. |
-| `crates/solver/tests/greedy.rs` | C101 calibration gates (greedy, local search, LNS) and M0/M1 end-to-end tests. |
-| `crates/solver/tests/harder_benchmark.rs` | Harder 200-customer synthetic benchmark that reports (does not gate) LS vs LNS; see "Harder benchmark" above. |
+| `solver/src/parser.rs` | Vendored Solomon/VRPLib parser + `solomon_to_problem`. |
+| `solver/src/local_search.rs` | 2-opt, relocate, exchange, cross-exchange, multi-start; driver-occupancy tracking. |
+| `solver/src/lns.rs` | LNS/ALNS implementation (opt-in; invalid candidates are rejected during search, and the final plan is validated — falls back to greedy only as a last resort). |
+| `solver/src/savings.rs` | Clarke-Wright prototype; retained but not used (the module carries a dead-code allow; see the note at the top of the file). |
+| `solver/src/lib.rs` | Exports `solve_with_local_search`, `solve_with_lns`, `LNSConfig`, `LSConfig`, `improve`. |
+| `solver/tests/greedy.rs` | C101 calibration gates (greedy, local search, LNS) and M0/M1 end-to-end tests. |
+| `solver/tests/harder_benchmark.rs` | Harder 200-customer synthetic benchmark that reports (does not gate) LS vs LNS; see "Harder benchmark" above. |
 | `data/solomon/C101.txt` | Tracked benchmark instance; gates fail loudly if missing. |

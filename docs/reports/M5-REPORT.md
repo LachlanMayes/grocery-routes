@@ -1,7 +1,7 @@
 # M5 report — multi-day optimisation + AU/grocery depth
 
-Date: 2026-11-09 (current state; see [PLAN.md](PLAN.md)).
-Scope and gates per [PLAN.md](PLAN.md).
+Date: 2026-11-09 (current state; see [PLAN.md](../PLAN.md)).
+Scope and gates per [PLAN.md](../PLAN.md).
 
 ## What was delivered
 
@@ -17,14 +17,14 @@ Scope and gates per [PLAN.md](PLAN.md).
   through the greedy scheduler; `solver::curfew_aware`, `solve --curfew-aware`.
 - **Relay/rest placement** (Task 4, `b17b5a0`): `solver::relay` post-pass
   with backtracking over (driver, shift) pairs; `solve --relay`.
-- **G-NAF geocoder** (`crates/geo-au`): flat-file ingest → SQLite,
+- **G-NAF geocoder** (`geo-au`): flat-file ingest → SQLite,
   `geocode`/`reverse`; validated against the Aug 2026 release
   (16,970,406 addresses, 0 skipped).
 
 ## What remains (out of scope for this project)
 
 - Corridor legality verification (simulated pet project — no real truck
-  dispatches; see [PLAN.md](PLAN.md) known gaps item 1).
+  dispatches; see [PLAN.md](../PLAN.md) known gaps item 1).
 - Curfew-aware LS/LNS improvement phases (construction is aware; improvement
   loops still use the static matrix).
 - LNS promotion (closed negatively; see [M1-REPORT.md](M1-REPORT.md)).
