@@ -32,6 +32,8 @@ pub struct GraphEdge {
     pub distance_km: f64,
     /// Estimated travel time in whole minutes.
     pub duration_minutes: i64,
+    /// Continuous travel time in seconds (avoids short-segment truncation).
+    pub duration_seconds: f64,
     /// OSM highway tag (e.g. "motorway", "primary", "residential").
     pub highway: Option<String>,
     /// Maximum weight in tonnes, if tagged (`maxweight`).
@@ -141,6 +143,42 @@ impl Graph {
         oneway: bool,
         way_id: Option<i64>,
     ) -> EdgeId {
+        let duration_seconds = (duration_minutes.max(0) as f64) * 60.0;
+        self.add_edge_with_way_and_duration_secs(
+            from,
+            to,
+            distance_km,
+            duration_minutes,
+            duration_seconds,
+            highway,
+            maxweight_tonnes,
+            maxheight_m,
+            hgv,
+            access,
+            oneway,
+            way_id,
+        )
+    }
+
+    /// Like [`Graph::add_edge_with_way`] with an explicit fractional second
+    /// duration so paths of short OSM segments sum accurately without rounding
+    /// each edge to whole minutes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_edge_with_way_and_duration_secs(
+        &mut self,
+        from: NodeId,
+        to: NodeId,
+        distance_km: f64,
+        duration_minutes: i64,
+        duration_seconds: f64,
+        highway: Option<String>,
+        maxweight_tonnes: Option<f64>,
+        maxheight_m: Option<f64>,
+        hgv: Option<String>,
+        access: Option<String>,
+        oneway: bool,
+        way_id: Option<i64>,
+    ) -> EdgeId {
         assert!(
             self.nodes.contains_key(&from) && self.nodes.contains_key(&to),
             "graph edge endpoints must exist"
@@ -153,6 +191,7 @@ impl Graph {
             to,
             distance_km,
             duration_minutes,
+            duration_seconds,
             highway,
             maxweight_tonnes,
             maxheight_m,
@@ -210,20 +249,20 @@ impl Graph {
 pub struct NodeIndex {
     /// Cell size in degrees.
     cell_deg: f64,
-    /// Node coordinates bucketed by grid cell.
-    cells: HashMap<(i32, i32), Vec<LatLon>>,
+    /// Node ids and coordinates bucketed by grid cell.
+    cells: HashMap<(i32, i32), Vec<(NodeId, LatLon)>>,
 }
 
 impl NodeIndex {
-    /// Cell size in degrees (~5.5 km at Sydney's latitude).
+    /// Cell size in degrees (~5.5 km latitudinally).
     pub const CELL_DEG: f64 = 0.05;
 
     /// Build an index over every node in `graph`.
     pub fn build(graph: &Graph) -> Self {
-        let mut cells: HashMap<(i32, i32), Vec<LatLon>> = HashMap::new();
-        for (_id, node) in graph.nodes() {
+        let mut cells: HashMap<(i32, i32), Vec<(NodeId, LatLon)>> = HashMap::new();
+        for (id, node) in graph.nodes() {
             let key = Self::key(node.location);
-            cells.entry(key).or_default().push(node.location);
+            cells.entry(key).or_default().push((id, node.location));
         }
         Self {
             cell_deg: Self::CELL_DEG,
@@ -242,21 +281,30 @@ impl NodeIndex {
     /// node coordinate and its distance in kilometres. Searches outward ring
     /// by ring and stops once the best hit is closer than the next ring.
     pub fn nearest(&self, point: LatLon, max_km: f64) -> Option<(LatLon, f64)> {
+        self.nearest_with_id(point, max_km)
+            .map(|(_, location, distance)| (location, distance))
+    }
+
+    /// The nearest node id, coordinate, and distance in kilometres to `point`
+    /// within `max_km`.
+    pub fn nearest_with_id(&self, point: LatLon, max_km: f64) -> Option<(NodeId, LatLon, f64)> {
         let (base_lat, base_lon) = Self::key(point);
-        let km_per_cell = self.cell_deg * 111.0;
-        let max_ring = (max_km / km_per_cell).ceil() as i32 + 1;
-        let mut best: Option<(LatLon, f64)> = None;
+        let lat_km_per_cell = self.cell_deg * 111.0;
+        let lon_km_per_cell = self.cell_deg * 111.0 * point.lat.to_radians().cos().abs().max(0.1);
+        let min_km_per_cell = lat_km_per_cell.min(lon_km_per_cell);
+        let max_ring = (max_km / min_km_per_cell).ceil() as i32 + 1;
+        let mut best: Option<(NodeId, LatLon, f64)> = None;
         for ring in 0..=max_ring {
             self.scan_ring(point, base_lat, base_lon, ring, &mut best);
-            // Once the best hit is closer than the next ring's inner edge, no
-            // farther ring can improve it.
-            if let Some((_, best_distance)) = best
-                && best_distance <= ring as f64 * km_per_cell
+            // Once the best hit is closer than the shortest possible step to
+            // the next ring (along longitude at this latitude), stop.
+            if let Some((_, _, best_distance)) = best
+                && best_distance <= ring as f64 * min_km_per_cell
             {
                 break;
             }
         }
-        best.filter(|(_, distance)| *distance <= max_km)
+        best.filter(|(_, _, distance)| *distance <= max_km)
     }
 
     /// Scan the cells at Chebyshev distance `ring` from `(base_lat, base_lon)`,
@@ -267,7 +315,7 @@ impl NodeIndex {
         base_lat: i32,
         base_lon: i32,
         ring: i32,
-        best: &mut Option<(LatLon, f64)>,
+        best: &mut Option<(NodeId, LatLon, f64)>,
     ) {
         for d_lat in -ring..=ring {
             for d_lon in -ring..=ring {
@@ -279,10 +327,10 @@ impl NodeIndex {
                 let Some(bucket) = self.cells.get(&(base_lat + d_lat, base_lon + d_lon)) else {
                     continue;
                 };
-                for &location in bucket {
+                for &(id, location) in bucket {
                     let distance = domain::haversine_km(point, location);
-                    if best.is_none_or(|(_, best_distance)| distance < best_distance) {
-                        *best = Some((location, distance));
+                    if best.is_none_or(|(_, _, best_distance)| distance < best_distance) {
+                        *best = Some((id, location, distance));
                     }
                 }
             }
@@ -330,5 +378,16 @@ mod tests {
     fn nearest_on_an_empty_index_is_none() {
         let index = NodeIndex::build(&Graph::new());
         assert!(index.nearest(LatLon::new(-33.87, 151.21), 50.0).is_none());
+    }
+
+    #[test]
+    fn nearest_with_id_finds_southern_latitude_node() {
+        let graph = graph_with(&[(42, -42.88, 147.33), (99, -42.88, 147.39)]);
+        let index = NodeIndex::build(&graph);
+        let (id, _, dist) = index
+            .nearest_with_id(LatLon::new(-42.88, 147.385), 10.0)
+            .expect("node within range at Hobart latitude");
+        assert_eq!(id, NodeId(99));
+        assert!(dist < 1.0, "expected <1 km, got {dist}");
     }
 }

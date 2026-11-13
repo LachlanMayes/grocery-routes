@@ -39,6 +39,7 @@ fn metro_problem() -> Problem {
                 chain: CHAINS[index % CHAINS.len()],
                 name: format!("store {index}"),
                 location: LatLon::new(lat, lon),
+                address: None,
                 demand: Load::new(
                     3 + (index % 4) as u32,
                     2 + (index % 3) as u32,
@@ -87,6 +88,7 @@ fn metro_problem() -> Problem {
             id: DepotId(0),
             name: "synthetic DC".into(),
             location: DEPOT_LOCATION,
+            address: None,
             timezone: None,
         }],
         stores,

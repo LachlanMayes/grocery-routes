@@ -869,6 +869,7 @@ mod tests {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: None,
         };
 
@@ -878,6 +879,7 @@ mod tests {
                 chain: domain::Chain::Coles,
                 name: "Store 1".into(),
                 location: LatLon::new(-33.92, 151.23),
+                address: None,
                 timezone: None,
                 demand: Load::new(10, 0, 0),
                 service: Minutes::from_minutes(5),
@@ -891,6 +893,7 @@ mod tests {
                 chain: domain::Chain::Coles,
                 name: "Store 2".into(),
                 location: LatLon::new(-33.80, 151.15),
+                address: None,
                 timezone: None,
                 demand: Load::new(10, 0, 0),
                 service: Minutes::from_minutes(5),
@@ -904,6 +907,7 @@ mod tests {
                 chain: domain::Chain::Coles,
                 name: "Store 3".into(),
                 location: LatLon::new(-33.75, 151.30),
+                address: None,
                 timezone: None,
                 demand: Load::new(10, 0, 0),
                 service: Minutes::from_minutes(5),

@@ -135,6 +135,10 @@ pub struct AuditArgs {
     /// OSM PBF extract the plan's corridors are audited against.
     #[arg(long)]
     pub osm: PathBuf,
+    /// Curated truck constraints JSON folded onto OSM ways (tightening
+    /// only). See `constraints/README.md`.
+    #[arg(long)]
+    pub constraints: Option<PathBuf>,
     /// Vehicle weight in tonnes, for context in the report.
     #[arg(long)]
     pub maxweight: Option<f64>,
@@ -168,8 +172,8 @@ pub struct HolidaysArgs {
 /// Arguments of `gen-sim`.
 #[derive(Debug, Args)]
 pub struct GenSimArgs {
-    /// Grocery banner whose store network is generated.
-    #[arg(long, value_enum, default_value_t = ChainArg::Coles)]
+    /// Stop category or grocery banner whose network is generated.
+    #[arg(long, value_enum, default_value_t = ChainArg::General)]
     pub chain: ChainArg,
     /// City the network is generated around.
     #[arg(long, value_enum, default_value_t = CityArg::Sydney)]
@@ -257,8 +261,8 @@ pub struct SolveArgs {
     pub enforce_curfews: bool,
     /// IANA timezone the road network operates in, used to resolve curfew
     /// days/times (e.g. `Australia/Sydney`). Defaults to the first depot's
-    /// timezone.
-    #[arg(long, requires = "enforce_curfews")]
+    /// timezone. Requires `--enforce-curfews` or `--curfew-aware`.
+    #[arg(long)]
     pub network_timezone: Option<String>,
     /// Apply the relay post-pass after solving: convert routes into
     /// overnight relay routes (depot hand-over, two shifts) where feasible
@@ -457,25 +461,29 @@ pub fn run_import_stores(args: &ImportStoresArgs) -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(&args.addresses)
         .with_context(|| format!("read addresses {}", args.addresses.display()))?;
     let mut lines = raw.lines();
-    let header = lines.next().context("addresses CSV is empty")?;
+    let header = lines
+        .next()
+        .context("addresses CSV is empty")?
+        .trim()
+        .trim_start_matches('\u{feff}');
     anyhow::ensure!(
-        header.trim().eq_ignore_ascii_case("name,address"),
-        "addresses CSV header must be `name,address` (got `{}`)",
-        header.trim()
+        header.eq_ignore_ascii_case("name,address")
+            || header.eq_ignore_ascii_case("\"name\",\"address\""),
+        "addresses CSV header must be `name,address` (got `{header}`)",
     );
 
     // Collect geocoded stores.
     let mut stores: Vec<Store> = Vec::new();
     let mut skipped = 0usize;
     for (idx, line) in lines.enumerate() {
-        if line.trim().is_empty() {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed.trim().is_empty() {
             continue;
         }
-        // Split on first comma so addresses may contain commas.
-        let (name, address) = match line.split_once(',') {
-            Some((n, a)) => (n.trim().to_string(), a.trim().to_string()),
-            None => {
-                eprintln!("  row {}: missing comma, skipping: {}", idx + 2, line);
+        let (name, address) = match parse_store_csv_row(trimmed) {
+            Ok(pair) => pair,
+            Err(reason) => {
+                eprintln!("  row {}: {reason}, skipping: {trimmed}", idx + 2);
                 skipped += 1;
                 continue;
             }
@@ -489,13 +497,14 @@ pub fn run_import_stores(args: &ImportStoresArgs) -> anyhow::Result<()> {
         };
         stores.push(Store {
             id: StoreId(stores.len() as u32),
-            chain: Chain::Coles,
+            chain: Chain::General,
             name: if name.is_empty() {
-                format!("Store {}", stores.len())
+                format!("Stop {}", stores.len() + 1)
             } else {
                 name
             },
             location: LatLon::new(top.address.lat, top.address.lon),
+            address: Some(address),
             timezone: None,
             demand: Load::new(10, 1, 0),
             service: Minutes::from_minutes(15),
@@ -522,6 +531,7 @@ pub fn run_import_stores(args: &ImportStoresArgs) -> anyhow::Result<()> {
         id: DepotId(0),
         name: "Imported depot".into(),
         location: depot_loc,
+        address: None,
         timezone: None,
     }];
 
@@ -587,8 +597,7 @@ pub fn run_audit(args: &AuditArgs) -> anyhow::Result<()> {
     let solution = read_solution_json(&args.solution)?;
     check_solution(&problem, &solution)?;
 
-    let mut cached = routing::CachedMatrix::new();
-    cached.load_pbf(&args.osm)?;
+    let cached = load_osm_with_constraints(&args.osm, args.constraints.as_deref())?;
     let node_ids = cached.problem_node_ids(&problem)?;
     let graph = cached
         .graph()
@@ -753,18 +762,102 @@ fn snap_to_roads(problem: &mut domain::Problem, osm_path: &std::path::Path) -> a
 /// mid-build.
 const MAX_SOLVE_NODES: usize = 5_000;
 
-/// `solve`: solves a problem, refuses to write an invalid plan and summarises
-/// the result.
-pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
-    let problem = read_problem_json(&args.problem)?;
-    check_problem(&problem)?;
-    ensure_solvable_size(&problem)?;
+/// Parses one `name,address` CSV row supporting RFC-4180 quotes and `""`
+/// escapes while still accepting legacy unquoted comma addresses.
+fn parse_store_csv_row(line: &str) -> Result<(String, String), &'static str> {
+    let trimmed = line.trim_start();
+    let (name, rest) = if let Some(after_quote) = trimmed.strip_prefix('"') {
+        let (value, tail) = parse_quoted_field(after_quote)?;
+        let after_comma = tail
+            .trim_start()
+            .strip_prefix(',')
+            .ok_or("missing comma after quoted store name")?;
+        (value, after_comma)
+    } else {
+        let (left, right) = trimmed.split_once(',').ok_or("missing comma")?;
+        (left.trim().to_string(), right)
+    };
+
+    let addr_tail = rest.trim();
+    let address = if let Some(after_quote) = addr_tail.strip_prefix('"') {
+        let (value, tail) = parse_quoted_field(after_quote)?;
+        if !tail.trim().is_empty() {
+            return Err("unexpected trailing characters after quoted address");
+        }
+        value
+    } else {
+        addr_tail.to_string()
+    };
+    Ok((name, address))
+}
+
+/// Parses the body of an RFC-4180 quoted field after the opening `"`.
+fn parse_quoted_field(after_open_quote: &str) -> Result<(String, &str), &'static str> {
+    let mut out = String::new();
+    let mut chars = after_open_quote.char_indices();
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '"' {
+            if let Some((_, '"')) = chars.clone().next() {
+                chars.next();
+                out.push('"');
+            } else {
+                let tail_start = idx + ch.len_utf8();
+                return Ok((out, &after_open_quote[tail_start..]));
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    Err("unclosed quoted CSV field")
+}
+
+/// Validates cross-flag constraints on [`SolveArgs`].
+fn validate_solve_args(args: &SolveArgs) -> anyhow::Result<()> {
     if args.constraints.is_some() && args.osm.is_none() {
         anyhow::bail!("--constraints requires --osm (constraints are folded onto the OSM graph)");
     }
     if args.ch && args.osm.is_none() {
         anyhow::bail!("--ch requires --osm (a contraction hierarchy indexes the road graph)");
     }
+    if args.network_timezone.is_some() && !args.enforce_curfews && !args.curfew_aware {
+        anyhow::bail!("--network-timezone requires --enforce-curfews or --curfew-aware");
+    }
+    Ok(())
+}
+
+/// Loads an OSM PBF extract and applies optional curated truck constraints.
+fn load_osm_with_constraints(
+    osm_path: &Path,
+    constraints_path: Option<&Path>,
+) -> anyhow::Result<routing::CachedMatrix> {
+    let mut cached = routing::CachedMatrix::new();
+    cached.load_pbf(osm_path)?;
+    if let Some(constraints_path) = constraints_path {
+        let raw = std::fs::read_to_string(constraints_path)
+            .with_context(|| format!("read curated constraints {}", constraints_path.display()))?;
+        let curated = routing::CuratedConstraints::from_json_str(&raw)
+            .with_context(|| format!("parse curated constraints {}", constraints_path.display()))?;
+        let tightened = curated.apply(
+            cached
+                .graph_mut()
+                .context("curated constraints require a loaded OSM graph")?,
+        );
+        println!(
+            "  curated constraints: {} entries from {}, {tightened} edges tightened",
+            curated.len(),
+            constraints_path.display()
+        );
+    }
+    Ok(cached)
+}
+
+/// `solve`: solves a problem, refuses to write an invalid plan and summarises
+/// the result.
+pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
+    let problem = read_problem_json(&args.problem)?;
+    check_problem(&problem)?;
+    ensure_solvable_size(&problem)?;
+    validate_solve_args(args)?;
     let strategy = if args.ch {
         routing::MatrixStrategy::ContractionHierarchy
     } else {
@@ -781,26 +874,30 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         hgv: args.hgv,
     };
 
-    let (solution, mut cache) = match &args.osm {
+    if args.curfew_aware {
+        let osm_path = args
+            .osm
+            .as_deref()
+            .context("--curfew-aware requires --osm (curfews need the road graph)")?;
+        let timezone = curfew_timezone.context("--curfew-aware requires a curfew timezone")?;
+        let mut cache = load_osm_with_constraints(osm_path, args.constraints.as_deref())?;
+        if args.ch {
+            println!("  matrix strategy: contraction hierarchy (time-optimal)");
+        }
+        let solution = solve_aware_osm(&problem, &mut cache, timezone, profile, args.ls, strategy)?;
+        check_solution(&problem, &solution)?;
+        write_solution_json(&args.out, &solution)?;
+        print_solve_summary(args, &problem, &solution);
+        return Ok(());
+    }
+
+    let (solution, cache) = match &args.osm {
         Some(osm_path) => {
             let (solution, cache) = solve_with_osm(args, &problem, osm_path, profile, strategy)?;
             (solution, Some(cache))
         }
         None => solve_with_haversine(args, &problem),
     };
-    if args.curfew_aware {
-        let cache = cache
-            .as_mut()
-            .context("--curfew-aware requires --osm (curfews need the road graph)")?;
-        let Some(timezone) = curfew_timezone else {
-            anyhow::bail!("--curfew-aware requires a curfew timezone");
-        };
-        let solution = solve_aware_osm(&problem, cache, timezone, profile, args.ls)?;
-        check_solution(&problem, &solution)?;
-        write_solution_json(&args.out, &solution)?;
-        print_solve_summary(args, &problem, &solution);
-        return Ok(());
-    }
     let solution =
         enforce_curfews_for(&problem, solution, cache.as_ref(), curfew_timezone, profile)?;
 
@@ -819,24 +916,7 @@ fn solve_with_osm(
     profile: routing::TruckProfile,
     strategy: routing::MatrixStrategy,
 ) -> anyhow::Result<(Solution, routing::CachedMatrix)> {
-    let mut cached = routing::CachedMatrix::new();
-    cached.load_pbf(osm_path)?;
-    if let Some(constraints_path) = &args.constraints {
-        let raw = std::fs::read_to_string(constraints_path)
-            .with_context(|| format!("read curated constraints {}", constraints_path.display()))?;
-        let curated = routing::CuratedConstraints::from_json_str(&raw)
-            .with_context(|| format!("parse curated constraints {}", constraints_path.display()))?;
-        let tightened = curated.apply(
-            cached
-                .graph_mut()
-                .context("curated constraints require a loaded OSM graph")?,
-        );
-        println!(
-            "  curated constraints: {} entries from {}, {tightened} edges tightened",
-            curated.len(),
-            constraints_path.display()
-        );
-    }
+    let mut cached = load_osm_with_constraints(osm_path, args.constraints.as_deref())?;
     if args.ch {
         println!("  matrix strategy: contraction hierarchy (time-optimal)");
     }
@@ -1011,10 +1091,11 @@ fn solve_aware_osm(
     timezone: jiff::tz::TimeZone,
     profile: routing::TruckProfile,
     ls: bool,
+    strategy: routing::MatrixStrategy,
 ) -> anyhow::Result<Solution> {
     let matrix = if ls {
         let entries = cache
-            .matrix_for_with(problem, profile, routing::MatrixStrategy::Dijkstra)?
+            .matrix_for_with(problem, profile, strategy)?
             .context("curfew-aware LS requires a road matrix")?;
         let node_count = problem.depots.len() + problem.stores.len();
         Some(solver::DistanceMatrix::from_routing(
@@ -1082,17 +1163,22 @@ fn resolve_curfew_timezone(
     args: &SolveArgs,
     problem: &Problem,
 ) -> anyhow::Result<jiff::tz::TimeZone> {
+    let flag = if args.curfew_aware {
+        "--curfew-aware"
+    } else {
+        "--enforce-curfews"
+    };
     anyhow::ensure!(
         args.osm.is_some(),
-        "--enforce-curfews requires --osm: curfew enforcement needs the road graph"
+        "{flag} requires --osm: curfew enforcement needs the road graph"
     );
     anyhow::ensure!(
         !problem.curfews.rules.is_empty(),
-        "--enforce-curfews: problem has no curfew rules to enforce"
+        "{flag}: problem has no curfew rules to enforce"
     );
     anyhow::ensure!(
         problem.horizon_start.is_some(),
-        "--enforce-curfews requires a horizon anchor: curfew windows are local day/time rules"
+        "{flag} requires a horizon anchor: curfew windows are local day/time rules"
     );
     let name = args
         .network_timezone
@@ -1103,10 +1189,12 @@ fn resolve_curfew_timezone(
                 .iter()
                 .find_map(|depot| depot.timezone.clone())
         })
-        .context(
-            "--enforce-curfews needs a network timezone: pass --network-timezone <IANA> \
-             or set a depot timezone",
-        )?;
+        .with_context(|| {
+            format!(
+                "{flag} needs a network timezone: pass --network-timezone <IANA> \
+                 or set a depot timezone"
+            )
+        })?;
     domain::clock::parse_timezone(&name)
         .map_err(|err| anyhow::anyhow!("invalid network timezone '{name}': {err}"))
 }
@@ -1299,9 +1387,11 @@ fn write_text(path: &Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Grocery banner as accepted on the command line.
+/// Stop category / grocery banner as accepted on the command line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ChainArg {
+    /// General (custom / non-supermarket stops).
+    General,
     /// Coles.
     Coles,
     /// Woolworths.
@@ -1315,6 +1405,7 @@ pub enum ChainArg {
 impl fmt::Display for ChainArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::General => "general",
             Self::Coles => "coles",
             Self::Woolworths => "woolworths",
             Self::Aldi => "aldi",
@@ -1326,6 +1417,7 @@ impl fmt::Display for ChainArg {
 impl From<ChainArg> for Chain {
     fn from(value: ChainArg) -> Self {
         match value {
+            ChainArg::General => Self::General,
             ChainArg::Coles => Self::Coles,
             ChainArg::Woolworths => Self::Woolworths,
             ChainArg::Aldi => Self::Aldi,
@@ -1375,7 +1467,9 @@ impl From<CityArg> for sim::City {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_solvable_size;
+    use super::{
+        Cli, Command, Parser, ensure_solvable_size, parse_store_csv_row, validate_solve_args,
+    };
     use domain::{
         Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
         LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
@@ -1388,6 +1482,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: (0..count)
@@ -1396,6 +1491,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: format!("Coles #{index}"),
                     location: LatLon::new(-33.90, 151.20),
+                    address: None,
                     timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(5),
@@ -1437,5 +1533,90 @@ mod tests {
     fn solve_ceiling_rejects_oversized_problems() {
         let error = ensure_solvable_size(&problem_with_stores(5_000)).unwrap_err();
         assert!(error.to_string().contains("5000"), "got: {error}");
+    }
+
+    #[test]
+    fn store_csv_parser_handles_quotes_escapes_and_legacy_rows() {
+        assert_eq!(
+            parse_store_csv_row(r#""Coles, Metro","12 ""Central"" St, Sydney NSW 2000""#).unwrap(),
+            (
+                "Coles, Metro".into(),
+                r#"12 "Central" St, Sydney NSW 2000"#.into()
+            )
+        );
+        assert_eq!(
+            parse_store_csv_row("Woolworths Town Hall,12 George St, Sydney NSW 2000").unwrap(),
+            (
+                "Woolworths Town Hall".into(),
+                "12 George St, Sydney NSW 2000".into()
+            )
+        );
+        assert!(parse_store_csv_row("NoComma").is_err());
+        assert!(parse_store_csv_row(r#""Unclosed,12 Smith St"#).is_err());
+    }
+
+    #[test]
+    fn cli_flags_wire_curfew_timezone_and_audit_constraints() {
+        let solve_cli = Cli::try_parse_from([
+            "grocery-routes",
+            "solve",
+            "--problem",
+            "p.json",
+            "--out",
+            "s.json",
+            "--osm",
+            "map.osm.pbf",
+            "--curfew-aware",
+            "--network-timezone",
+            "Australia/Sydney",
+        ])
+        .unwrap();
+        let Command::Solve(solve_args) = solve_cli.command else {
+            panic!("expected Solve");
+        };
+        assert_eq!(
+            solve_args.network_timezone.as_deref(),
+            Some("Australia/Sydney")
+        );
+        assert!(validate_solve_args(&solve_args).is_ok());
+
+        let bare_tz_cli = Cli::try_parse_from([
+            "grocery-routes",
+            "solve",
+            "--problem",
+            "p.json",
+            "--out",
+            "s.json",
+            "--network-timezone",
+            "Australia/Sydney",
+        ])
+        .unwrap();
+        let Command::Solve(bare_args) = bare_tz_cli.command else {
+            panic!("expected Solve");
+        };
+        assert!(validate_solve_args(&bare_args).is_err());
+
+        let audit_cli = Cli::try_parse_from([
+            "grocery-routes",
+            "audit",
+            "--problem",
+            "p.json",
+            "--solution",
+            "s.json",
+            "--osm",
+            "map.osm.pbf",
+            "--constraints",
+            "curated.json",
+            "--out-dir",
+            "out",
+        ])
+        .unwrap();
+        let Command::Audit(audit_args) = audit_cli.command else {
+            panic!("expected Audit");
+        };
+        assert_eq!(
+            audit_args.constraints.as_deref(),
+            Some(std::path::Path::new("curated.json"))
+        );
     }
 }

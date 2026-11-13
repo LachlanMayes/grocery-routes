@@ -25,6 +25,7 @@ fn test_problem() -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: None,
         }],
         stores: vec![
@@ -33,6 +34,7 @@ fn test_problem() -> Problem {
                 chain: Chain::Coles,
                 name: "Coles A".into(),
                 location: LatLon::new(-33.90, 151.20),
+                address: None,
                 demand: Load::new(1, 0, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
@@ -43,6 +45,7 @@ fn test_problem() -> Problem {
                 chain: Chain::Woolworths,
                 name: "Woolworths B".into(),
                 location: LatLon::new(-33.85, 151.25),
+                address: None,
                 demand: Load::new(2, 1, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],

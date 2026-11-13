@@ -29,6 +29,7 @@ fn fixture() -> Problem {
                 id: DepotId(index as u32),
                 name: format!("DC {index}"),
                 location,
+                address: None,
                 timezone: None,
             })
             .collect(),
@@ -40,6 +41,7 @@ fn fixture() -> Problem {
                 chain: Chain::Coles,
                 name: format!("Store {index}"),
                 location,
+                address: None,
                 demand: Load::new(1 + (index % 3) as u32, 1 + (index % 2) as u32, 1),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(720))],

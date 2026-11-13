@@ -21,18 +21,21 @@ fn relay_fixture() -> (Problem, Solution) {
                 id: DepotId(0),
                 name: "Sydney DC".into(),
                 location: LatLon::new(-33.79, 150.90),
+                address: None,
                 timezone: None,
             },
             Depot {
                 id: DepotId(1),
                 name: "Albury relay".into(),
                 location: LatLon::new(-36.06, 146.92),
+                address: None,
                 timezone: None,
             },
             Depot {
                 id: DepotId(2),
                 name: "Melbourne DC".into(),
                 location: LatLon::new(-37.70, 144.85),
+                address: None,
                 timezone: None,
             },
         ],
@@ -41,6 +44,7 @@ fn relay_fixture() -> (Problem, Solution) {
             chain: Chain::Coles,
             name: "Coles Melbourne #001".into(),
             location: LatLon::new(-37.75, 144.90),
+            address: None,
             timezone: None,
             demand: Load::new(1, 2, 0),
             service: Minutes::from_minutes(15),
@@ -308,6 +312,7 @@ fn two_vehicle_problem() -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.80, 151.20),
+            address: None,
             timezone: None,
         }],
         stores: vec![],
@@ -421,6 +426,7 @@ fn handover_dwell_problem(shifts: Vec<Shift>) -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.80, 151.20),
+            address: None,
             timezone: None,
         }],
         stores: vec![],
@@ -492,4 +498,81 @@ fn touching_shifts_cover_a_handover_dwell() {
         Shift::new(Minutes::from_minutes(10), Minutes::from_minutes(20)),
     ]);
     assert_eq!(handover_dwell_solution().validate(&problem), Ok(()));
+}
+
+#[test]
+fn long_two_driver_relay_splits_hours_across_driver_shifts() {
+    let (mut problem, mut solution) = relay_fixture();
+    // Extend driver shifts and route timeline to 16 hours total (960 min > 12h),
+    // with each driver working strictly within NHVR Standard Hours (<= 12h).
+    problem.drivers[0].shifts = vec![Shift::new(
+        Minutes::from_minutes(600),
+        Minutes::from_minutes(1140),
+    )];
+    problem.drivers[1].shifts = vec![Shift::new(
+        Minutes::from_minutes(1140),
+        Minutes::from_minutes(1740),
+    )];
+    problem.stores[0].receiving = vec![TimeWindow::new(
+        Minutes::from_minutes(1500),
+        Minutes::from_minutes(1600),
+    )];
+    solution.routes[0].steps = vec![
+        PlannedStop {
+            node: Node::Depot(DepotId(0)),
+            arrive: Minutes::from_minutes(600),
+            depart: Minutes::from_minutes(600),
+        },
+        PlannedStop {
+            node: Node::Depot(DepotId(1)),
+            arrive: Minutes::from_minutes(1110),
+            depart: Minutes::from_minutes(1170),
+        },
+        PlannedStop {
+            node: Node::Store(StoreId(0)),
+            arrive: Minutes::from_minutes(1500),
+            depart: Minutes::from_minutes(1515),
+        },
+        PlannedStop {
+            node: Node::Depot(DepotId(2)),
+            arrive: Minutes::from_minutes(1560),
+            depart: Minutes::from_minutes(1560),
+        },
+    ];
+    solution.routes[0].duration = Minutes::from_minutes(960);
+    assert_eq!(solution.validate(&problem), Ok(()));
+}
+
+#[test]
+fn demand_sum_saturates_instead_of_overflowing() {
+    let (mut problem, mut solution) = relay_fixture();
+    problem.stores.push(Store {
+        id: StoreId(1),
+        chain: Chain::Coles,
+        name: "Coles Melbourne #002".into(),
+        location: LatLon::new(-37.76, 144.91),
+        address: None,
+        timezone: None,
+        demand: Load::new(u32::MAX, 0, 0),
+        service: Minutes::from_minutes(15),
+        receiving: vec![TimeWindow::new(
+            Minutes::from_minutes(1500),
+            Minutes::from_minutes(1650),
+        )],
+    });
+    problem.stores[0].demand = Load::new(10, 0, 0);
+    solution.routes[0].steps.insert(
+        3,
+        PlannedStop {
+            node: Node::Store(StoreId(1)),
+            arrive: Minutes::from_minutes(1570),
+            depart: Minutes::from_minutes(1585),
+        },
+    );
+    let violations = violations_of(&problem, &solution);
+    assert!(
+        violations.contains(&Violation::LoadExceeded { route: 0, step: 2 })
+            || violations.contains(&Violation::LoadExceeded { route: 0, step: 3 }),
+        "expected LoadExceeded without panic/overflow, got {violations:?}"
+    );
 }

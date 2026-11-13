@@ -16,8 +16,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
 
 use crate::greedy::{
-    Legs, Scheduled, plan_with_matrix, schedule_route as greedy_schedule_route,
-    schedule_shift_candidate,
+    Legs, Scheduled, add_load, effective_windows, plan_with_matrix,
+    schedule_route as greedy_schedule_route, schedule_shift_candidate,
 };
 use crate::matrix::DistanceMatrix;
 
@@ -262,8 +262,9 @@ pub fn solve_lns(
 
     let start_time = Instant::now();
     let mut temperature = config.initial_temperature;
-    let mut no_improve = 0;
-    let initial_cost = current.total_cost_cents as f64;
+    let mut no_improve = 0usize;
+    let mut iter_count = 0usize;
+    let initial_cost = lns_penalized_cost(&current) as f64;
     let mut primal_tracker =
         PrimalIntegralTracker::new(start_time.elapsed().as_secs_f64(), initial_cost);
 
@@ -273,6 +274,7 @@ pub fn solve_lns(
         {
             break;
         }
+        iter_count += 1;
 
         // Select ruin and recreate operators
         let ruin_op = if config.adaptive {
@@ -338,31 +340,38 @@ pub fn solve_lns(
             _ => greedy_repair(problem, matrix, ruin_result),
         };
 
-        let current_cost = current.total_cost_cents;
-        let candidate_cost = candidate.total_cost_cents;
-        let delta = candidate_cost as f64 - current_cost as f64;
+        let current_key = lns_objective_key(&current);
+        let candidate_key = lns_objective_key(&candidate);
+        let best_key = lns_objective_key(&best);
+        let global_best_key = lns_objective_key(&global_best);
+        let penalized_delta =
+            lns_penalized_cost(&candidate) as f64 - lns_penalized_cost(&current) as f64;
 
         // A corrupted candidate is never accepted, no matter how cheap it
         // looks (dropping stores lowers apparent cost). Skip it entirely.
+        // Lexicographic (unassigned count, cost) ensures dropping feasible
+        // stores never displaces a fuller solution in `best`/`global_best`.
         let candidate_valid = stores_partition_valid(problem, &candidate);
+        let was_best = candidate_key < best_key;
+        let was_global_best = candidate_key < global_best_key;
         let mut accepted = false;
         if !candidate_valid {
             no_improve += 1;
-        } else if delta < 0.0 {
+        } else if candidate_key < current_key {
             let candidate_clone = candidate.clone();
             current = candidate;
             accepted = true;
-            if candidate_cost < best.total_cost_cents {
+            if was_best {
                 best = candidate_clone.clone();
             }
-            if candidate_cost < global_best.total_cost_cents {
+            if was_global_best {
                 global_best = candidate_clone;
                 no_improve = 0;
             } else {
                 no_improve += 1;
             }
         } else if temperature > config.min_temperature {
-            let probability = (-delta / temperature).exp();
+            let probability = (-penalized_delta.max(0.0) / temperature).exp();
             if rng.random::<f64>() < probability {
                 current = candidate;
                 accepted = true;
@@ -373,10 +382,10 @@ pub fn solve_lns(
         }
 
         if config.adaptive && accepted {
-            let score = if delta < 0.0 {
-                if candidate_cost < global_best.total_cost_cents {
+            let score = if candidate_key < current_key {
+                if was_global_best {
                     10.0
-                } else if candidate_cost < best.total_cost_cents {
+                } else if was_best {
                     5.0
                 } else {
                     1.0
@@ -396,11 +405,11 @@ pub fn solve_lns(
 
         // Update primal integral tracker (Finding 11)
         let elapsed = start_time.elapsed().as_secs_f64();
-        primal_tracker.update(elapsed, current.total_cost_cents as f64);
+        primal_tracker.update(elapsed, lns_penalized_cost(&global_best) as f64);
 
         temperature = (temperature * config.cooling_rate).max(config.min_temperature);
 
-        if config.adaptive && no_improve % 50 == 0 {
+        if config.adaptive && iter_count.is_multiple_of(50) {
             update_weights(&mut ruin_weights, config.reaction_factor);
             update_weights(&mut recreate_weights, config.reaction_factor);
             apply_conflict_penalties(&mut ruin_weights);
@@ -408,7 +417,7 @@ pub fn solve_lns(
         }
     }
 
-    let best_cost = global_best.total_cost_cents as f64;
+    let best_cost = lns_penalized_cost(&global_best) as f64;
     let final_integral = primal_tracker.normalized_integral(initial_cost, best_cost);
     eprintln!(
         "LNS final primal integral (normalized): {:.4}",
@@ -488,13 +497,15 @@ fn update_weights(weights: &mut HashMap<&'static str, OperatorStats>, reaction_f
 }
 
 fn apply_conflict_penalties(weights: &mut HashMap<&'static str, OperatorStats>) {
-    let keys: Vec<&'static str> = weights.keys().copied().collect();
+    let mut keys: Vec<&'static str> = weights.keys().copied().collect();
+    keys.sort_unstable();
     let mut adjustments: Vec<(&'static str, f64)> = Vec::new();
     for op1 in &keys {
-        let conflicting: Vec<&'static str> = weights
+        let mut conflicting: Vec<&'static str> = weights
             .get(op1)
             .map(|s| s.conflicting_ops.iter().copied().collect())
             .unwrap_or_default();
+        conflicting.sort_unstable();
         for op2 in &conflicting {
             if let (Some(s1), Some(s2)) = (weights.get(op1), weights.get(op2))
                 && s1.usage_count > 10
@@ -578,6 +589,18 @@ fn remove_stores_by_id(solution: &mut LNSSolution, selected: &HashSet<StoreId>) 
             .any(|step| matches!(step.node, Node::Store(_)))
     });
     removed
+}
+
+/// Lexicographic quality key: always prefer serving more stores first, then lower cost.
+fn lns_objective_key(solution: &LNSSolution) -> (usize, i64) {
+    (solution.unassigned.len(), solution.total_cost_cents)
+}
+
+/// Scalarized cost for simulated-annealing temperature & primal integral tracking.
+fn lns_penalized_cost(solution: &LNSSolution) -> i64 {
+    solution
+        .total_cost_cents
+        .saturating_add((solution.unassigned.len() as i64).saturating_mul(1_000_000))
 }
 
 /// True when every store in the problem appears exactly once across the
@@ -868,14 +891,13 @@ fn shaw_removal(
             modified_solution: current,
         };
     };
-    let seed_tw_center = seed_store
-        .receiving
+    let seed_windows = effective_windows(problem, seed_store);
+    let seed_tw_center = seed_windows
         .iter()
         .map(|w| (w.start.minutes() + w.end.minutes()) / 2)
         .min()
         .unwrap_or(0);
-    let seed_tw_width = seed_store
-        .receiving
+    let seed_tw_width = seed_windows
         .iter()
         .map(|w| (w.end - w.start).minutes())
         .min()
@@ -895,14 +917,13 @@ fn shaw_removal(
                 let Some(store) = problem.store(id) else {
                     continue;
                 };
-                let tw_center = store
-                    .receiving
+                let windows = effective_windows(problem, store);
+                let tw_center = windows
                     .iter()
                     .map(|w| (w.start.minutes() + w.end.minutes()) / 2)
                     .min()
                     .unwrap_or(0);
-                let tw_width = store
-                    .receiving
+                let tw_width = windows
                     .iter()
                     .map(|w| (w.end - w.start).minutes())
                     .min()
@@ -952,14 +973,13 @@ fn time_window_removal(
         let Some(store) = problem.store(id) else {
             continue;
         };
-        let min_width = store
-            .receiving
+        let windows = effective_windows(problem, store);
+        let min_width = windows
             .iter()
             .map(|w| (w.end - w.start).minutes())
             .min()
             .unwrap_or(i64::MAX);
-        let earliest_start = store
-            .receiving
+        let earliest_start = windows
             .iter()
             .map(|w| w.start.minutes())
             .min()
@@ -1066,7 +1086,7 @@ fn cluster_removal(
             .filter_map(|s| {
                 if let Node::Store(id) = s.node {
                     problem.store(id).map(|st| {
-                        st.receiving
+                        effective_windows(problem, st)
                             .iter()
                             .map(|w| (w.start.minutes() + w.end.minutes()) / 2)
                             .min()
@@ -1087,7 +1107,8 @@ fn cluster_removal(
             modified_solution: current,
         };
     }
-    let cluster_keys: Vec<(DepotId, i64)> = route_clusters.keys().copied().collect();
+    let mut cluster_keys: Vec<(DepotId, i64)> = route_clusters.keys().copied().collect();
+    cluster_keys.sort_unstable();
     let chosen_cluster = cluster_keys[rng.random_range(0..cluster_keys.len())];
     let route_indices = route_clusters
         .get(&chosen_cluster)
@@ -1135,39 +1156,23 @@ fn greedy_repair(
 
     let mut to_insert: Vec<StoreId> = unassigned;
     to_insert.sort_by(|a, b| {
-        let store_a = problem.store(*a);
-        let store_b = problem.store(*b);
-        let tw_a = store_a.map(|s| {
-            let min_width = s
-                .receiving
-                .iter()
-                .map(|w| (w.end - w.start).minutes())
-                .min()
-                .unwrap_or(i64::MAX);
-            let earliest = s
-                .receiving
-                .iter()
-                .map(|w| w.start.minutes())
-                .min()
-                .unwrap_or(i64::MAX);
-            (min_width, earliest)
-        });
-        let tw_b = store_b.map(|s| {
-            let min_width = s
-                .receiving
-                .iter()
-                .map(|w| (w.end - w.start).minutes())
-                .min()
-                .unwrap_or(i64::MAX);
-            let earliest = s
-                .receiving
-                .iter()
-                .map(|w| w.start.minutes())
-                .min()
-                .unwrap_or(i64::MAX);
-            (min_width, earliest)
-        });
-        tw_a.cmp(&tw_b)
+        let store_tw_key = |id: StoreId| {
+            problem.store(id).map(|s| {
+                let windows = effective_windows(problem, s);
+                let min_width = windows
+                    .iter()
+                    .map(|w| (w.end - w.start).minutes())
+                    .min()
+                    .unwrap_or(i64::MAX);
+                let earliest = windows
+                    .iter()
+                    .map(|w| w.start.minutes())
+                    .min()
+                    .unwrap_or(i64::MAX);
+                (min_width, earliest)
+            })
+        };
+        store_tw_key(*a).cmp(&store_tw_key(*b))
     });
 
     for store_id in to_insert {
@@ -1207,46 +1212,79 @@ fn regret_k_repair(
     while !unassigned.is_empty() {
         let mut candidates = Vec::new();
         for &store_id in &unassigned {
-            let mut insertions = all_insertions_lns(problem, matrix, &current, store_id);
+            let insertions = all_insertions_lns(problem, matrix, &current, store_id);
             if insertions.is_empty() {
                 continue;
             }
-            insertions.sort_by_key(|ins| ins.cost_cents);
-            let regret = if insertions.len() >= k {
-                insertions[k - 1]
-                    .cost_cents
-                    .saturating_sub(insertions[0].cost_cents)
-            } else if insertions.len() >= 2 {
-                insertions[1]
-                    .cost_cents
-                    .saturating_sub(insertions[0].cost_cents)
+            // Keep at most the best insertion per route (and one best fresh
+            // vehicle option) so k-regret measures true alternative routes rather
+            // than adjacent positions on the same route or duplicate empty vehicles.
+            let mut per_route_best: HashMap<usize, LNSInsertion> = HashMap::new();
+            for ins in insertions {
+                let key = if ins.route_idx >= current.routes.len() {
+                    current.routes.len()
+                } else {
+                    ins.route_idx
+                };
+                let is_better = match per_route_best.get(&key) {
+                    Some(existing) => {
+                        (ins.cost_cents, ins.vehicle_index, ins._pos)
+                            < (existing.cost_cents, existing.vehicle_index, existing._pos)
+                    }
+                    None => true,
+                };
+                if is_better {
+                    per_route_best.insert(key, ins);
+                }
+            }
+            let mut best_by_route: Vec<LNSInsertion> = per_route_best.into_values().collect();
+            best_by_route.sort_by_key(|ins| (ins.cost_cents, ins.route_idx, ins.vehicle_index));
+            let regret = if best_by_route.len() >= 2 {
+                best_by_route[1..k.min(best_by_route.len())]
+                    .iter()
+                    .fold(0i64, |acc, ins| {
+                        acc.saturating_add(
+                            ins.cost_cents.saturating_sub(best_by_route[0].cost_cents),
+                        )
+                    })
             } else {
-                insertions[0].cost_cents
+                // Only one feasible route left: insert before other moves take it.
+                1_000_000i64.saturating_add(best_by_route[0].cost_cents.max(0))
             };
-            candidates.push((regret, store_id, insertions[0].clone()));
+            candidates.push((regret, store_id, best_by_route.swap_remove(0)));
         }
         if candidates.is_empty() {
             current.unassigned.append(&mut unassigned);
             break;
         }
         // Probabilistic selection proportional to regret value (Finding 4/6)
-        let total_regret: i64 = candidates.iter().map(|(r, _, _)| *r).sum();
+        let total_regret: i128 = candidates
+            .iter()
+            .map(|(r, _, _)| i128::from((*r).max(0)))
+            .sum();
         let mut selected_idx = None;
         if total_regret > 0 {
             let mut r = rng.random_range(0..=total_regret);
             for (idx, (regret, _, _)) in candidates.iter().enumerate() {
-                if r <= *regret {
+                let weight = i128::from((*regret).max(0));
+                if r <= weight {
                     selected_idx = Some(idx);
                     break;
                 }
-                r = r.saturating_sub(*regret);
+                r -= weight;
             }
         }
         if selected_idx.is_none() {
             selected_idx = candidates
                 .iter()
                 .enumerate()
-                .max_by_key(|(_, (r, _, _))| *r)
+                .max_by_key(|(_, (r, store_id, ins))| {
+                    (
+                        *r,
+                        std::cmp::Reverse(ins.cost_cents),
+                        std::cmp::Reverse(*store_id),
+                    )
+                })
                 .map(|(i, _)| i);
         }
         if let Some(idx) = selected_idx {
@@ -1421,35 +1459,41 @@ fn route_candidates_for(
                 _pos: pos,
                 vehicle_index: route.vehicle_index,
                 scheduled: sched.clone(),
-                cost_cents: sched.cost_cents,
+                cost_cents: sched.cost_cents - route.scheduled.cost_cents,
             });
         }
     }
     insertions
 }
 
-/// Graph sparsification: quick time-window compatibility check (Finding 19):
-/// whether `store`'s receiving windows can still be met after this route.
+/// Graph sparsification: quick capacity & receiving-window feasibility check
+/// that never rejects a valid insertion onto `route`.
 fn route_passes_sparsify(problem: &Problem, node: Node, route: &LNSRoute) -> bool {
-    let earliest_arrival = route
-        .scheduled
-        .steps
-        .last()
-        .map(|s| s.arrive)
-        .unwrap_or(Minutes::ZERO);
     let Node::Store(store_id) = node else {
         return true;
     };
     let Some(store) = problem.store(store_id) else {
         return true;
     };
-    store
-        .receiving
-        .iter()
-        .any(|tw| tw.start <= earliest_arrival && earliest_arrival < tw.end)
+    if effective_windows(problem, store).is_empty() {
+        return false;
+    }
+    let vehicle = &problem.vehicles[route.vehicle_index];
+    let mut route_load = store.demand;
+    for step in &route.scheduled.steps {
+        if let Node::Store(existing_id) = step.node
+            && let Some(existing) = problem.store(existing_id)
+        {
+            let Some(sum) = add_load(route_load, existing.demand) else {
+                return false;
+            };
+            route_load = sum;
+        }
+    }
+    route_load.fits_within(vehicle.capacity)
 }
 
-/// Insertions of `node` into every unused vehicle (opening penalty applied).
+/// Insertions of `node` into every unused vehicle.
 fn fresh_vehicle_insertions(
     problem: &Problem,
     matrix: &DistanceMatrix,
@@ -1474,13 +1518,12 @@ fn fresh_vehicle_insertions(
             &solution.driver_busy,
             None,
         ) {
-            // New vehicle for the restricted candidate: penalise using one.
             insertions.push(LNSInsertion {
                 route_idx: solution.routes.len(),
                 _pos: 1,
                 vehicle_index,
                 scheduled: sched.clone(),
-                cost_cents: sched.cost_cents + 5_000,
+                cost_cents: sched.cost_cents,
             });
         }
     }
@@ -1547,7 +1590,7 @@ fn greedy_to_lns(problem: &Problem, solution: Solution) -> Option<LNSSolution> {
             eprintln!("greedy_to_lns: route {} has no steps", route.vehicle);
             return None;
         };
-        let span = (route.steps[0].depart, last_step.arrive);
+        let span = (route.steps[0].depart, last_step.depart);
         driver_busy[driver.0 as usize].push(span);
         routes.push(LNSRoute {
             vehicle_index,
@@ -1618,6 +1661,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Sydney DC".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![
@@ -1626,6 +1670,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Coles Inner West".into(),
                     location: LatLon::new(-33.92, 151.23),
+                    address: None,
                     timezone: None,
                     demand: Load::new(2, 1, 0),
                     service: Minutes::from_minutes(15),
@@ -1639,6 +1684,7 @@ mod tests {
                     chain: Chain::Woolworths,
                     name: "Woolworths North".into(),
                     location: LatLon::new(-33.80, 151.15),
+                    address: None,
                     timezone: None,
                     demand: Load::new(1, 2, 1),
                     service: Minutes::from_minutes(10),
@@ -1652,6 +1698,7 @@ mod tests {
                     chain: Chain::Aldi,
                     name: "ALDI Hills".into(),
                     location: LatLon::new(-33.75, 151.30),
+                    address: None,
                     timezone: None,
                     demand: Load::new(0, 1, 0),
                     service: Minutes::from_minutes(20),

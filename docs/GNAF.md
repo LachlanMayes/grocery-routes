@@ -31,8 +31,8 @@ cargo run -p cli -- reverse --db data/gnaf.sqlite --lat=-33.8688 --lon=151.2093
 | Piece | Detail |
 |---|---|
 | Flat-file reader | Pipe-separated, header-driven, quote-aware (`geo-au/src/flatfile.rs`). A missing column fails with the file name and the headers it saw. |
-| Ingest | STATE, LOCALITY, STREET_LOCALITY, ADDRESS_DETAIL and ADDRESS_DEFAULT_GEOCODE files, per state, into SQLite (`import.rs`). Supports maps are held in memory; address rows stream through the geocode table. |
-| Query | Simple parser (number, street + optional type, locality after a comma, state code, 4-digit postcode anywhere) plus a ranking heuristic (`query.rs`). |
+| Ingest | STATE, LOCALITY, STREET_LOCALITY, ADDRESS_DETAIL and ADDRESS_DEFAULT_GEOCODE files, per state, into SQLite (`import.rs`). Support maps are held in memory; address rows join through a temporary `geocode` table that is dropped on completion, leaving `UPPER(street)`, `UPPER(locality)`, `UPPER(state)`, `postcode`, and `(lat, lon)` indexes on `address`. |
+| Query | Simple parser (number, street + optional type, locality after a comma, state code, 4-digit postcode anywhere) plus indexed prefix lookup before escaped `LIKE ... ESCAPE '\'` fallback and Rust ranking (`query.rs`). |
 | Reverse | Bounding-box scan plus haversine, nearest first. |
 
 ## Limits — read before trusting results
@@ -43,8 +43,10 @@ cargo run -p cli -- reverse --db data/gnaf.sqlite --lat=-33.8688 --lon=151.2093
   check the printed `skipped` counters (incomplete rows, addresses without a
   geocode) against the release notes.
 - **Zip archives are not read.** Unzip first.
-- **Queries use `LIKE` scans** with no FTS or R-tree: fine for interactive
-  lookups at state-scale data, not a high-throughput geocoding service.
+- **Queries use indexed prefix lookups** (`UPPER(street)` / `UPPER(locality)`
+  bounds plus state/postcode indexes) with escaped `LIKE` fallback and no FTS
+  or R-tree: fine for interactive lookups, not a high-throughput geocoding
+  service.
 - **No lineage beyond `ADDRESS_DETAIL_PID`.** Alias/primary-secondary
   relationships, `CONFIDENCE` and mesh-block data are not modelled.
 - The query parser is a heuristic, not an address grammar; use the comma

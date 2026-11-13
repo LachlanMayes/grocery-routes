@@ -262,66 +262,110 @@ pub fn earliest_leg(
         return Some(TimedLeg::zero(depart));
     }
 
-    // Label: earliest arrival time at a node (FIFO costs keep Dijkstra valid).
-    let mut best: HashMap<NodeId, i64> = HashMap::new();
+    // Label: earliest arrival time in whole seconds (FIFO costs keep Dijkstra valid).
+    // Ordering in the binary heap uses discrete integer seconds or ordered floats
+    // via a small wrapper. Storing continuous seconds avoids sub-minute truncation.
+    #[derive(Clone, Copy)]
+    struct TimedState {
+        secs: f64,
+        node: NodeId,
+    }
+    impl PartialEq for TimedState {
+        fn eq(&self, other: &Self) -> bool {
+            self.secs == other.secs && self.node == other.node
+        }
+    }
+    impl Eq for TimedState {}
+    impl Ord for TimedState {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            other
+                .secs
+                .partial_cmp(&self.secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| other.node.0.cmp(&self.node.0))
+        }
+    }
+    impl PartialOrd for TimedState {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    let start_secs = (depart.minutes() as f64) * 60.0;
+    let mut best_secs: HashMap<NodeId, f64> = HashMap::new();
     let mut distance: HashMap<NodeId, f64> = HashMap::new();
-    // node -> (predecessor, edge, wait before edge, edge departure)
-    let mut prev: HashMap<NodeId, (NodeId, EdgeId, i64, i64)> = HashMap::new();
-    let mut heap: BinaryHeap<std::cmp::Reverse<(i64, NodeId)>> = BinaryHeap::new();
+    // node -> (predecessor, edge, wait before edge, edge departure min, edge arrival min)
+    let mut prev: HashMap<NodeId, (NodeId, EdgeId, i64, i64, i64)> = HashMap::new();
+    let mut heap: BinaryHeap<TimedState> = BinaryHeap::new();
 
-    best.insert(source, depart.minutes());
+    best_secs.insert(source, start_secs);
     distance.insert(source, 0.0);
-    heap.push(std::cmp::Reverse((depart.minutes(), source)));
+    heap.push(TimedState {
+        secs: start_secs,
+        node: source,
+    });
 
-    while let Some(std::cmp::Reverse((time, node))) = heap.pop() {
-        if best.get(&node).is_some_and(|&known| time > known) {
+    while let Some(TimedState { secs, node }) = heap.pop() {
+        if best_secs.get(&node).is_some_and(|&known| secs > known) {
             continue;
         }
         if node == target {
             break;
         }
         for (edge_id, next, edge) in graph.out_edges(node) {
-            let Some((departure, wait, arrive)) = edge_times(edge, profile, curfews, time) else {
+            let Some((dep_min, wait, arr_min, arr_secs)) = edge_times(edge, profile, curfews, secs)
+            else {
                 continue;
             };
-            if best.get(&next).is_none_or(|&known| arrive < known) {
-                best.insert(next, arrive);
+            if best_secs.get(&next).is_none_or(|&known| arr_secs < known) {
+                best_secs.insert(next, arr_secs);
                 distance.insert(
                     next,
                     distance.get(&node).copied().unwrap_or(0.0) + edge.distance_km,
                 );
-                prev.insert(next, (node, edge_id, wait, departure));
-                heap.push(std::cmp::Reverse((arrive, next)));
+                prev.insert(next, (node, edge_id, wait, dep_min, arr_min));
+                heap.push(TimedState {
+                    secs: arr_secs,
+                    node: next,
+                });
             }
         }
     }
 
-    reconstruct_leg(graph, source, target, best, distance, prev)
+    reconstruct_leg(source, target, &best_secs, distance, prev)
 }
 
-/// The usable `(departure, wait, arrival)` for one edge entered at `time`, or
-/// `None` when the profile forbids it or it cannot be localised. A curfew
-/// wait beyond the budget also makes the edge unusable for this departure —
-/// the search simply tries other routes.
+/// The usable `(departure_min, wait_min, arrive_min, arrive_secs)` for one
+/// edge entered at `time_secs`, or `None` when the profile forbids it or it
+/// cannot be localised.
 fn edge_times(
     edge: &GraphEdge,
     profile: TruckProfile,
     curfews: &CurfewContext,
-    time: i64,
-) -> Option<(i64, i64, i64)> {
+    time_secs: f64,
+) -> Option<(i64, i64, i64, f64)> {
     if edge_allowed_for(edge, profile).is_err() {
         return None;
     }
-    let mut departure = time;
+    let time_min = (time_secs / 60.0).round() as i64;
+    let mut dep_secs = time_secs;
+    let mut dep_min = time_min;
     let mut wait = 0i64;
     if let Some(class) = edge.highway.as_deref() {
-        let waited =
-            curfews.wait_before(class, Minutes::from_minutes(time), edge.duration_minutes)?;
-        departure = departure.checked_add(waited)?;
-        wait = waited;
+        let waited = curfews.wait_before(
+            class,
+            Minutes::from_minutes(time_min),
+            edge.duration_minutes,
+        )?;
+        if waited > 0 {
+            dep_min = time_min.checked_add(waited)?;
+            dep_secs = (dep_min as f64) * 60.0;
+            wait = waited;
+        }
     }
-    let arrive = departure.checked_add(edge.duration_minutes)?;
-    Some((departure, wait, arrive))
+    let arr_secs = dep_secs + edge.duration_seconds;
+    let arr_min = ((arr_secs / 60.0).round() as i64).max(dep_min);
+    Some((dep_min, wait, arr_min, arr_secs))
 }
 
 /// Computes a leg following the distance-optimal path of
@@ -360,11 +404,13 @@ pub fn leg_from_edges(
 ) -> Option<TimedLeg> {
     let mut steps = Vec::with_capacity(edges.len());
     let mut distance_km = 0.0;
+    let mut time_secs = (depart.minutes() as f64) * 60.0;
     let mut time = depart.minutes();
     for (&edge_id, pair) in edges.iter().zip(nodes.windows(2)) {
         let (from, to) = (pair[0], pair[1]);
         let edge = graph.edge(edge_id)?;
-        let arrive = time.checked_add(edge.duration_minutes)?;
+        time_secs += edge.duration_seconds;
+        let arrive = ((time_secs / 60.0).round() as i64).max(time);
         distance_km += edge.distance_km;
         steps.push(LegStep {
             edge: edge_id,
@@ -391,26 +437,24 @@ pub fn leg_from_edges(
 }
 
 fn reconstruct_leg(
-    graph: &Graph,
     source: NodeId,
     target: NodeId,
-    best: HashMap<NodeId, i64>,
+    best_secs: &HashMap<NodeId, f64>,
     distance: HashMap<NodeId, f64>,
-    prev: HashMap<NodeId, (NodeId, EdgeId, i64, i64)>,
+    prev: HashMap<NodeId, (NodeId, EdgeId, i64, i64, i64)>,
 ) -> Option<TimedLeg> {
-    let arrive = *best.get(&target)?;
+    let arrive = (*best_secs.get(&target)? / 60.0).round() as i64;
     let mut nodes = vec![target];
     let mut steps: Vec<LegStep> = Vec::new();
     let mut current = target;
     while current != source {
-        let &(previous, edge_id, wait, departure) = prev.get(&current)?;
-        let edge = graph.edge(edge_id)?;
+        let &(previous, edge_id, wait, departure, step_arrive) = prev.get(&current)?;
         steps.push(LegStep {
             edge: edge_id,
             from: previous,
             to: current,
             depart: Minutes::from_minutes(departure),
-            arrive: Minutes::from_minutes(departure + edge.duration_minutes),
+            arrive: Minutes::from_minutes(step_arrive),
             wait_minutes: wait,
         });
         nodes.push(previous);

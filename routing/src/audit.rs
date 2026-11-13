@@ -307,6 +307,7 @@ mod tests {
                 id: DepotId(0),
                 name: "DC".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![
@@ -315,6 +316,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "A".into(),
                     location: LatLon::new(-33.87, 151.30),
+                    address: None,
                     demand: Load::new(1, 1, 1),
                     service: Minutes::from_minutes(5),
                     receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
@@ -325,6 +327,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "B".into(),
                     location: LatLon::new(-33.87, 151.39),
+                    address: None,
                     demand: Load::new(1, 1, 1),
                     service: Minutes::from_minutes(5),
                     receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],

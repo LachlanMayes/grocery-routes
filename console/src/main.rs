@@ -38,41 +38,44 @@ fn main() -> eframe::Result {
     let runtime = tokio::runtime::Runtime::new().expect("failed to create Tokio runtime");
     let handle = runtime.handle().clone();
 
-    // Decide base URL and, if embedding, spawn the embedded API on the
-    // runtime. If the port is already in use, fall back to the external API
-    // there instead of failing — the UI talks to it identically over HTTP.
+    // Decide base URL and, if embedding, bind the TCP listener before
+    // building the UI so ConsoleApp's initial list refresh never races bind.
     let base_url = if args.no_embedded_api {
         eprintln!("console: external API mode — using http://{}", args.addr);
         format!("http://{}", args.addr)
-    } else if std::net::TcpListener::bind(args.addr).is_err() {
-        eprintln!(
-            "console: {} already has a listener — assuming an API is there and using it",
-            args.addr
-        );
-        format!("http://{}", args.addr)
     } else {
-        if let Some(parent) = args.db.parent()
-            && !parent.as_os_str().is_empty()
-            && let Err(err) = std::fs::create_dir_all(parent)
-        {
-            eprintln!(
-                "console: cannot create database directory {}: {err}",
-                parent.display()
-            );
-        }
-        let db = args.db.clone();
-        let addr = args.addr;
-        eprintln!(
-            "console: embedded API — serving http://{} (database: {})",
-            args.addr,
-            args.db.display()
-        );
-        handle.spawn(async move {
-            if let Err(err) = api::server::serve(addr, &db).await {
-                eprintln!("console: embedded API stopped: {err:#}");
+        match runtime.block_on(tokio::net::TcpListener::bind(args.addr)) {
+            Ok(listener) => {
+                if let Some(parent) = args.db.parent()
+                    && !parent.as_os_str().is_empty()
+                    && let Err(err) = std::fs::create_dir_all(parent)
+                {
+                    eprintln!(
+                        "console: cannot create database directory {}: {err}",
+                        parent.display()
+                    );
+                }
+                let db = args.db.clone();
+                eprintln!(
+                    "console: embedded API — serving http://{} (database: {})",
+                    args.addr,
+                    args.db.display()
+                );
+                handle.spawn(async move {
+                    if let Err(err) = api::server::serve_with_listener(listener, &db).await {
+                        eprintln!("console: embedded API stopped: {err:#}");
+                    }
+                });
+                format!("http://{}", args.addr)
             }
-        });
-        format!("http://{}", args.addr)
+            Err(_) => {
+                eprintln!(
+                    "console: {} already has a listener — assuming an API is there and using it",
+                    args.addr
+                );
+                format!("http://{}", args.addr)
+            }
+        }
     };
 
     std::thread::spawn(move || {

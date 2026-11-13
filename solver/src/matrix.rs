@@ -209,9 +209,9 @@ pub fn euclidean_matrix(problem: &Problem) -> DistanceMatrix {
 /// Whole minutes to travel `km` at `avg_speed_kmh`, rounded to the nearest
 /// minute.
 ///
-/// A non-positive (or NaN) `avg_speed_kmh` plans at [`FALLBACK_SPEED_KMH`].
+/// A non-positive (or non-finite) `avg_speed_kmh` plans at [`FALLBACK_SPEED_KMH`].
 pub fn travel_minutes(km: f64, avg_speed_kmh: f64) -> Minutes {
-    let speed_kmh = if avg_speed_kmh > 0.0 {
+    let speed_kmh = if avg_speed_kmh.is_finite() && avg_speed_kmh > 0.0 {
         avg_speed_kmh
     } else {
         FALLBACK_SPEED_KMH
@@ -231,6 +231,7 @@ mod tests {
                 id: DepotId(0),
                 name: "depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![Store {
@@ -238,6 +239,7 @@ mod tests {
                 chain: domain::Chain::Coles,
                 name: "store".into(),
                 location: LatLon::new(-33.80, 151.15),
+                address: None,
                 timezone: None,
                 demand: domain::Load::ZERO,
                 service: Minutes::ZERO,
@@ -270,6 +272,7 @@ mod tests {
         assert_eq!(travel_minutes(45.0, 0.0).minutes(), 60);
         assert_eq!(travel_minutes(45.0, -10.0).minutes(), 60);
         assert_eq!(travel_minutes(45.0, f64::NAN).minutes(), 60);
+        assert_eq!(travel_minutes(45.0, f64::INFINITY).minutes(), 60);
     }
 
     #[test]

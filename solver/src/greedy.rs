@@ -26,7 +26,7 @@ use std::cmp::Reverse;
 
 use domain::{
     CostModel, DriverId, Load, Minutes, Node, PlannedStop, Problem, RoutePlan, Shift, Solution,
-    Store, StoreId, Vehicle, VehicleId,
+    Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
 
 use crate::curfew::LegTimes;
@@ -183,9 +183,9 @@ fn plan_inner(problem: &Problem, legs: &mut Legs<'_>) -> Solution {
     let mut driver_busy: Vec<Vec<(Minutes, Minutes)>> = vec![Vec::new(); problem.drivers.len()];
     let mut unassigned: Vec<StoreId> = Vec::new();
 
-    // Pre-filter stores with no receiving windows — they can never be scheduled.
+    // Pre-filter stores with no effective receiving windows — they can never be scheduled.
     for store in &problem.stores {
-        if store.receiving.is_empty() {
+        if effective_windows(problem, store).is_empty() {
             unassigned.push(store.id);
         }
     }
@@ -217,15 +217,14 @@ fn plan_inner(problem: &Problem, legs: &mut Legs<'_>) -> Solution {
 /// one), then largest total demand, then id. The id tie-break keeps the order
 /// total and therefore deterministic.
 ///
-/// Stores with no receiving windows are excluded (handled upstream).
+/// Stores with no effective receiving windows are excluded (handled upstream).
 fn processing_order(problem: &Problem) -> Vec<usize> {
     let mut order: Vec<usize> = (0..problem.stores.len())
-        .filter(|&i| !problem.stores[i].receiving.is_empty())
+        .filter(|&i| !effective_windows(problem, &problem.stores[i]).is_empty())
         .collect();
     order.sort_by_key(|&index| {
         let store = &problem.stores[index];
-        let deadline = store
-            .receiving
+        let deadline = effective_windows(problem, store)
             .iter()
             .map(|window| window.end.minutes())
             .min()
@@ -490,7 +489,7 @@ pub(crate) fn schedule_shift(
         let store = problem.store(store_id)?;
         let (leg_km, arrival) = legs.leg(previous, node, time, vehicle.avg_speed_kmh)?;
         distance_km += leg_km;
-        let service_start = next_service_start(store, arrival)?;
+        let service_start = next_service_start(problem, store, arrival)?;
         let depart = service_start + store.service;
 
         load = add_load(load, store.demand)?;
@@ -534,15 +533,28 @@ pub(crate) fn schedule_shift(
     })
 }
 
+/// Returns the effective receiving windows for `store`, falling back to
+/// [`Problem::chain_rules`] when `store.receiving` is empty.
+pub(crate) fn effective_windows<'a>(problem: &'a Problem, store: &'a Store) -> &'a [TimeWindow] {
+    problem
+        .chain_rules
+        .windows_for_store(store)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
 /// The earliest minute a store's service can start after arriving at
 /// `arrival`, or `None` when no receiving window can hold the full service.
 ///
 /// With several windows the earliest feasible one (by start) wins: it also
 /// yields the earliest departure, which keeps every downstream timestamp as
 /// small as possible.
-pub(crate) fn next_service_start(store: &Store, arrival: Minutes) -> Option<Minutes> {
-    store
-        .receiving
+pub(crate) fn next_service_start(
+    problem: &Problem,
+    store: &Store,
+    arrival: Minutes,
+) -> Option<Minutes> {
+    effective_windows(problem, store)
         .iter()
         .filter_map(|window| {
             let start = arrival.max(window.start);

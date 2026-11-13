@@ -1,7 +1,8 @@
 # grocery-routes
 
-Route + delivery planning for Australian supermarket distribution — Coles,
-Woolworths, ALDI and IGA/Metcash networks. Rust workspace, built from scratch.
+Route + delivery planning for custom depot/place routes and Australian
+supermarket distribution (`General`, `Coles`, `Woolworths`, `ALDI`, and
+`IGA/Metcash` networks). Rust workspace, built from scratch.
 
 - Roadmap, milestones and current gate outcomes: [docs/PLAN.md](docs/PLAN.md)
 - CLI reference (every subcommand and flag): [docs/CLI.md](docs/CLI.md)
@@ -93,31 +94,52 @@ and launch the console with `--no-embedded-api`; if port 8080 is already in
 use, the console falls back to the external API automatically. Pass `--db` or
 `--addr` to change the embedded database or address (`console --help`).
 
-In the Import tab, click **Browse…** to pick a problem JSON from a native
-Windows file dialog (or type/paste the path directly), then pick it from the
-**Recent problems** dropdown in the Solve tab (no need to copy IDs by hand).
-Successful imports and solves pre-fill the following tab, and each success row
-has a **Copy ID** button. The Solutions tab shows a structured view: stat
-cards (served/routes/distance/cost), a per-route table (vehicle, drivers,
-stops, km, duration, cost) with a named stop timeline for the selected route,
-an unassigned-stores list, and a collapsible raw-JSON debug section. The
-KPIs tab shows card-style stats, a serve-rate progress bar and a per-route
-bar chart (egui_plot; Cost or Distance metric). The Map tab draws each
-route on OpenStreetMap tiles - following real roads when the solution was
-solved with an OSM extract (road polylines via `GET /solutions/{id}/geometry`),
-or straight legs otherwise - with depot/store markers, route visibility
-toggles, camera auto-fit, zoom controls and the required OSM attribution.
+In the **Import / Set Problem** tab, either select an already-imported problem
+under **Set active problem for Solve**, or build a custom general route under
+**Set Up Route (Custom Depot & Places)**: enter your **Main Depot** address or
+`lat, lon` (looking up via local G-NAF DB when present or OpenStreetMap
+Nominatim, or picking directly on the **Interactive Map Picker**), add places /
+stores to visit (name, address/`lat, lon`, optional category `General`/supermarket
+banner, demand, service duration, receiving window), edit depots/places/vehicles/costs
+in the table tabs, and click **Import & Use Route** or **Save JSON…**. A
+collapsed **Synthetic Scenario Generator (Sim presets & benchmarks)** section
+is also available for stress testing. Alternatively, click **Browse…** to load
+a problem JSON file (auto-discovering `data/demo/problem.json` when present). The Solve tab likewise auto-discovers
+`data/osm/nsw-latest.osm.pbf` with **Browse…** / **Clear** buttons, **Local
+search** / **LNS** / **Contraction Hierarchy** switches, and validated truck
+limits (`Max weight`, `Max height`, `HGV`). Successful imports and solves
+pre-fill the following tab, and each success row has a **Copy ID** button. The
+Solutions tab shows a structured view: stat cards (served/routes/distance/cost),
+a per-route table (vehicle, drivers, stops, km, duration, cost) with a named stop
+timeline for the selected route, an unassigned-stores list, **View KPIs** /
+**View Route Map** jump actions, and a collapsible raw-JSON debug section. The
+KPIs tab provides an analytics dashboard: executive summary cards (serve rate,
+total cost, $/km and $/stop, active fleet %, total/avg duration, peak compartment
+load %), interactive per-route charts (**Cost Breakdown** stacked by
+fixed/distance/time, **Distance**, **Duration** stacked by service vs drive/wait
+with max-duration limit line, **Stops**, **Load Utilization %** per active
+compartment) with sort/average/limit toggles and rich hover tooltips, a **Dispatch
+Timeline (Gantt)** chart, cost & load composition breakdowns, **Solve History
+Comparison** across recent Greedy/LNS runs for the same problem, a sortable
+per-route performance leaderboard with route-timeline jump actions, an unassigned
+demand impact panel, and clipboard / CSV / JSON exports. The Map tab draws each route on
+OpenStreetMap tiles — following real roads when solved with an OSM extract (road
+polylines + tethered stops + dashed fallback legs via `GET
+/solutions/{id}/geometry`), or clear straight-line preview otherwise — with
+depot, served-store, and unassigned-store diamond markers, collision-avoided
+on-map node info pills (**Show node info**), hover tooltips, click-to-select +
+**Inspect:** picker backed by a **Selected Node** detail card (coordinates,
+address, timezone, demand, receiving windows, and assigned stops), route visibility
+toggles, Web Mercator auto-fit, zoom controls and the required OSM attribution.
 
 ## Checks
 
 ```console
-cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --no-fail-fast
 cargo bench -p solver --no-run
 ```
-
-The workspace builds with zero `clippy::all` warnings as of 2026-11-09
-(whole-tree sweep); `-D warnings` is still not enforced. 254 tests pass.
 
 ## Layout
 

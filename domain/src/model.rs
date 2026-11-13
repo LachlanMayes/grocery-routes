@@ -11,10 +11,14 @@ use crate::geo::LatLon;
 use crate::ids::{DepotId, DriverId, StoreId, VehicleId};
 use crate::time::Minutes;
 
-/// One of the four grocery banners the system models.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Delivery stop category or grocery banner. `General` represents arbitrary
+/// stops without chain-specific defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Chain {
+    #[default]
+    #[serde(alias = "custom")]
+    General,
     Coles,
     Woolworths,
     Aldi,
@@ -24,6 +28,7 @@ pub enum Chain {
 impl fmt::Display for Chain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::General => "General",
             Self::Coles => "Coles",
             Self::Woolworths => "Woolworths",
             Self::Aldi => "ALDI",
@@ -61,6 +66,7 @@ impl ChainRules {
     /// defaults are configured for that chain.
     pub fn windows_for(&self, chain: Chain) -> Option<&Vec<TimeWindow>> {
         match chain {
+            Chain::General => None,
             Chain::Coles => Some(&self.coles),
             Chain::Woolworths => Some(&self.woolworths),
             Chain::Aldi => Some(&self.aldi),
@@ -102,6 +108,7 @@ impl ReturnablesDefaults {
     /// The collection fixture for `chain`.
     pub fn for_chain(&self, chain: Chain) -> Load {
         match chain {
+            Chain::General => Load::ZERO,
             Chain::Coles => self.coles,
             Chain::Woolworths => self.woolworths,
             Chain::Aldi => self.aldi,
@@ -246,6 +253,16 @@ impl Load {
         (self.ambient as u64)
             .saturating_add(self.chilled as u64)
             .saturating_add(self.frozen as u64)
+    }
+
+    /// Adds `rhs` compartment-wise, saturating at [`u32::MAX`].
+    #[must_use]
+    pub const fn saturating_add(self, rhs: Self) -> Self {
+        Self {
+            ambient: self.ambient.saturating_add(rhs.ambient),
+            chilled: self.chilled.saturating_add(rhs.chilled),
+            frozen: self.frozen.saturating_add(rhs.frozen),
+        }
     }
 
     /// True when every compartment fits inside `capacity`.
@@ -396,12 +413,15 @@ fn union_covers(shifts: &[Shift], start: Minutes, end: Minutes) -> bool {
     false
 }
 
-/// A distribution centre.
+/// A distribution centre or route start/end depot.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Depot {
     pub id: DepotId,
     pub name: String,
     pub location: LatLon,
+    /// Optional street address or place description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// IANA timezone name (e.g. "Australia/Sydney"). Stored for API
     /// import/export and future local-time planning; it is not applied by the
     /// solver or validator yet.
@@ -409,13 +429,16 @@ pub struct Depot {
     pub timezone: Option<String>,
 }
 
-/// A supermarket to deliver to.
+/// A stop / store / place to visit and deliver to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Store {
     pub id: StoreId,
     pub chain: Chain,
     pub name: String,
     pub location: LatLon,
+    /// Optional street address or place description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     /// Demand of this store's single delivery in the M0 model.
     pub demand: Load,
     /// Time spent on site (check-in, unloading).
@@ -633,14 +656,24 @@ impl Solution {
                 });
             }
 
-            // Book every listed driver for this route's span so overlaps are
-            // caught after all routes have been checked.
+            // Book drivers for this route's span so overlaps and NHVR fatigue
+            // rules are checked after all routes have been collected.
             let mut listed: Vec<DriverId> = Vec::new();
             for &driver in &route.drivers {
                 if problem.driver(driver).is_some() && !listed.contains(&driver) {
                     listed.push(driver);
-                    driver_spans[driver.0 as usize].push((first.depart, last.depart));
                 }
+            }
+            if listed.len() == 1 {
+                driver_spans[listed[0].0 as usize].push((first.depart, last.depart));
+            } else if listed.len() > 1 {
+                attribute_relay_spans(
+                    problem,
+                    &listed,
+                    first.depart,
+                    last.depart,
+                    &mut driver_spans,
+                );
             }
 
             let mut previous_depart: Option<Minutes> = None;
@@ -665,7 +698,7 @@ impl Solution {
                             violations.push(Violation::UnknownStore { store: store_id });
                             continue;
                         };
-                        load += store.demand;
+                        load = load.saturating_add(store.demand);
                         if !load_reported && !load.fits_within(vehicle.capacity) {
                             violations.push(Violation::LoadExceeded {
                                 route: route_index,
@@ -905,6 +938,99 @@ impl Problem {
     }
 }
 
+/// Attributes slices of a multi-driver relay route `[route_start, route_end]`
+/// across `listed` drivers using their shift boundaries so each driver is
+/// charged only for the portion they cover rather than the full relay span.
+fn attribute_relay_spans(
+    problem: &Problem,
+    listed: &[DriverId],
+    route_start: Minutes,
+    route_end: Minutes,
+    driver_spans: &mut [Vec<(Minutes, Minutes)>],
+) {
+    if route_end <= route_start {
+        return;
+    }
+
+    let mut boundaries = vec![route_start, route_end];
+    for &driver_id in listed {
+        let Some(driver) = problem.driver(driver_id) else {
+            continue;
+        };
+        for shift in &driver.shifts {
+            if shift.start > route_start && shift.start < route_end {
+                boundaries.push(shift.start);
+            }
+            if shift.end > route_start && shift.end < route_end {
+                boundaries.push(shift.end);
+            }
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut per_driver: Vec<Vec<(Minutes, Minutes)>> = vec![Vec::new(); listed.len()];
+    let mut active_idx: Option<usize> = None;
+
+    for pair in boundaries.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if b <= a {
+            continue;
+        }
+        let covering: Vec<usize> = listed
+            .iter()
+            .enumerate()
+            .filter(|&(_, &driver_id)| {
+                problem
+                    .driver(driver_id)
+                    .is_some_and(|d| d.shifts.iter().any(|s| s.covers(a, b)))
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if covering.is_empty() {
+            active_idx = None;
+            continue;
+        }
+
+        let slice_len = b.minutes() - a.minutes();
+        let fits_24h = |idx: usize| -> bool {
+            let Some(driver) = problem.driver(listed[idx]) else {
+                return false;
+            };
+            let current_contig = per_driver[idx]
+                .last()
+                .filter(|(_, end)| *end == a)
+                .map_or(0, |(start, end)| end.minutes() - start.minutes());
+            current_contig + slice_len <= driver.fatigue_rules.max_work_24h_minutes()
+        };
+
+        let chosen = if covering.len() == 1 {
+            covering[0]
+        } else if let Some(prev) =
+            active_idx.filter(|prev| covering.contains(prev) && fits_24h(*prev))
+        {
+            prev
+        } else {
+            *covering
+                .iter()
+                .find(|&&idx| fits_24h(idx))
+                .unwrap_or(&covering[0])
+        };
+
+        if let Some(last) = per_driver[chosen].last_mut().filter(|(_, end)| *end == a) {
+            last.1 = b;
+        } else {
+            per_driver[chosen].push((a, b));
+        }
+        active_idx = Some(chosen);
+    }
+
+    for (idx, spans) in per_driver.into_iter().enumerate() {
+        driver_spans[listed[idx].0 as usize].extend(spans);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -947,6 +1073,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![Store {
@@ -954,6 +1081,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Store".into(),
                 location: LatLon::new(-33.92, 151.23),
+                address: None,
                 timezone: None,
                 demand: Load::ZERO,
                 service: Minutes::ZERO,
@@ -1369,6 +1497,7 @@ mod tests {
             chain: Chain::Coles,
             name: "Test Store".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             demand: Load::ZERO,
             service: Minutes::ZERO,
             receiving: vec![TimeWindow::new(
@@ -1406,6 +1535,7 @@ mod tests {
             chain: Chain::Coles,
             name: "Test Store".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             demand: Load::ZERO,
             service: Minutes::ZERO,
             receiving: vec![],
@@ -1592,5 +1722,34 @@ mod tests {
         };
         assert!(!rules.is_curtailed("residential", Minutes::from_minutes(600), 1));
         assert_eq!(rules.next_allowed_delta("residential", 600, 1), 0);
+    }
+
+    #[test]
+    fn general_chain_defaults_and_optional_addresses_roundtrip() {
+        assert_eq!(Chain::default(), Chain::General);
+        assert_eq!(Chain::General.to_string(), "General");
+        let parsed: Chain = serde_json::from_str("\"custom\"").unwrap();
+        assert_eq!(parsed, Chain::General);
+        assert!(ChainRules::default().windows_for(Chain::General).is_none());
+        assert_eq!(
+            ReturnablesDefaults::default().for_chain(Chain::General),
+            Load::ZERO
+        );
+
+        let depot = Depot {
+            id: DepotId(0),
+            name: "HQ".into(),
+            location: LatLon::new(-33.8688, 151.2093),
+            address: Some("100 George St, Sydney NSW 2000".into()),
+            timezone: None,
+        };
+        let encoded = serde_json::to_string(&depot).unwrap();
+        assert!(encoded.contains("100 George St"));
+        let decoded: Depot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, depot);
+
+        let legacy_json = r#"{"id":0,"name":"HQ","location":{"lat":-33.87,"lon":151.21}}"#;
+        let legacy: Depot = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.address, None);
     }
 }

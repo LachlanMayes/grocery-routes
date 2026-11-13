@@ -9,7 +9,7 @@
 //! All moves respect driver occupancy, capacity, time windows, and shift limits
 //! by reusing the scheduling logic from the greedy heuristic.
 
-use domain::{Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId};
+use domain::{DriverId, Minutes, Node, PlannedStop, Problem, RoutePlan, Solution, StoreId};
 
 use super::greedy::{Legs, Scheduled, plan_with_matrix, schedule_shift_candidate, spans_overlap};
 use crate::matrix::DistanceMatrix;
@@ -111,7 +111,10 @@ pub fn improve(
                     best = current.clone();
                 }
             } else {
-                no_improve += 1;
+                // Every deterministic/exhaustive neighborhood was checked with no
+                // improving move; further passes on the identical solution are
+                // no-ops.
+                break;
             }
         }
     }
@@ -157,7 +160,7 @@ fn greedy_to_ls(problem: &Problem, solution: Solution) -> LSSolution {
                 .first()
                 .copied()
                 .expect("route must have at least one driver");
-            let span = (route.steps[0].depart, route.steps.last().unwrap().arrive);
+            let span = (route.steps[0].depart, route.steps.last().unwrap().depart);
             driver_busy[driver.0 as usize].push(span);
             LSRoute {
                 vehicle_index,
@@ -263,6 +266,71 @@ fn hash_problem(problem: &Problem) -> u64 {
     hasher.finish()
 }
 
+/// Returns a copy of `driver_busy` with `removed_span` cleared from `driver`'s list.
+fn busy_without_span(
+    driver_busy: &[Vec<(Minutes, Minutes)>],
+    driver: DriverId,
+    removed_span: (Minutes, Minutes),
+) -> Vec<Vec<(Minutes, Minutes)>> {
+    let mut updated = driver_busy.to_vec();
+    if let Some(spans) = updated.get_mut(driver.0 as usize)
+        && let Some(pos) = spans.iter().position(|&s| s == removed_span)
+    {
+        spans.remove(pos);
+    }
+    updated
+}
+
+/// Attempts to schedule inserting `moved_store` into `dst_idx` at `insert_pos`
+/// once the source route's new schedule (`None` when the source route had only
+/// one store and would be eliminated) has already been computed.
+#[allow(clippy::too_many_arguments)]
+fn schedule_relocate_dst(
+    problem: &Problem,
+    legs: &mut Legs<'_>,
+    solution: &LSSolution,
+    src_driver: DriverId,
+    src_old_span: (Minutes, Minutes),
+    src_scheduled: Option<&Scheduled>,
+    dst_idx: usize,
+    insert_pos: usize,
+    moved_store: StoreId,
+) -> Option<Scheduled> {
+    let dst_route = &solution.routes[dst_idx];
+    let dst_vehicle = &problem.vehicles[dst_route.vehicle_index];
+    let dst_driver = dst_route.scheduled.driver;
+
+    let mut new_dst_steps = dst_route.scheduled.steps.clone();
+    new_dst_steps.insert(
+        insert_pos,
+        PlannedStop {
+            node: Node::Store(moved_store),
+            arrive: Minutes::ZERO,
+            depart: Minutes::ZERO,
+        },
+    );
+    let new_dst_nodes = nodes_from_steps(&new_dst_steps);
+
+    // Reflect the source route change in `driver_busy` so same-driver overlap
+    // and fatigue rest rules are checked accurately against the updated source.
+    let mut busy = busy_without_span(&solution.driver_busy, src_driver, src_old_span);
+    if let Some(src_sched) = src_scheduled
+        && let Some(spans) = busy.get_mut(src_sched.driver.0 as usize)
+    {
+        spans.push(src_sched.span);
+    }
+
+    schedule_shift_candidate(
+        problem,
+        legs,
+        dst_vehicle,
+        dst_driver,
+        &new_dst_nodes,
+        &busy,
+        Some((dst_driver.0 as usize, dst_route.scheduled.span)),
+    )
+}
+
 /// Perturbs a solution by randomly relocating a few stores.
 fn perturb_solution(
     problem: &Problem,
@@ -270,64 +338,52 @@ fn perturb_solution(
     mut solution: LSSolution,
     rng: &mut StdRng,
 ) -> LSSolution {
-    if solution.routes.is_empty() {
+    if solution.routes.len() < 2 {
         return solution;
     }
 
-    // Randomly select up to 3 stores to relocate
     let num_perturb = solution.routes.len().clamp(1, 3);
-    let mut all_stores: Vec<(usize, usize, StoreId)> = Vec::new(); // (route_idx, pos_in_route, store_id)
-
-    for (r_idx, route) in solution.routes.iter().enumerate() {
-        for (pos, step) in route.scheduled.steps.iter().enumerate() {
-            if let Node::Store(id) = step.node {
-                all_stores.push((r_idx, pos, id));
+    for _ in 0..num_perturb {
+        let mut all_stores: Vec<(usize, usize, StoreId)> = Vec::new();
+        for (r_idx, route) in solution.routes.iter().enumerate() {
+            if route.scheduled.steps.len() < 4 {
+                continue;
+            }
+            for (pos, step) in route.scheduled.steps.iter().enumerate() {
+                if let Node::Store(id) = step.node {
+                    all_stores.push((r_idx, pos, id));
+                }
             }
         }
-    }
-
-    if all_stores.is_empty() {
-        return solution;
-    }
-
-    for _ in 0..num_perturb {
         if all_stores.is_empty() {
             break;
         }
         let idx = rng.random_range(0..all_stores.len());
-        let (route_idx, pos, store_id) = all_stores.swap_remove(idx);
+        let (route_idx, pos, _store_id) = all_stores[idx];
 
-        // Try to move this store to a different route
         let other_routes: Vec<usize> = (0..solution.routes.len())
-            .filter(|&i| i != route_idx)
+            .filter(|&i| i != route_idx && solution.routes[i].scheduled.steps.len() >= 2)
             .collect();
         if other_routes.is_empty() {
             break;
         }
         let new_route_idx = other_routes[rng.random_range(0..other_routes.len())];
-
-        // Try inserting at a random position in the new route
-        let dest_route = &solution.routes[new_route_idx];
-        if dest_route.scheduled.steps.len() >= 3 {
-            let insert_pos = rng.random_range(1..dest_route.scheduled.steps.len() - 1);
-            if try_relocate_direct(
-                problem,
-                legs,
-                &mut solution,
-                route_idx,
-                pos,
-                new_route_idx,
-                insert_pos,
-            ) {
-                // Successfully moved, update all_stores
-                all_stores.retain(|(_, _, id)| *id != store_id);
-            }
-        }
+        let dest_len = solution.routes[new_route_idx].scheduled.steps.len();
+        let insert_pos = rng.random_range(1..dest_len);
+        let _ = try_relocate_direct(
+            problem,
+            legs,
+            &mut solution,
+            route_idx,
+            pos,
+            new_route_idx,
+            insert_pos,
+        );
     }
     solution
 }
 
-/// Helper to try a direct relocation during perturbation.
+/// Helper to apply a non-greedy relocation during restart perturbation.
 fn try_relocate_direct(
     problem: &Problem,
     legs: &mut Legs<'_>,
@@ -340,8 +396,11 @@ fn try_relocate_direct(
     let src_route = &solution.routes[src_idx];
     let src_vehicle = &problem.vehicles[src_route.vehicle_index];
     let src_driver = src_route.scheduled.driver;
+    let src_old_span = src_route.scheduled.span;
+    let Some(moved_store) = store_id_from_steps(&src_route.scheduled.steps, src_pos) else {
+        return false;
+    };
 
-    // Remove from source
     let mut new_src_steps = src_route.scheduled.steps.clone();
     new_src_steps.remove(src_pos);
     if new_src_steps.len() < 3 {
@@ -349,7 +408,6 @@ fn try_relocate_direct(
     }
 
     let new_src_nodes = nodes_from_steps(&new_src_steps);
-
     let Some(src_scheduled) = schedule_shift_candidate(
         problem,
         legs,
@@ -357,52 +415,38 @@ fn try_relocate_direct(
         src_driver,
         &new_src_nodes,
         &solution.driver_busy,
-        Some((src_driver.0 as usize, src_route.scheduled.span)),
+        Some((src_driver.0 as usize, src_old_span)),
     ) else {
         return false;
     };
 
-    let dst_route = &solution.routes[dst_idx];
-    let dst_vehicle = &problem.vehicles[dst_route.vehicle_index];
-    let dst_driver = dst_route.scheduled.driver;
-    let mut new_dst_steps = dst_route.scheduled.steps.clone();
-    new_dst_steps.insert(
-        insert_pos,
-        PlannedStop {
-            node: Node::Store(
-                store_id_from_steps(&solution.routes[src_idx].scheduled.steps, src_pos).unwrap(),
-            ),
-            arrive: Minutes::ZERO,
-            depart: Minutes::ZERO,
-        },
-    );
-
-    let new_dst_nodes = nodes_from_steps(&new_dst_steps);
-
-    let Some(dst_scheduled) = schedule_shift_candidate(
+    let Some(dst_scheduled) = schedule_relocate_dst(
         problem,
         legs,
-        dst_vehicle,
-        dst_driver,
-        &new_dst_nodes,
-        &solution.driver_busy,
-        Some((dst_driver.0 as usize, dst_route.scheduled.span)),
+        solution,
+        src_driver,
+        src_old_span,
+        Some(&src_scheduled),
+        dst_idx,
+        insert_pos,
+        moved_store,
     ) else {
         return false;
     };
+
+    if candidates_double_book_same_driver(&src_scheduled, &dst_scheduled) {
+        return false;
+    }
 
     let delta = src_scheduled.cost_cents + dst_scheduled.cost_cents
         - solution.routes[src_idx].scheduled.cost_cents
         - solution.routes[dst_idx].scheduled.cost_cents;
 
-    if delta < 0 && !candidates_double_book_same_driver(&src_scheduled, &dst_scheduled) {
-        solution.routes[src_idx].scheduled = src_scheduled;
-        solution.routes[dst_idx].scheduled = dst_scheduled;
-        solution.total_cost_cents += delta;
-        solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
-        return true;
-    }
-    false
+    solution.routes[src_idx].scheduled = src_scheduled;
+    solution.routes[dst_idx].scheduled = dst_scheduled;
+    solution.total_cost_cents += delta;
+    solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
+    true
 }
 
 /// Extract store ID from route steps at position.
@@ -492,75 +536,71 @@ fn relocate(
     for (src_idx, src_pos, store_id) in candidates {
         let src_route = &solution.routes[src_idx];
         let src_vehicle = &problem.vehicles[src_route.vehicle_index];
+        let src_driver = src_route.scheduled.driver;
+        let src_old_span = src_route.scheduled.span;
+        let src_old_cost = src_route.scheduled.cost_cents;
 
-        // Try removing from source
+        // Try removing from source; eliminating a single-store route is allowed
+        // and saves its entire route cost.
         let mut new_src_steps = src_route.scheduled.steps.clone();
         new_src_steps.remove(src_pos);
-        if new_src_steps.len() < 3 {
-            continue; // Would leave only depot-depot
-        }
-
-        let new_src_nodes = nodes_from_steps(&new_src_steps);
-
-        // Try to re-schedule source without this store
-        let src_driver = src_route.scheduled.driver;
-        let Some(src_scheduled) = schedule_shift_candidate(
-            problem,
-            legs,
-            src_vehicle,
-            src_driver,
-            &new_src_nodes,
-            &solution.driver_busy,
-            Some((src_driver.0 as usize, src_route.scheduled.span)),
-        ) else {
-            continue;
+        let src_scheduled = if new_src_steps.len() < 3 {
+            None
+        } else {
+            let new_src_nodes = nodes_from_steps(&new_src_steps);
+            let Some(sched) = schedule_shift_candidate(
+                problem,
+                legs,
+                src_vehicle,
+                src_driver,
+                &new_src_nodes,
+                &solution.driver_busy,
+                Some((src_driver.0 as usize, src_old_span)),
+            ) else {
+                continue;
+            };
+            Some(sched)
         };
+        let src_new_cost = src_scheduled.as_ref().map_or(0, |s| s.cost_cents);
 
-        // Try inserting into each other route
-        for (dst_idx, dst_route) in solution.routes.iter().enumerate() {
+        // Try inserting into every interior slot of every other route.
+        for dst_idx in 0..solution.routes.len() {
             if dst_idx == src_idx {
                 continue;
             }
-            let dst_vehicle = &problem.vehicles[dst_route.vehicle_index];
-            let dst_steps = &dst_route.scheduled.steps;
-            if dst_steps.len() < 2 {
+            let dst_steps_len = solution.routes[dst_idx].scheduled.steps.len();
+            if dst_steps_len < 2 {
                 continue;
             }
+            let dst_old_cost = solution.routes[dst_idx].scheduled.cost_cents;
 
-            for insert_pos in 1..dst_steps.len() - 1 {
-                let mut new_dst_steps = dst_steps.clone();
-                new_dst_steps.insert(
-                    insert_pos,
-                    PlannedStop {
-                        node: Node::Store(store_id),
-                        arrive: Minutes::ZERO,
-                        depart: Minutes::ZERO,
-                    },
-                );
-                let new_dst_nodes = nodes_from_steps(&new_dst_steps);
-
-                let dst_driver = dst_route.scheduled.driver;
-                let Some(dst_scheduled) = schedule_shift_candidate(
+            for insert_pos in 1..dst_steps_len {
+                let Some(dst_scheduled) = schedule_relocate_dst(
                     problem,
                     legs,
-                    dst_vehicle,
-                    dst_driver,
-                    &new_dst_nodes,
-                    &solution.driver_busy,
-                    Some((dst_driver.0 as usize, dst_route.scheduled.span)),
+                    solution,
+                    src_driver,
+                    src_old_span,
+                    src_scheduled.as_ref(),
+                    dst_idx,
+                    insert_pos,
+                    store_id,
                 ) else {
                     continue;
                 };
 
-                let delta = src_scheduled.cost_cents + dst_scheduled.cost_cents
-                    - solution.routes[src_idx].scheduled.cost_cents
-                    - solution.routes[dst_idx].scheduled.cost_cents;
+                let no_overlap = src_scheduled
+                    .as_ref()
+                    .is_none_or(|src| !candidates_double_book_same_driver(src, &dst_scheduled));
+                let delta = src_new_cost + dst_scheduled.cost_cents - src_old_cost - dst_old_cost;
 
-                if delta < 0 && !candidates_double_book_same_driver(&src_scheduled, &dst_scheduled)
-                {
-                    // Apply the move
-                    solution.routes[src_idx].scheduled = src_scheduled;
+                if delta < 0 && no_overlap {
                     solution.routes[dst_idx].scheduled = dst_scheduled;
+                    if let Some(src_sched) = src_scheduled {
+                        solution.routes[src_idx].scheduled = src_sched;
+                    } else {
+                        solution.routes.remove(src_idx);
+                    }
                     solution.total_cost_cents += delta;
                     solution.driver_busy = recompute_driver_busy(problem, &solution.routes);
                     return true;
@@ -777,6 +817,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![
@@ -785,6 +826,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Store 0".into(),
                     location: LatLon::new(-33.90, 151.20),
+                    address: None,
                     timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(10),
@@ -798,6 +840,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: "Store 1".into(),
                     location: LatLon::new(-33.85, 151.25),
+                    address: None,
                     timezone: None,
                     demand: Load::new(1, 0, 0),
                     service: Minutes::from_minutes(10),

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use domain::{LatLon, Problem};
 
-use crate::graph::{Graph, NodeId};
+use crate::graph::{Graph, NodeId, NodeIndex};
 use crate::osm_ingest::ingest_pbf;
 use crate::router::Router;
 use crate::truck_constraints::TruckProfile;
@@ -54,6 +54,7 @@ pub struct MatrixKey {
 #[derive(Clone, Debug, Default)]
 pub struct CachedMatrix {
     graph: Option<Graph>,
+    node_index: Option<NodeIndex>,
     pbf_path: Option<std::path::PathBuf>,
     matrices: HashMap<MatrixKey, Vec<Option<MatrixEntry>>>,
     node_count: usize,
@@ -65,14 +66,21 @@ impl CachedMatrix {
         Self::default()
     }
 
+    /// Replaces the loaded graph, builds its spatial node index, and clears
+    /// cached matrices.
+    pub fn set_graph(&mut self, graph: Graph) {
+        self.node_index = Some(NodeIndex::build(&graph));
+        self.graph = Some(graph);
+        self.matrices.clear();
+        self.node_count = 0;
+    }
+
     /// Loads an OSM PBF extract into the cache's graph. Replaces any previous
     /// graph and clears all cached matrices.
     pub fn load_pbf(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
         let graph = ingest_pbf(path)?;
-        self.graph = Some(graph);
+        self.set_graph(graph);
         self.pbf_path = Some(path.to_path_buf());
-        self.matrices.clear();
-        self.node_count = 0;
         Ok(())
     }
 
@@ -110,9 +118,10 @@ impl CachedMatrix {
             .map(|d| d.location)
             .chain(problem.stores.iter().map(|s| s.location))
             .collect();
+        let index = self.node_index.as_ref();
         node_locations
             .iter()
-            .map(|loc| nearest_graph_node(graph, *loc))
+            .map(|loc| nearest_graph_node(graph, index, *loc))
             .collect::<anyhow::Result<_>>()
     }
 
@@ -161,33 +170,92 @@ impl CachedMatrix {
         let mut matrix: Vec<Vec<Option<MatrixEntry>>> = vec![vec![None; n]; n];
 
         // For the CH strategy the hierarchy is prepared once and answers
-        // every pair; for Dijkstra each pair runs its own search (one-way
-        // roads mean i->j and j->i are not symmetric).
-        let mut hierarchy = match strategy {
-            MatrixStrategy::Dijkstra => None,
-            MatrixStrategy::ContractionHierarchy => Some(
-                crate::ch::ContractionHierarchy::build(graph, profile)
-                    .map_err(|error| anyhow::anyhow!("{error}"))?,
-            ),
-        };
-
-        for i in 0..n {
-            matrix[i][i] = Some(MatrixEntry {
-                distance_km: 0.0,
-                duration_minutes: 0,
-            });
-            for j in 0..n {
-                if i == j {
-                    continue;
+        // every pair; for Dijkstra each source runs a single multi-target
+        // Dijkstra in parallel across threads (one-way roads make matrix
+        // entries asymmetric).
+        match strategy {
+            MatrixStrategy::ContractionHierarchy => {
+                let mut hierarchy = crate::ch::ContractionHierarchy::build(graph, profile)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                for i in 0..n {
+                    matrix[i][i] = Some(MatrixEntry {
+                        distance_km: 0.0,
+                        duration_minutes: 0,
+                    });
+                    for j in 0..n {
+                        if i == j {
+                            continue;
+                        }
+                        let result = hierarchy.shortest_path(node_ids[i], node_ids[j]);
+                        matrix[i][j] = result.map(|r| MatrixEntry {
+                            distance_km: r.distance_km,
+                            duration_minutes: r.duration_minutes,
+                        });
+                    }
                 }
-                let result = match &mut hierarchy {
-                    Some(hierarchy) => hierarchy.shortest_path(node_ids[i], node_ids[j]),
-                    None => Router::shortest_path(graph, node_ids[i], node_ids[j], profile),
-                };
-                matrix[i][j] = result.map(|r| MatrixEntry {
-                    distance_km: r.distance_km,
-                    duration_minutes: r.duration_minutes,
-                });
+            }
+            MatrixStrategy::Dijkstra => {
+                let workers = std::thread::available_parallelism()
+                    .map_or(1, std::num::NonZeroUsize::get)
+                    .min(n.max(1));
+                if workers <= 1 || n <= 1 {
+                    for i in 0..n {
+                        let row =
+                            Router::shortest_paths_from(graph, node_ids[i], &node_ids, profile);
+                        for (j, entry) in row.into_iter().enumerate() {
+                            matrix[i][j] =
+                                entry.map(|(distance_km, duration_minutes)| MatrixEntry {
+                                    distance_km,
+                                    duration_minutes,
+                                });
+                        }
+                    }
+                } else {
+                    let next_row = std::sync::atomic::AtomicUsize::new(0);
+                    let rows: Vec<Vec<Option<MatrixEntry>>> = std::thread::scope(|scope| {
+                        let handles: Vec<_> = (0..workers)
+                            .map(|_| {
+                                let next_row = &next_row;
+                                let node_ids = &node_ids;
+                                scope.spawn(move || {
+                                    let mut local = Vec::new();
+                                    loop {
+                                        let i = next_row
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        if i >= n {
+                                            break;
+                                        }
+                                        let entries = Router::shortest_paths_from(
+                                            graph,
+                                            node_ids[i],
+                                            node_ids,
+                                            profile,
+                                        )
+                                        .into_iter()
+                                        .map(|e| {
+                                            e.map(|(distance_km, duration_minutes)| MatrixEntry {
+                                                distance_km,
+                                                duration_minutes,
+                                            })
+                                        })
+                                        .collect::<Vec<_>>();
+                                        local.push((i, entries));
+                                    }
+                                    local
+                                })
+                            })
+                            .collect();
+
+                        let mut ordered = vec![Vec::new(); n];
+                        for handle in handles {
+                            for (i, row) in handle.join().expect("dijkstra worker panicked") {
+                                ordered[i] = row;
+                            }
+                        }
+                        ordered
+                    });
+                    matrix = rows;
+                }
             }
         }
 
@@ -214,8 +282,22 @@ fn entries_to_matrix(flat: &[Option<MatrixEntry>], n: usize) -> Vec<Vec<Option<M
         .collect()
 }
 
-/// Finds the nearest graph node to `location` using haversine distance.
-fn nearest_graph_node(graph: &Graph, location: LatLon) -> anyhow::Result<NodeId> {
+/// Finds the nearest graph node to `location` using the spatial `NodeIndex`
+/// when available (50 km fast search, then 500 km), falling back to a full
+/// scan for sparse synthetic test graphs.
+fn nearest_graph_node(
+    graph: &Graph,
+    node_index: Option<&NodeIndex>,
+    location: LatLon,
+) -> anyhow::Result<NodeId> {
+    if let Some(index) = node_index {
+        if let Some((id, _, _)) = index.nearest_with_id(location, 50.0) {
+            return Ok(id);
+        }
+        if let Some((id, _, _)) = index.nearest_with_id(location, 500.0) {
+            return Ok(id);
+        }
+    }
     let mut best: Option<(NodeId, f64)> = None;
     for (id, node) in graph.nodes() {
         let d = haversine_km(location, node.location);
@@ -259,6 +341,7 @@ mod tests {
                     id: DepotId(i as u32),
                     name: format!("Depot {i}"),
                     location: loc,
+                    address: None,
                     timezone: None,
                 })
                 .take(1)
@@ -272,6 +355,7 @@ mod tests {
                     chain: Chain::Coles,
                     name: format!("Store {i}"),
                     location: loc,
+                    address: None,
                     demand: Load::ZERO,
                     service: Minutes::ZERO,
                     receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(1440))],

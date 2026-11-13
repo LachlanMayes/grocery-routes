@@ -58,6 +58,7 @@ mod tests {
             id: DepotId(0),
             name: "DC".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: None,
         }
     }
@@ -68,6 +69,7 @@ mod tests {
             chain: Chain::Coles,
             name: name.into(),
             location: LatLon::new(-33.87, lon),
+            address: None,
             demand: Load::new(1, 1, 0),
             service: Minutes::from_minutes(10),
             receiving: vec![TimeWindow::new(

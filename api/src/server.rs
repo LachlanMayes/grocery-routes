@@ -9,11 +9,18 @@ use crate::handlers::router;
 
 /// Serve the API on `addr`, storing data in the SQLite database at `db_path`.
 pub async fn serve(addr: SocketAddr, db_path: &std::path::Path) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_with_listener(listener, db_path).await
+}
+
+/// Serve the API on an already-bound `listener`, avoiding startup bind races
+/// when embedded in a desktop process.
+pub async fn serve_with_listener(
+    listener: tokio::net::TcpListener,
+    db_path: &std::path::Path,
+) -> anyhow::Result<()> {
     let pool = open_db(db_path).await?;
     let app = router(pool);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }

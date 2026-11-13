@@ -108,3 +108,72 @@ fn empty_query_returns_nothing() {
     let (_dir, conn) = fixture_db();
     assert!(search(&conn, "   ", 5).is_empty());
 }
+
+#[test]
+fn import_drops_staging_table_and_builds_upper_indexes() {
+    let (_dir, conn) = fixture_db();
+    let staging_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'geocode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        staging_count, 0,
+        "temporary geocode table should be dropped"
+    );
+
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'address'")
+        .unwrap();
+    let indexes: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for expected in [
+        "address_street_upper_idx",
+        "address_locality_upper_idx",
+        "address_state_upper_idx",
+        "address_postcode_idx",
+    ] {
+        assert!(
+            indexes.iter().any(|name| name == expected),
+            "missing index {expected} in {indexes:?}"
+        );
+    }
+}
+
+#[test]
+fn prefix_lookup_and_wildcard_only_queries_behave_safely() {
+    let (_dir, conn) = fixture_db();
+    let prefix_hits = geocode(
+        &conn,
+        &geo_au::GeocodeQuery {
+            number: Some(12),
+            street: "Sm".into(),
+            locality: Some("Syd".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap();
+    assert!(!prefix_hits.is_empty());
+    assert_eq!(prefix_hits[0].address.pid, "1000");
+
+    let wildcard_locality = geocode(
+        &conn,
+        &geo_au::GeocodeQuery {
+            street: "Smith".into(),
+            locality: Some("%_%".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap();
+    assert!(
+        wildcard_locality.is_empty(),
+        "wildcard-only locality filter must not match every suburb"
+    );
+}

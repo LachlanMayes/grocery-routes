@@ -93,18 +93,72 @@ const DRIVABLE_HIGHWAY: &[&str] = &[
     "road",
 ];
 
-/// Parses `maxweight` tag value into tonnes. Handles "3.5t", "3500", "10 t", etc.
+/// Parses `maxweight` tag value into tonnes. Handles `"3.5t"`, `"3500"`,
+/// `"10 t"`, `"10 tonnes"`, `"4500 kg"`, etc. Rejects non-positive values.
 fn parse_maxweight(value: &str) -> Option<f64> {
-    let v = value.trim();
-    let stripped = v.strip_suffix('t').unwrap_or(v).trim();
-    stripped.parse::<f64>().ok()
+    let lower = value.trim().to_ascii_lowercase();
+    let parsed = if let Some(kg) = lower
+        .strip_suffix("kgs")
+        .or_else(|| lower.strip_suffix("kg"))
+    {
+        kg.trim().parse::<f64>().ok().map(|v| v / 1000.0)
+    } else {
+        let stripped = lower
+            .strip_suffix("tonnes")
+            .or_else(|| lower.strip_suffix("tonne"))
+            .or_else(|| lower.strip_suffix("tons"))
+            .or_else(|| lower.strip_suffix("ton"))
+            .or_else(|| lower.strip_suffix('t'))
+            .unwrap_or(&lower)
+            .trim();
+        stripped.parse::<f64>().ok()
+    }?;
+    (parsed.is_finite() && parsed > 0.0).then_some(parsed)
 }
 
-/// Parses `maxheight` tag value into metres. Handles "4.2m", "4200", "5 m", etc.
+/// Parses `maxheight` tag value into metres. Handles `"4.2m"`, `"4200"`,
+/// `"5 m"`, `"4.3 metres"`, `"420 cm"`, etc. Rejects non-positive values.
 fn parse_maxheight(value: &str) -> Option<f64> {
-    let v = value.trim();
-    let stripped = v.strip_suffix('m').unwrap_or(v).trim();
-    stripped.parse::<f64>().ok()
+    let lower = value.trim().to_ascii_lowercase();
+    let parsed = if let Some(cm) = lower.strip_suffix("cm") {
+        cm.trim().parse::<f64>().ok().map(|v| v / 100.0)
+    } else {
+        let stripped = lower
+            .strip_suffix("metres")
+            .or_else(|| lower.strip_suffix("meters"))
+            .or_else(|| lower.strip_suffix("metre"))
+            .or_else(|| lower.strip_suffix("meter"))
+            .or_else(|| lower.strip_suffix('m'))
+            .unwrap_or(&lower)
+            .trim();
+        stripped.parse::<f64>().ok()
+    }?;
+    (parsed.is_finite() && parsed > 0.0).then_some(parsed)
+}
+
+/// Parses `maxspeed` tag value into km/h. Supports numeric (`"60"`), explicit
+/// units (`"60 km/h"`, `"60 kph"`, `"40 mph"`), and common OSM symbolic speeds.
+fn parse_maxspeed_kmh(value: &str) -> Option<f64> {
+    let lower = value.trim().to_ascii_lowercase();
+    let kmh = match lower.as_str() {
+        "au:urban" | "urban" => return Some(50.0),
+        "au:rural" | "rural" => return Some(100.0),
+        "walk" => return Some(10.0),
+        _ => {
+            if let Some(mph) = lower.strip_suffix("mph") {
+                mph.trim().parse::<f64>().ok().map(|v| v * 1.60934)
+            } else {
+                let stripped = lower
+                    .strip_suffix("km/h")
+                    .or_else(|| lower.strip_suffix("kmh"))
+                    .or_else(|| lower.strip_suffix("kph"))
+                    .unwrap_or(&lower)
+                    .trim();
+                stripped.parse::<f64>().ok()
+            }
+        }
+    }?;
+    (kmh.is_finite() && (1.0..=150.0).contains(&kmh)).then_some(kmh)
 }
 
 /// Returns `Some(way)` if `w` is a drivable way, otherwise `None`.
@@ -113,6 +167,7 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
     let mut highway: Option<&str> = None;
     let mut maxweight_tonnes: Option<f64> = None;
     let mut maxheight_m: Option<f64> = None;
+    let mut maxspeed_kmh: Option<f64> = None;
     let mut hgv: Option<String> = None;
     let mut access: Option<String> = None;
     let mut oneway = false;
@@ -128,6 +183,9 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
             }
             "maxheight" => {
                 maxheight_m = parse_maxheight(value);
+            }
+            "maxspeed" => {
+                maxspeed_kmh = parse_maxspeed_kmh(value);
             }
             "hgv" => {
                 hgv = Some(value.to_ascii_lowercase());
@@ -156,6 +214,7 @@ fn drivable_way(w: &osmpbf::Way) -> Option<DrivableWay> {
         highway: highway.to_string(),
         maxweight_tonnes,
         maxheight_m,
+        maxspeed_kmh,
         hgv,
         access,
     })
@@ -170,6 +229,7 @@ struct DrivableWay {
     highway: String,
     maxweight_tonnes: Option<f64>,
     maxheight_m: Option<f64>,
+    maxspeed_kmh: Option<f64>,
     hgv: Option<String>,
     access: Option<String>,
 }
@@ -197,7 +257,9 @@ fn add_way_to_graph(graph: &mut Graph, nodes: &HashMap<i64, (f64, f64)>, way: Dr
         return;
     }
 
-    let speed = highway_speed_kmh(&way.highway);
+    let speed = way
+        .maxspeed_kmh
+        .unwrap_or_else(|| highway_speed_kmh(&way.highway));
 
     // OSM oneway semantics:
     // - oneway=yes: forward direction only, in node order.
@@ -234,13 +296,15 @@ fn add_chain(
             continue;
         };
         let distance_km = haversine_segment(*from_lat, *from_lon, *to_lat, *to_lon);
-        let duration_minutes = (distance_km / speed * 60.0).round() as i64;
+        let duration_seconds = (distance_km / speed) * 3600.0;
+        let duration_minutes = (duration_seconds / 60.0).round() as i64;
 
-        graph.add_edge_with_way(
+        graph.add_edge_with_way_and_duration_secs(
             NodeId(from_id as u64),
             NodeId(to_id as u64),
             distance_km,
             duration_minutes,
+            duration_seconds,
             Some(way.highway.clone()),
             way.maxweight_tonnes,
             way.maxheight_m,
@@ -281,6 +345,26 @@ mod tests {
         assert_eq!(parse_maxheight("4.2m"), Some(4.2));
         assert_eq!(parse_maxheight("4200"), Some(4200.0));
         assert_eq!(parse_maxheight("5 m"), Some(5.0));
+        assert_eq!(parse_maxheight("430 cm"), Some(4.3));
+        assert_eq!(parse_maxheight("none"), None);
         assert_eq!(parse_maxheight("abc"), None);
+    }
+
+    #[test]
+    fn parse_maxweight_handles_additional_units() {
+        assert_eq!(parse_maxweight("4500 kg"), Some(4.5));
+        assert_eq!(parse_maxweight("12 tonnes"), Some(12.0));
+        assert_eq!(parse_maxweight("none"), None);
+        assert_eq!(parse_maxweight("-5"), None);
+    }
+
+    #[test]
+    fn parse_maxspeed_handles_units_and_keywords() {
+        assert_eq!(parse_maxspeed_kmh("60"), Some(60.0));
+        assert_eq!(parse_maxspeed_kmh("80 km/h"), Some(80.0));
+        assert_eq!(parse_maxspeed_kmh("100 kph"), Some(100.0));
+        assert_eq!(parse_maxspeed_kmh("AU:urban"), Some(50.0));
+        assert!((parse_maxspeed_kmh("50 mph").unwrap() - 80.467).abs() < 0.01);
+        assert_eq!(parse_maxspeed_kmh("signals"), None);
     }
 }

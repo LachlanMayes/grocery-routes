@@ -99,6 +99,7 @@ mod tests {
             to: NodeId(2),
             distance_km: 5.0,
             duration_minutes: 6,
+            duration_seconds: 360.0,
             highway: Some("primary".to_string()),
             maxweight_tonnes: Some(10.0),
             maxheight_m: Some(4.0),

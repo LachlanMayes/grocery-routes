@@ -54,6 +54,7 @@ fn problem_fixture() -> Problem {
             id: DepotId(0),
             name: "DC".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: Some("Australia/Sydney".into()),
         }],
         stores: vec![
@@ -62,6 +63,7 @@ fn problem_fixture() -> Problem {
                 chain: Chain::Coles,
                 name: "A".into(),
                 location: LatLon::new(-33.85, 151.30),
+                address: None,
                 demand: Load::new(2, 2, 1),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(120))],
@@ -72,6 +74,7 @@ fn problem_fixture() -> Problem {
                 chain: Chain::Coles,
                 name: "B".into(),
                 location: LatLon::new(-33.83, 151.39),
+                address: None,
                 demand: Load::new(1, 1, 1),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(120))],

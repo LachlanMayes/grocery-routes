@@ -248,6 +248,7 @@ fn city_display(city: City) -> &'static str {
 /// The lowercase banner slug used in the scenario label.
 fn chain_slug(chain: Chain) -> &'static str {
     match chain {
+        Chain::General => "general",
         Chain::Coles => "coles",
         Chain::Woolworths => "woolworths",
         Chain::Aldi => "aldi",
@@ -359,6 +360,7 @@ fn build_depots(rng: &mut StdRng, city: City, centre: LatLon, count: usize) -> V
             id: DepotId(index as u32),
             name: format!("{display} DC {}", index + 1),
             location: offset_km(centre, east_km, north_km),
+            address: None,
             timezone: None,
         });
     }
@@ -388,10 +390,11 @@ fn build_stores(
         ));
     }
 
-    // Illustrative per-banner receiving windows in minutes from 00:00 —
-    // synthetic fixtures, not researched operator data: Coles 06:00–16:00,
-    // Woolworths 05:30–15:00, ALDI 07:00–13:00, IGA 07:00–17:00.
+    // Illustrative receiving windows in minutes from 00:00 —
+    // synthetic fixtures, not researched operator data: General 06:00–18:00,
+    // Coles 06:00–16:00, Woolworths 05:30–15:00, ALDI 07:00–13:00, IGA 07:00–17:00.
     let (base_start, base_end) = match chain {
+        Chain::General => (360, 1080),
         Chain::Coles => (360, 960),
         Chain::Woolworths => (330, 900),
         Chain::Aldi => (420, 780),
@@ -428,11 +431,16 @@ fn build_stores(
             (start, end) = (end, start);
         }
 
+        let store_name = match chain {
+            Chain::General => format!("{display} Stop #{:03}", index + 1),
+            _ => format!("{chain} {display} #{:03}", index + 1),
+        };
         stores.push(Store {
             id: StoreId(index as u32),
             chain,
-            name: format!("{chain} {display} #{:03}", index + 1),
+            name: store_name,
             location,
+            address: None,
             timezone: None,
             demand,
             service: Minutes::from_minutes(rng.random_range(3..=6) * 5),

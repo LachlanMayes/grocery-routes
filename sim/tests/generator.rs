@@ -332,3 +332,18 @@ fn depots_sit_on_the_fringe_ring() {
         );
     }
 }
+
+#[test]
+fn general_chain_scenario_generates_custom_stop_names() {
+    let mut options = reference_options();
+    options.chain = Chain::General;
+    options.stores = 5;
+    let problem = generate(&options);
+    assert_eq!(
+        problem.name,
+        "sim general sydney stores=5 depots=3 vehicles=12 seed=42"
+    );
+    assert_eq!(problem.stores.len(), 5);
+    assert!(problem.stores.iter().all(|s| s.chain == Chain::General));
+    assert_eq!(problem.stores[0].name, "Sydney Stop #001");
+}

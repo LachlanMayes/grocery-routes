@@ -14,6 +14,9 @@ anyhow.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 domain = { path = "../domain" }
+geo-au = { path = "../geo-au" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sim = { path = "../sim" }
 chrono.workspace = true
 rfd = "0.15"
 egui_plot = "0.38"
@@ -23,3 +26,4 @@ walkers = { version = "0.65", default-features = false, features = ["rustls-aws-
 
 [dev-dependencies]
 axum.workspace = true
+tempfile.workspace = true

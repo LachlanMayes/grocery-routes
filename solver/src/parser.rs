@@ -222,6 +222,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
         id: depot_id,
         name: "Depot".into(),
         location: inst.depot,
+        address: None,
         timezone: None,
     };
 
@@ -258,6 +259,7 @@ pub fn solomon_to_problem(inst: SolomonInstance, speed_kmh: f64) -> Problem {
             chain: Chain::Coles, // placeholder
             name: format!("Customer {:03}", cust.id),
             location: LatLon::new(cust.x, cust.y),
+            address: None,
             timezone: None,
             demand: Load::new(cust.demand, 0, 0),
             service: Minutes::from_minutes(cust.service),

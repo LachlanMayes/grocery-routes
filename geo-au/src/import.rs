@@ -90,8 +90,10 @@ pub fn import_directory(gnaf_dir: &Path, db_path: &Path) -> anyhow::Result<Impor
              lat REAL NOT NULL,
              lon REAL NOT NULL
          );
-         CREATE INDEX address_street_idx ON address(street);
-         CREATE INDEX address_locality_idx ON address(locality);
+         CREATE INDEX address_street_upper_idx ON address(UPPER(street));
+         CREATE INDEX address_locality_upper_idx ON address(UPPER(locality));
+         CREATE INDEX address_state_upper_idx ON address(UPPER(state));
+         CREATE INDEX address_postcode_idx ON address(postcode);
          CREATE INDEX address_lat_lon_idx ON address(lat, lon);
          CREATE TABLE geocode(pid TEXT PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL);",
     )
@@ -110,7 +112,13 @@ pub fn import_directory(gnaf_dir: &Path, db_path: &Path) -> anyhow::Result<Impor
         &localities,
         &mut stats,
     )?;
-    conn.execute_batch("PRAGMA optimize;").ok();
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS geocode;
+         PRAGMA journal_mode = DELETE;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA optimize;",
+    )
+    .context("dropping temporary geocode table and optimising")?;
     Ok(stats)
 }
 

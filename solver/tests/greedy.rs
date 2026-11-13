@@ -14,6 +14,7 @@ fn small_problem() -> Problem {
             id: DepotId(0),
             name: "Sydney DC".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: None,
         }],
         stores: vec![
@@ -22,6 +23,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Coles,
                 name: "Coles Inner West".into(),
                 location: LatLon::new(-33.92, 151.23),
+                address: None,
                 timezone: None,
                 demand: Load::new(2, 1, 0),
                 service: Minutes::from_minutes(15),
@@ -35,6 +37,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Woolworths,
                 name: "Woolworths North".into(),
                 location: LatLon::new(-33.80, 151.15),
+                address: None,
                 timezone: None,
                 demand: Load::new(1, 2, 1),
                 service: Minutes::from_minutes(10),
@@ -48,6 +51,7 @@ fn small_problem() -> Problem {
                 chain: Chain::Aldi,
                 name: "ALDI Hills".into(),
                 location: LatLon::new(-33.75, 151.30),
+                address: None,
                 timezone: None,
                 demand: Load::new(0, 1, 0),
                 service: Minutes::from_minutes(20),
@@ -152,6 +156,7 @@ fn multi_day_problem() -> Problem {
             id: DepotId(0),
             name: "Sydney DC".into(),
             location: LatLon::new(-33.8688, 151.2093),
+            address: None,
             timezone: None,
         }],
         stores: vec![Store {
@@ -159,6 +164,7 @@ fn multi_day_problem() -> Problem {
             chain: Chain::Coles,
             name: "Coles Wollongong #001".into(),
             location: LatLon::new(-34.4253, 150.8935),
+            address: None,
             timezone: None,
             demand: Load::new(1, 1, 0),
             service: Minutes::from_minutes(15),
@@ -517,6 +523,7 @@ fn single_vehicle_problem(capacity: Load, stores: Vec<Store>) -> Problem {
             id: DepotId(0),
             name: "Depot".into(),
             location: LatLon::new(-33.87, 151.21),
+            address: None,
             timezone: None,
         }],
         stores,
@@ -552,6 +559,7 @@ fn make_store(id: u32, demand: Load, window: (i64, i64)) -> Store {
         chain: Chain::Coles,
         name: format!("Coles #{id}"),
         location: LatLon::new(-33.90, 151.20),
+        address: None,
         timezone: None,
         demand,
         service: Minutes::from_minutes(5),
@@ -613,4 +621,34 @@ fn one_driver_cannot_run_two_overlapping_routes() {
     assert_eq!(solution.validate(&problem), Ok(()));
     assert_eq!(solution.routes.len(), 1);
     assert_eq!(solution.unassigned, vec![StoreId(1)]);
+}
+
+#[test]
+fn chain_rules_defaults_schedule_stores_without_explicit_windows() {
+    let mut problem = single_vehicle_problem(
+        Load::new(4, 4, 4),
+        vec![make_store(0, Load::new(1, 0, 0), (0, 300))],
+    );
+    problem.stores[0].receiving.clear();
+    problem.chain_rules.coles = vec![TimeWindow::new(
+        Minutes::from_minutes(0),
+        Minutes::from_minutes(300),
+    )];
+
+    let greedy_sol = solve(&problem);
+    assert_eq!(greedy_sol.validate(&problem), Ok(()));
+    assert!(greedy_sol.unassigned.is_empty());
+    assert_eq!(greedy_sol.routes.len(), 1);
+
+    let lns_sol = solver::solve_with_lns_haversine(
+        &problem,
+        solver::LNSConfig {
+            max_no_improve: 25,
+            time_limit_ms: 500,
+            seed: 1,
+            ..solver::LNSConfig::default()
+        },
+    );
+    assert_eq!(lns_sol.validate(&problem), Ok(()));
+    assert!(lns_sol.unassigned.is_empty());
 }

@@ -102,34 +102,111 @@ fn split_street_segment(query: &mut GeocodeQuery, words: &[String], has_locality
 
 /// Searches the database, best match first.
 ///
-/// This is an interactive-scale search, not a complete one: candidates are
-/// capped at 2,000 rows *before* ranking (the `LIKE` scan has no index to
-/// order by), so a very broad query (a common street name with no locality,
-/// state or postcode filter) can miss matches beyond the cap. Narrow the
-/// query when that matters.
+/// Runs an indexed prefix query first (`UPPER(street)` / `UPPER(locality)`
+/// bounds plus exact state/postcode indexes) and falls back to an escaped
+/// `LIKE ... ESCAPE '\'` scan when no prefix match is found. Each phase caps at
+/// 2,000 candidates before ranking in Rust, so very broad queries without
+/// state, postcode, or locality filters can still hit the cap.
 ///
-/// Returns an empty list when the query has neither a street nor a locality.
+/// Returns an empty list when neither a searchable street token nor a valid
+/// locality token is present.
 pub fn geocode(conn: &Connection, query: &GeocodeQuery, limit: usize) -> Result<Vec<AddressMatch>> {
-    if query.street.is_empty() && query.locality.is_none() {
-        return Ok(Vec::new());
-    }
-    let mut sql = String::from(
-        "SELECT pid, number_first, number_last, street, street_type, locality, state, \
-         postcode, lat, lon FROM address WHERE 1 = 1",
-    );
-    let mut params: Vec<String> = Vec::new();
     let street_token = normalise(&query.street)
         .split_whitespace()
         .next()
         .unwrap_or_default()
         .to_string();
-    if !street_token.is_empty() {
-        sql.push_str(" AND UPPER(street) LIKE ?");
-        params.push(format!("%{street_token}%"));
+    let norm_locality = match query.locality.as_deref() {
+        Some(raw) => {
+            let norm = normalise(raw);
+            if norm.is_empty() {
+                return Ok(Vec::new());
+            }
+            Some(norm)
+        }
+        None => None,
+    };
+    if street_token.is_empty() && norm_locality.is_none() {
+        return Ok(Vec::new());
     }
-    if let Some(locality) = &query.locality {
-        sql.push_str(" AND UPPER(locality) LIKE ?");
-        params.push(format!("%{}%", normalise(locality)));
+
+    let mut matches = fetch_candidates(conn, query, &street_token, norm_locality.as_deref(), true)?;
+    if matches.is_empty() {
+        matches = fetch_candidates(conn, query, &street_token, norm_locality.as_deref(), false)?;
+    }
+
+    matches.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.address.locality.cmp(&b.address.locality))
+            .then_with(|| a.address.street.cmp(&b.address.street))
+            .then_with(|| a.address.number_first.cmp(&b.address.number_first))
+            .then_with(|| a.address.pid.cmp(&b.address.pid))
+    });
+    matches.truncate(limit);
+    Ok(matches)
+}
+
+/// Escapes `\`, `%` and `_` for `LIKE ? ESCAPE '\'`.
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+/// Exclusive upper bound for B-tree prefix range scans `UPPER(col) >= prefix AND UPPER(col) < bound`.
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let mut chars: Vec<char> = prefix.chars().collect();
+    while let Some(last) = chars.pop() {
+        if let Some(next) = char::from_u32(u32::from(last) + 1) {
+            chars.push(next);
+            return Some(chars.into_iter().collect());
+        }
+    }
+    None
+}
+
+/// Fetches and scores up to 2,000 candidates using either indexed prefix bounds
+/// or escaped infix `LIKE` patterns.
+fn fetch_candidates(
+    conn: &Connection,
+    query: &GeocodeQuery,
+    street_token: &str,
+    norm_locality: Option<&str>,
+    prefix_only: bool,
+) -> Result<Vec<AddressMatch>> {
+    let mut sql = String::from(
+        "SELECT pid, number_first, number_last, street, street_type, locality, state, \
+         postcode, lat, lon FROM address WHERE 1 = 1",
+    );
+    let mut params: Vec<String> = Vec::new();
+    let push_filter = |sql: &mut String, params: &mut Vec<String>, column: &str, value: &str| {
+        if prefix_only {
+            if let Some(upper) = prefix_upper_bound(value) {
+                sql.push_str(&format!(
+                    " AND UPPER({column}) >= ? AND UPPER({column}) < ?"
+                ));
+                params.push(value.to_string());
+                params.push(upper);
+            } else {
+                sql.push_str(&format!(" AND UPPER({column}) = ?"));
+                params.push(value.to_string());
+            }
+        } else {
+            sql.push_str(&format!(" AND UPPER({column}) LIKE ? ESCAPE '\\'"));
+            params.push(format!("%{}%", escape_like(value)));
+        }
+    };
+    if !street_token.is_empty() {
+        push_filter(&mut sql, &mut params, "street", street_token);
+    }
+    if let Some(locality) = norm_locality {
+        push_filter(&mut sql, &mut params, "locality", locality);
     }
     if let Some(state) = &query.state {
         sql.push_str(" AND UPPER(state) = ?");
@@ -149,15 +226,6 @@ pub fn geocode(conn: &Connection, query: &GeocodeQuery, limit: usize) -> Result<
         let score = rank(query, &address);
         matches.push(AddressMatch { address, score });
     }
-    matches.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then_with(|| a.address.locality.cmp(&b.address.locality))
-            .then_with(|| a.address.street.cmp(&b.address.street))
-            .then_with(|| a.address.number_first.cmp(&b.address.number_first))
-            .then_with(|| a.address.pid.cmp(&b.address.pid))
-    });
-    matches.truncate(limit);
     Ok(matches)
 }
 
@@ -408,5 +476,13 @@ mod tests {
         assert_eq!(canonical_street_type("Zebra"), None);
         assert!(types_equivalent("St", "STREET"));
         assert!(!types_equivalent("St", "Road"));
+    }
+
+    #[test]
+    fn escape_like_escapes_wildcards_and_escape_char() {
+        assert_eq!(escape_like(r"100%_test\road"), r"100\%\_test\\road");
+        assert_eq!(prefix_upper_bound("SYD").as_deref(), Some("SYE"));
+        assert_eq!(prefix_upper_bound("A").as_deref(), Some("B"));
+        assert_eq!(prefix_upper_bound(""), None);
     }
 }

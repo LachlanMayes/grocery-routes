@@ -42,7 +42,7 @@ pub struct ContractionHierarchy {
     /// Best directed edge between an adjacent pair: `(distance_km, minutes,
     /// edge id)`. Used to recover distance/duration from a CH path and to
     /// name the exact edge each hop traverses.
-    best_edges: HashMap<(NodeId, NodeId), (f64, i64, EdgeId)>,
+    best_edges: HashMap<(NodeId, NodeId), (f64, f64, EdgeId)>,
 }
 
 impl std::fmt::Debug for ContractionHierarchy {
@@ -98,20 +98,20 @@ impl ContractionHierarchy {
             .collect();
 
         let mut input = fast_paths::InputGraph::new();
-        let mut best_edges: HashMap<(NodeId, NodeId), (f64, i64, EdgeId)> = HashMap::new();
+        let mut best_edges: HashMap<(NodeId, NodeId), (f64, f64, EdgeId)> = HashMap::new();
         for (edge, from, to) in usable_edges {
-            let seconds = edge.duration_minutes.saturating_mul(60).max(1) as usize;
+            let seconds = edge.duration_seconds.round().max(1.0) as usize;
             input.add_edge(to_dense[&from], to_dense[&to], seconds);
             let entry = best_edges.entry((from, to)).or_insert((
                 edge.distance_km,
-                edge.duration_minutes,
+                edge.duration_seconds,
                 edge.id,
             ));
-            let better = edge.duration_minutes < entry.1
-                || (edge.duration_minutes == entry.1
+            let better = edge.duration_seconds < entry.1
+                || (edge.duration_seconds == entry.1
                     && (edge.distance_km, edge.id.0) < (entry.0, entry.2.0));
             if better {
-                *entry = (edge.distance_km, edge.duration_minutes, edge.id);
+                *entry = (edge.distance_km, edge.duration_seconds, edge.id);
             }
         }
         input.freeze();
@@ -159,15 +159,15 @@ impl ContractionHierarchy {
             .map(|&dense| self.dense_nodes[dense])
             .collect();
         let mut distance_km = 0.0;
-        let mut duration_minutes = 0i64;
+        let mut duration_seconds = 0.0;
         for pair in nodes.windows(2) {
-            let (distance, minutes, _) = *self.best_edges.get(&(pair[0], pair[1]))?;
+            let (distance, secs, _) = *self.best_edges.get(&(pair[0], pair[1]))?;
             distance_km += distance;
-            duration_minutes += minutes;
+            duration_seconds += secs;
         }
         Some(RouteResult {
             distance_km,
-            duration_minutes,
+            duration_minutes: (duration_seconds / 60.0).round() as i64,
             nodes,
         })
     }

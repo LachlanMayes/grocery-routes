@@ -93,12 +93,12 @@ impl Router {
 
         // g-score: best distance from source found so far.
         let mut g: HashMap<NodeId, f64> = HashMap::new();
-        let mut total_time: HashMap<NodeId, i64> = HashMap::new();
+        let mut total_secs: HashMap<NodeId, f64> = HashMap::new();
         let mut prev: HashMap<NodeId, (NodeId, u64)> = HashMap::new(); // node -> (predecessor, edge_id)
         let mut settled: HashSet<NodeId> = HashSet::new();
 
         g.insert(source, 0.0);
-        total_time.insert(source, 0);
+        total_secs.insert(source, 0.0);
 
         let mut heap: BinaryHeap<State> = BinaryHeap::new();
         heap.push(State {
@@ -121,7 +121,7 @@ impl Router {
             }
 
             let current_dist = g[&current];
-            let current_time = *total_time
+            let current_secs = *total_secs
                 .get(&current)
                 .expect("popped node must have a time entry");
 
@@ -132,10 +132,12 @@ impl Router {
 
                 let new_dist = current_dist + edge.distance_km;
                 let known_dist = g.get(&next_node).copied().unwrap_or(f64::INFINITY);
+                let new_secs = current_secs + edge.duration_seconds;
+                let known_secs = total_secs.get(&next_node).copied().unwrap_or(f64::INFINITY);
 
-                if new_dist < known_dist {
+                if new_dist < known_dist || (new_dist == known_dist && new_secs < known_secs) {
                     g.insert(next_node, new_dist);
-                    total_time.insert(next_node, current_time + edge.duration_minutes);
+                    total_secs.insert(next_node, new_secs);
                     prev.insert(next_node, (current, edge_id.0));
                     heap.push(State {
                         cost: new_dist + heuristic(graph, next_node, target_location),
@@ -146,8 +148,87 @@ impl Router {
         }
 
         let final_dist = *g.get(&target)?;
-        let final_time = *total_time.get(&target)?;
+        let final_time = (*total_secs.get(&target)? / 60.0).round() as i64;
         reconstruct(source, target, final_dist, final_time, &prev)
+    }
+
+    /// Computes distance-optimal `(distance_km, duration_minutes)` from `source`
+    /// to every node in `targets` in a single multi-target Dijkstra sweep,
+    /// stopping as soon as all distinct targets are settled.
+    pub fn shortest_paths_from(
+        graph: &Graph,
+        source: NodeId,
+        targets: &[NodeId],
+        profile: TruckProfile,
+    ) -> Vec<Option<(f64, i64)>> {
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        let mut remaining: HashSet<NodeId> =
+            targets.iter().copied().filter(|&t| t != source).collect();
+        if remaining.is_empty() || graph.node(source).is_none() {
+            return targets
+                .iter()
+                .map(|&t| (t == source).then_some((0.0, 0)))
+                .collect();
+        }
+
+        let mut g: HashMap<NodeId, f64> = HashMap::new();
+        let mut total_secs: HashMap<NodeId, f64> = HashMap::new();
+        let mut settled: HashSet<NodeId> = HashSet::new();
+        let mut heap: BinaryHeap<State> = BinaryHeap::new();
+
+        g.insert(source, 0.0);
+        total_secs.insert(source, 0.0);
+        heap.push(State {
+            cost: 0.0,
+            node: source,
+        });
+
+        while let Some(State {
+            cost: _,
+            node: current,
+        }) = heap.pop()
+        {
+            if !settled.insert(current) {
+                continue;
+            }
+            if remaining.remove(&current) && remaining.is_empty() {
+                break;
+            }
+
+            let current_dist = g[&current];
+            let current_secs = total_secs[&current];
+            for (_edge_id, next_node, edge) in graph.out_edges(current) {
+                if settled.contains(&next_node) || edge_allowed_for(edge, profile).is_err() {
+                    continue;
+                }
+                let new_dist = current_dist + edge.distance_km;
+                let known_dist = g.get(&next_node).copied().unwrap_or(f64::INFINITY);
+                let new_secs = current_secs + edge.duration_seconds;
+                let known_secs = total_secs.get(&next_node).copied().unwrap_or(f64::INFINITY);
+                if new_dist < known_dist || (new_dist == known_dist && new_secs < known_secs) {
+                    g.insert(next_node, new_dist);
+                    total_secs.insert(next_node, new_secs);
+                    heap.push(State {
+                        cost: new_dist,
+                        node: next_node,
+                    });
+                }
+            }
+        }
+
+        targets
+            .iter()
+            .map(|&t| {
+                if t == source {
+                    Some((0.0, 0))
+                } else {
+                    g.get(&t)
+                        .and_then(|&d| total_secs.get(&t).map(|&s| (d, (s / 60.0).round() as i64)))
+                }
+            })
+            .collect()
     }
 
     /// Computes distance and duration (without path reconstruction) from
@@ -368,5 +449,46 @@ mod tests {
                 .expect("path 0->3 should exist");
         assert!((dist - 30.0).abs() < 1e-9);
         assert_eq!(dur, 30);
+    }
+
+    #[test]
+    fn subminute_segments_accumulate_seconds_and_match_multitarget() {
+        let mut g = Graph::new();
+        for i in 0..=5u64 {
+            g.add_node(NodeId(i), LatLon::new(-33.87, 151.21 + i as f64 * 0.002));
+        }
+        // Five short 0.2 km edges of 24 seconds each -> total 120s = 2 minutes,
+        // even though each individual edge rounds to 0 minutes.
+        for i in 0..5u64 {
+            g.add_edge_with_way_and_duration_secs(
+                NodeId(i),
+                NodeId(i + 1),
+                0.2,
+                0,
+                24.0,
+                Some("residential".to_string()),
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+            );
+        }
+
+        let single = Router::shortest_path(&g, NodeId(0), NodeId(5), TruckProfile::default())
+            .expect("path 0->5 exists");
+        assert_eq!(single.duration_minutes, 2);
+
+        let multi = Router::shortest_paths_from(
+            &g,
+            NodeId(0),
+            &[NodeId(0), NodeId(3), NodeId(5), NodeId(99)],
+            TruckProfile::default(),
+        );
+        assert_eq!(multi[0], Some((0.0, 0)));
+        assert_eq!(multi[1].map(|(_, d)| d), Some(1)); // 72s -> 1 min
+        assert_eq!(multi[2].map(|(_, d)| d), Some(2)); // 120s -> 2 min
+        assert_eq!(multi[3], None);
     }
 }

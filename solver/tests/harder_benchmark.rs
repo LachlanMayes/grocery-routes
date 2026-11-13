@@ -24,9 +24,7 @@ use domain::{
     Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,
     LatLon, Load, Minutes, Problem, Shift, Store, StoreId, TimeWindow, Vehicle, VehicleId,
 };
-use solver::{
-    LNSConfig, LSConfig, euclidean_matrix, solve, solve_with_lns, solve_with_local_search,
-};
+use solver::{LNSConfig, LSConfig, euclidean_matrix, solve_with_lns, solve_with_local_search};
 
 const CUSTOMER_COUNT: usize = 200;
 const VEHICLE_COUNT: u32 = 25;
@@ -40,6 +38,7 @@ fn harder_benchmark() -> Problem {
         id: DepotId(0),
         name: "Depot".into(),
         location: LatLon::new(DEPOT_COORD.1, DEPOT_COORD.0),
+        address: None,
         timezone: None,
     };
     let stores: Vec<Store> = (0..CUSTOMER_COUNT)
@@ -59,6 +58,7 @@ fn harder_benchmark() -> Problem {
                 chain: Chain::Coles,
                 name: format!("Customer {:03}", index + 1),
                 location: LatLon::new(y, x),
+                address: None,
                 demand: Load::new(demand, 0, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -137,8 +137,8 @@ fn report(solver: &str, problem: &Problem, solution: &domain::Solution, min_serv
 fn harder_ls_vs_lns_report() {
     let problem = harder_benchmark();
 
-    // Greedy baseline for context.
-    let greedy = solve(&problem);
+    // Greedy baseline for context (using the same Euclidean matrix as LS/LNS).
+    let greedy = solver::solve_greedy_euclidean(&problem);
     eprintln!(
         "harder greedy: routes={}, distance={:.2}",
         greedy.routes.len(),
@@ -166,7 +166,7 @@ fn harder_ls_vs_lns_report() {
         reaction_factor: 0.1,
     };
     let lns = solve_with_lns(&problem, lns_config, euclidean_matrix(&problem));
-    report("lns", &problem, &lns, 120);
+    report("lns", &problem, &lns, 180);
 
     eprintln!(
         "harder comparison: LS {:.2} vs LNS {:.2} (lower is better)",

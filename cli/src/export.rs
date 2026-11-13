@@ -140,17 +140,20 @@ pub fn routes_geojson(problem: &Problem, solution: &Solution) -> String {
         }));
     }
     for store in &problem.stores {
+        let mut props = serde_json::Map::new();
+        props.insert("store_id".into(), json!(store.id.0));
+        props.insert("chain".into(), json!(store.chain.to_string()));
+        props.insert("name".into(), json!(&store.name));
+        if let Some(address) = &store.address {
+            props.insert("address".into(), json!(address));
+        }
         features.push(json!({
             "type": "Feature",
             "geometry": {
                 "type": "Point",
                 "coordinates": [store.location.lon, store.location.lat],
             },
-            "properties": {
-                "store_id": store.id.0,
-                "chain": store.chain.to_string(),
-                "name": &store.name,
-            },
+            "properties": Value::Object(props),
         }));
     }
     let collection = json!({
@@ -179,17 +182,30 @@ fn route_section_html(problem: &Problem, index: usize, route: &RoutePlan) -> Str
 
     let mut rows: Vec<String> = Vec::with_capacity(route.steps.len());
     for (sequence, step) in route.steps.iter().enumerate() {
-        let (node_name, tag, demand) = match step.node {
+        let (node_name, address, tag, demand) = match step.node {
             Node::Depot(id) => match problem.depot(id) {
-                Some(depot) => (depot.name.clone(), "depot", "—".to_string()),
-                None => (format!("depot {id}"), "depot", String::new()),
+                Some(depot) => (
+                    depot.name.clone(),
+                    depot.address.as_deref(),
+                    "depot",
+                    "—".to_string(),
+                ),
+                None => (format!("depot {id}"), None, "depot", String::new()),
             },
             Node::Store(id) => match problem.store(id) {
-                Some(store) => (store.name.clone(), "store", format_load(store.demand)),
-                None => (format!("store {id}"), "store", String::new()),
+                Some(store) => (
+                    store.name.clone(),
+                    store.address.as_deref(),
+                    "store",
+                    format_load(store.demand),
+                ),
+                None => (format!("store {id}"), None, "store", String::new()),
             },
         };
-        let node_cell = node_map_cell(problem, step.node, &node_name);
+        let mut node_cell = node_map_cell(problem, step.node, &node_name);
+        if let Some(addr) = address.filter(|s| !s.trim().is_empty()) {
+            node_cell.push_str(&format!("<br><small>{}</small>", escape_html(addr)));
+        }
         let local_cell = if show_local {
             domain::local_time_short(problem, node_timezone(problem, step.node), step.arrive)
                 .unwrap_or_else(|| "&mdash;".to_string())

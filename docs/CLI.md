@@ -13,7 +13,7 @@ cargo run -p cli -- gen-sim --chain coles --city sydney --stores 40 \
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--chain` | enum | `coles` | `coles`, `woolworths`, `aldi`, `iga` |
+| `--chain` | enum | `general` | `general`, `coles`, `woolworths`, `aldi`, `iga` |
 | `--city` | enum | `sydney` | `sydney`, `melbourne` |
 | `--stores` | usize | 40 | M0 solver accepts at most 5,000 nodes |
 | `--depots` | usize | 3 | |
@@ -55,7 +55,7 @@ cargo run -p cli -- solve --problem data/demo/problem.json \
 | `--constraints` | path | — | requires `--osm`; curated JSON folded onto ways (tightening only) |
 | `--ch` | bool | false | requires `--osm`; contraction-hierarchy matrices |
 | `--enforce-curfews` | bool | false | re-schedule the plan with time-dependent leg times |
-| `--network-timezone` | string | first depot's tz | requires `--enforce-curfews`; IANA tz for curfew resolution |
+| `--network-timezone` | string | first depot's tz | requires `--enforce-curfews` or `--curfew-aware`; IANA tz for curfew resolution |
 | `--relay` | bool | false | post-pass: convert routes to overnight relay (two shifts) where feasible |
 | `--curfew-aware` | bool | false | requires `--osm` + curfew rules + horizon anchor; legs time-dependent during insertion |
 
@@ -103,6 +103,7 @@ data. Add `--ch` when the plan was solved with `solve --ch`.
 | `--problem` | path | required | |
 | `--solution` | path | required | |
 | `--osm` | path | required | |
+| `--constraints` | path | — | curated JSON folded onto ways (tightening only) |
 | `--maxweight` | f64 | — | tonnes, context |
 | `--maxheight` | f64 | — | metres, context |
 | `--hgv` | bool | false | context |
@@ -118,7 +119,8 @@ cargo run -p cli -- import-stores \
   --out data/demo/problem.json
 ```
 
-CSV format: `name,address` header, one row per store. Each address is
+CSV format: `name,address` header (supports RFC-4180 quotes and `""` escapes as
+well as legacy unquoted comma addresses), one row per store. Each address is
 geocoded against the G-NAF database; stores with no match are skipped.
 The depot is placed at the centroid of the geocoded stores.
 

@@ -101,7 +101,7 @@ fn schedule_leg(
         distance_km += matrix.distance_km(previous, node)?;
         let arrival =
             time + matrix.travel_minutes_between(previous, node, vehicle.avg_speed_kmh)?;
-        let service_start = next_service_start(store, arrival)?;
+        let service_start = next_service_start(problem, store, arrival)?;
         let stop_depart = service_start + store.service;
         load = add_load(load, store.demand)?;
         if !load.fits_within(vehicle.capacity) {
@@ -450,6 +450,7 @@ mod tests {
             id: DepotId(0),
             name: "Sydney DC".into(),
             location: LatLon::new(-33.8688, 151.2093),
+            address: None,
             timezone: None,
         };
         let stores = vec![
@@ -458,6 +459,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Store 0".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 demand: Load::new(1, 1, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -471,6 +473,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Store 1".into(),
                 location: LatLon::new(-33.88, 151.22),
+                address: None,
                 demand: Load::new(1, 1, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -484,6 +487,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Store 2".into(),
                 location: LatLon::new(-33.89, 151.23),
+                address: None,
                 demand: Load::new(1, 1, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -497,6 +501,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Store 3".into(),
                 location: LatLon::new(-33.90, 151.24),
+                address: None,
                 demand: Load::new(1, 1, 0),
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(

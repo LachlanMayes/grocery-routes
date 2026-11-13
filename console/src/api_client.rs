@@ -29,11 +29,15 @@ pub struct ImportResponse {
 }
 
 /// Solve request body.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct SolveRequest {
     pub problem_id: String,
     #[serde(default)]
     pub lns: bool,
+    #[serde(default)]
+    pub local_search: bool,
+    #[serde(default)]
+    pub ch: bool,
     pub osm_path: Option<String>,
     pub maxweight: Option<f64>,
     pub maxheight: Option<f64>,
@@ -94,10 +98,20 @@ pub struct SolutionSummary {
     pub used_lns: bool,
 }
 
-/// Geometry response: one polyline per route, each point `[lat, lon]`.
-#[derive(Clone, Debug, Deserialize)]
-struct GeometryResponse {
-    routes: Vec<Vec<[f64; 2]>>,
+/// One leg between consecutive stops returned by GET /solutions/{id}/geometry.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct RouteLegGeometry {
+    pub points: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub fallback: bool,
+}
+
+/// Geometry payload returned by GET /solutions/{id}/geometry.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct SolutionGeometryData {
+    pub routes: Vec<Vec<[f64; 2]>>,
+    #[serde(default)]
+    pub route_legs: Vec<Vec<RouteLegGeometry>>,
 }
 
 /// SSE solve event broadcast by the server.
@@ -115,7 +129,22 @@ pub struct SolveEvent {
 #[derive(Clone)]
 pub struct ApiClient {
     inner: Client,
+    solve_client: Client,
+    stream_client: Client,
     base_url: String,
+}
+
+async fn check_success(resp: reqwest::Response, label: &str) -> Result<reqwest::Response> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    let detail = body.trim();
+    if detail.is_empty() {
+        anyhow::bail!("{label} failed: {status}");
+    }
+    anyhow::bail!("{label} failed: {status} ({detail})");
 }
 
 impl ApiClient {
@@ -126,6 +155,15 @@ impl ApiClient {
                 .timeout(Duration::from_secs(30))
                 .build()
                 .expect("reqwest client"),
+            solve_client: Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(600))
+                .build()
+                .expect("reqwest solve client"),
+            stream_client: Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .expect("reqwest stream client"),
             base_url: base_url.into(),
         }
     }
@@ -194,7 +232,8 @@ impl ApiClient {
             .await
             .context("POST /problems")?;
         if !resp.status().is_success() {
-            anyhow::bail!("POST /problems failed: {}", resp.status());
+            check_success(resp, "POST /problems").await?;
+            unreachable!();
         }
         let json: ImportResponse = resp.json().await.context("parsing import response")?;
         Ok(json)
@@ -215,18 +254,17 @@ impl ApiClient {
         Ok(json)
     }
 
-    /// POST /solve — solve a problem.
+    /// POST /solve — solve a problem. Uses an extended timeout so PBF
+    /// ingestion and LNS runs can finish cleanly.
     pub async fn solve(&self, req: &SolveRequest) -> Result<SolveResponse> {
         let resp = self
-            .inner
+            .solve_client
             .post(format!("{}/solve", self.base_url))
             .json(req)
             .send()
             .await
             .context("POST /solve")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("POST /solve failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "POST /solve").await?;
         let json: SolveResponse = resp.json().await.context("parsing solve response")?;
         Ok(json)
     }
@@ -261,40 +299,40 @@ impl ApiClient {
         Ok(json)
     }
 
-    /// GET /solutions/{id}/geometry — road polylines per route (each point
-    /// `[lat, lon]`); empty `routes` when the solution had no OSM extract.
-    pub async fn get_solution_geometry(&self, id: &str) -> Result<Vec<Vec<[f64; 2]>>> {
+    /// GET /solutions/{id}/geometry — road polylines and per-leg fallback flags;
+    /// empty `routes` when the solution had no OSM extract.
+    pub async fn get_solution_geometry_detail(&self, id: &str) -> Result<SolutionGeometryData> {
         let resp = self
-            .inner
+            .solve_client
             .get(format!("{}/solutions/{}/geometry", self.base_url, id))
             .send()
             .await
             .context("GET /solutions/{id}/geometry")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /solutions/{id}/geometry failed: {}", resp.status());
-        }
-        let json: GeometryResponse = resp
+        let resp = check_success(resp, "GET /solutions/{id}/geometry").await?;
+        let json: SolutionGeometryData = resp
             .json()
             .await
             .context("parsing solution geometry response")?;
-        Ok(json.routes)
+        Ok(json)
     }
 
-    /// Open an SSE event stream. Returns a stream of [`SolveEvent`]s.
-    ///
-    /// The caller should drop the returned stream when done.
+    /// GET /solutions/{id}/geometry — road polylines per route (each point
+    /// `[lat, lon]`); empty `routes` when the solution had no OSM extract.
+    pub async fn get_solution_geometry(&self, id: &str) -> Result<Vec<Vec<[f64; 2]>>> {
+        Ok(self.get_solution_geometry_detail(id).await?.routes)
+    }
+
+    /// Open an SSE event stream. Uses a dedicated client with no total request
+    /// timeout so long-lived streams stay open cleanly.
     pub async fn events_stream(&self) -> Result<reqwest::Response> {
         let resp = self
-            .inner
+            .stream_client
             .get(format!("{}/events", self.base_url))
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
             .await
             .context("GET /events (SSE)")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /events failed: {}", resp.status());
-        }
-        Ok(resp)
+        check_success(resp, "GET /events").await
     }
 }
 
@@ -403,6 +441,20 @@ mod tests {
             .into_response()
         }
 
+        async fn get_geometry(Path(id): Path<String>) -> impl IntoResponse {
+            if id == "bad" {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "bad geometry").into_response();
+            }
+            Json(json!({
+                "routes": [[[-33.87, 151.21], [-33.88, 151.22]]],
+                "route_legs": [[
+                    { "points": [[-33.87, 151.21], [-33.875, 151.215]], "fallback": false },
+                    { "points": [[-33.875, 151.215], [-33.88, 151.22]], "fallback": true }
+                ]]
+            }))
+            .into_response()
+        }
+
         async fn events() -> &'static str {
             "data: {\"solution_id\":\"s1\",\"problem_id\":\"p1\",\"served\":2,\"total\":2,\"distance_km\":12.5,\"cost_cents\":1000}\n\n"
         }
@@ -414,6 +466,7 @@ mod tests {
             .route("/solutions", get(list_solutions))
             .route("/solutions/{id}", get(get_solution))
             .route("/solutions/{id}/kpis", get(get_kpis))
+            .route("/solutions/{id}/geometry", get(get_geometry))
             .route("/events", get(events));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -508,11 +561,7 @@ mod tests {
         let client = ApiClient::new(base_url);
         let request = SolveRequest {
             problem_id: "problem-123".into(),
-            lns: false,
-            osm_path: None,
-            maxweight: None,
-            maxheight: None,
-            hgv: false,
+            ..Default::default()
         };
 
         let response = client.solve(&request).await.unwrap();
@@ -553,6 +602,31 @@ mod tests {
 
         let error = client.get_kpis("bad").await.unwrap_err();
         assert!(error.to_string().contains("500"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_gets_solution_geometry_detail() {
+        let (base_url, server) = spawn_stub().await;
+        let client = ApiClient::new(base_url);
+
+        let detail = client
+            .get_solution_geometry_detail("solution-123")
+            .await
+            .unwrap();
+        assert_eq!(detail.routes.len(), 1);
+        assert_eq!(detail.route_legs.len(), 1);
+        assert_eq!(detail.route_legs[0].len(), 2);
+        assert!(!detail.route_legs[0][0].fallback);
+        assert!(detail.route_legs[0][1].fallback);
+
+        let error = client
+            .get_solution_geometry_detail("bad")
+            .await
+            .unwrap_err();
+        let msg = error.to_string();
+        assert!(msg.contains("500") && msg.contains("bad geometry"), "{msg}");
 
         server.abort();
     }

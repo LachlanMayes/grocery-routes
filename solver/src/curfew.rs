@@ -266,10 +266,10 @@ fn reschedule_route(
     }
 }
 
-/// The solution span a route is booked for: first departure to last arrival.
+/// The solution span a route is booked for: first departure to last departure.
 fn original_span(route: &RoutePlan) -> (Minutes, Minutes) {
     match (route.steps.first(), route.steps.last()) {
-        (Some(first), Some(last)) => (first.depart, last.arrive),
+        (Some(first), Some(last)) => (first.depart, last.depart),
         _ => (Minutes::ZERO, Minutes::ZERO),
     }
 }
@@ -503,7 +503,7 @@ fn store_visit(
     if leg.arrive > shift.end || physical > shift.end {
         return Err((BreachKind::ShiftEndExceeded, Some(store_id)));
     }
-    let Some(service_start) = next_service_start(store, physical) else {
+    let Some(service_start) = next_service_start(problem, store, physical) else {
         return Err((BreachKind::ReceivingWindowMissed, Some(store_id)));
     };
     let depart = service_start + store.service;
@@ -560,6 +560,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: name.into(),
                 location: LatLon::new(lat, if name == "A" { 151.30 } else { 151.10 }),
+                address: None,
                 demand,
                 service: Minutes::from_minutes(10),
                 receiving: vec![TimeWindow::new(
@@ -574,6 +575,7 @@ mod tests {
                 id: DepotId(0),
                 name: "DC".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![

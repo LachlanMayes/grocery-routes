@@ -5,14 +5,27 @@
 
 use anyhow::{Context, Result};
 use domain::{Problem, Solution};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 use std::path::Path;
+use std::time::Duration;
+
+/// Routing profile parameters stored alongside an OSM-routed solution so
+/// `/solutions/{id}/geometry` replays the exact road restrictions used during solving.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StoredRoutingProfile {
+    pub maxweight_tonnes: Option<f64>,
+    pub maxheight_m: Option<f64>,
+    pub hgv: bool,
+}
 
 /// Open (or create) the SQLite database at `path` and run migrations.
 pub async fn open_db(path: &Path) -> Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true);
     let pool = SqlitePool::connect_with(options).await?;
     run_migrations(&pool).await?;
     Ok(pool)
@@ -26,7 +39,10 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
             json       TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            stores     INTEGER,
+            vehicles   INTEGER,
+            depots     INTEGER
         )
         "#,
     )
@@ -45,18 +61,29 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             cost_cents   INTEGER NOT NULL,
             solved_at    TEXT NOT NULL DEFAULT (datetime('now')),
             used_lns     INTEGER NOT NULL DEFAULT 0,
-            osm_path     TEXT
+            osm_path     TEXT,
+            maxweight    REAL,
+            maxheight    REAL,
+            hgv          INTEGER NOT NULL DEFAULT 0
         )
         "#,
     )
     .execute(pool)
     .await?;
 
-    // Add osm_path to databases created before it existed (SQLite has no
-    // "ADD COLUMN IF NOT EXISTS", so a duplicate-column error is ignored).
-    let _ = sqlx::query("ALTER TABLE solutions ADD COLUMN osm_path TEXT")
-        .execute(pool)
-        .await;
+    // Additive columns for databases created before these fields existed
+    // (SQLite has no "ADD COLUMN IF NOT EXISTS", so duplicate-column errors are ignored).
+    for ddl in [
+        "ALTER TABLE problems ADD COLUMN stores INTEGER",
+        "ALTER TABLE problems ADD COLUMN vehicles INTEGER",
+        "ALTER TABLE problems ADD COLUMN depots INTEGER",
+        "ALTER TABLE solutions ADD COLUMN osm_path TEXT",
+        "ALTER TABLE solutions ADD COLUMN maxweight REAL",
+        "ALTER TABLE solutions ADD COLUMN maxheight REAL",
+        "ALTER TABLE solutions ADD COLUMN hgv INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(ddl).execute(pool).await;
+    }
 
     Ok(())
 }
@@ -65,13 +92,18 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 pub async fn import_problem(pool: &SqlitePool, problem: &Problem) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let json = serde_json::to_string(problem).context("serializing problem")?;
-    sqlx::query("INSERT INTO problems (id, name, json) VALUES (?1, ?2, ?3)")
-        .bind(&id)
-        .bind(&problem.name)
-        .bind(&json)
-        .execute(pool)
-        .await
-        .context("inserting problem")?;
+    sqlx::query(
+        "INSERT INTO problems (id, name, json, stores, vehicles, depots) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(&id)
+    .bind(&problem.name)
+    .bind(&json)
+    .bind(problem.stores.len() as i64)
+    .bind(problem.vehicles.len() as i64)
+    .bind(problem.depots.len() as i64)
+    .execute(pool)
+    .await
+    .context("inserting problem")?;
     Ok(id)
 }
 
@@ -105,25 +137,49 @@ pub struct SolutionSummaryRow {
 
 /// List the most recently imported problems, newest first.
 ///
-/// `limit` is clamped to 1..=100.
+/// `limit` is clamped to 1..=100. Reads precomputed entity counts directly when
+/// available, falling back to JSON deserialisation for legacy rows.
 pub async fn list_problems(pool: &SqlitePool, limit: u32) -> Result<Vec<ProblemSummaryRow>> {
     let limit = limit.clamp(1, 100) as i64;
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT id, name, created_at, json FROM problems ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+    type ProblemListTuple = (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    );
+    let rows: Vec<ProblemListTuple> = sqlx::query_as(
+        "SELECT id, name, created_at, stores, vehicles, depots, \
+         CASE WHEN stores IS NULL OR vehicles IS NULL OR depots IS NULL THEN json ELSE NULL END \
+         FROM problems ORDER BY created_at DESC, rowid DESC LIMIT ?1",
     )
     .bind(limit)
     .fetch_all(pool)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
-    for (id, name, created_at, json) in rows {
-        let problem: Problem = serde_json::from_str(&json).context("deserializing problem")?;
+    for (id, name, created_at, stores, vehicles, depots, fallback_json) in rows {
+        let (stores, vehicles, depots) = match (stores, vehicles, depots) {
+            (Some(s), Some(v), Some(d)) => (s as usize, v as usize, d as usize),
+            _ => {
+                let json = fallback_json.unwrap_or_default();
+                let problem: Problem =
+                    serde_json::from_str(&json).context("deserializing problem")?;
+                (
+                    problem.stores.len(),
+                    problem.vehicles.len(),
+                    problem.depots.len(),
+                )
+            }
+        };
         out.push(ProblemSummaryRow {
             id,
             name,
             created_at,
-            stores: problem.stores.len(),
-            vehicles: problem.vehicles.len(),
-            depots: problem.depots.len(),
+            stores,
+            vehicles,
+            depots,
         });
     }
     Ok(out)
@@ -184,13 +240,35 @@ pub async fn load_problem(pool: &SqlitePool, id: &str) -> Result<Option<Problem>
         .transpose()
 }
 
-/// Store a solved solution in the database, returning its assigned id.
+/// Store a solved solution in the database using the default routing profile,
+/// returning its assigned id.
 pub async fn store_solution(
     pool: &SqlitePool,
     problem_id: &str,
     solution: &Solution,
     used_lns: bool,
     osm_path: Option<&str>,
+) -> Result<String> {
+    store_solution_with_profile(
+        pool,
+        problem_id,
+        solution,
+        used_lns,
+        osm_path,
+        StoredRoutingProfile::default(),
+    )
+    .await
+}
+
+/// Store a solved solution in the database along with its [`StoredRoutingProfile`],
+/// returning its assigned id.
+pub async fn store_solution_with_profile(
+    pool: &SqlitePool,
+    problem_id: &str,
+    solution: &Solution,
+    used_lns: bool,
+    osm_path: Option<&str>,
+    profile: StoredRoutingProfile,
 ) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let json = serde_json::to_string(solution).context("serializing solution")?;
@@ -202,7 +280,7 @@ pub async fn store_solution(
         .count() as i64;
     let total = problem_store_count(pool, problem_id).await?;
     sqlx::query(
-        "INSERT INTO solutions (id, problem_id, json, served, total, distance_km, cost_cents, used_lns, osm_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO solutions (id, problem_id, json, served, total, distance_km, cost_cents, used_lns, osm_path, maxweight, maxheight, hgv) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )
     .bind(&id)
     .bind(problem_id)
@@ -213,6 +291,9 @@ pub async fn store_solution(
     .bind(solution.total_cost_cents)
     .bind(used_lns as i64)
     .bind(osm_path)
+    .bind(profile.maxweight_tonnes)
+    .bind(profile.maxheight_m)
+    .bind(profile.hgv as i64)
     .execute(pool)
     .await
     .context("inserting solution")?;
@@ -228,6 +309,33 @@ pub async fn solution_osm_path(pool: &SqlitePool, id: &str) -> Result<Option<Str
             .fetch_optional(pool)
             .await?;
     Ok(row.and_then(|(path,)| path))
+}
+
+/// The recorded OSM extract path and truck profile a solution was solved with.
+pub async fn solution_routing_params(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<(String, StoredRoutingProfile)>> {
+    type ParamsRow = (Option<String>, Option<f64>, Option<f64>, i64);
+    let row: Option<ParamsRow> =
+        sqlx::query_as("SELECT osm_path, maxweight, maxheight, hgv FROM solutions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(
+        row.and_then(|(osm_path, maxweight_tonnes, maxheight_m, hgv)| {
+            osm_path.map(|path| {
+                (
+                    path,
+                    StoredRoutingProfile {
+                        maxweight_tonnes,
+                        maxheight_m,
+                        hgv: hgv != 0,
+                    },
+                )
+            })
+        }),
+    )
 }
 
 /// Load a solution from the database by id, returning (problem_id, solution).
@@ -251,16 +359,19 @@ pub async fn load_solution_with_problem(
 
 /// Return the number of stores in the referenced problem.
 async fn problem_store_count(pool: &SqlitePool, problem_id: &str) -> Result<i64> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT json FROM problems WHERE id = ?1")
-        .bind(problem_id)
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT stores, CASE WHEN stores IS NULL THEN json ELSE NULL END FROM problems WHERE id = ?1",
+    )
+    .bind(problem_id)
+    .fetch_optional(pool)
+    .await?;
     match row {
-        Some((json,)) => {
+        Some((Some(stores), _)) => Ok(stores),
+        Some((None, Some(json))) => {
             let problem: Problem = serde_json::from_str(&json).context("deserializing problem")?;
             Ok(problem.stores.len() as i64)
         }
-        None => Ok(0),
+        _ => Ok(0),
     }
 }
 
@@ -280,6 +391,7 @@ mod tests {
                 id: DepotId(0),
                 name: "Depot".into(),
                 location: LatLon::new(-33.87, 151.21),
+                address: None,
                 timezone: None,
             }],
             stores: vec![Store {
@@ -287,6 +399,7 @@ mod tests {
                 chain: Chain::Coles,
                 name: "Coles Test".into(),
                 location: LatLon::new(-33.92, 151.23),
+                address: None,
                 timezone: None,
                 demand: Load::new(1, 0, 0),
                 service: Minutes::from_minutes(15),

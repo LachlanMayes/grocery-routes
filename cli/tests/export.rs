@@ -19,6 +19,7 @@ fn tiny_fixture() -> (Problem, Solution) {
             id: DepotId(0),
             name: "Depot & Co <North>".into(),
             location: LatLon::new(-33.79, 150.90),
+            address: None,
             timezone: None,
         }],
         stores: vec![
@@ -27,6 +28,7 @@ fn tiny_fixture() -> (Problem, Solution) {
                 chain: Chain::Coles,
                 name: "Coles O'Brien & Sons \"Fresh\"".into(),
                 location: LatLon::new(-33.80, 150.95),
+                address: None,
                 timezone: None,
                 demand: Load::new(2, 1, 0),
                 service: Minutes::from_minutes(15),
@@ -40,6 +42,7 @@ fn tiny_fixture() -> (Problem, Solution) {
                 chain: Chain::Woolworths,
                 name: "Woolworths <unassigned>".into(),
                 location: LatLon::new(-33.85, 151.00),
+                address: None,
                 timezone: None,
                 demand: Load::new(1, 0, 1),
                 service: Minutes::from_minutes(15),
