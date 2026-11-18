@@ -52,7 +52,7 @@ in debug mode; NSW is the recommended granularity for development.
 - Human verification of corridor legality; `constraints/truck-constraints.json`
   ships empty by design.
 - Curfew-aware optimisation inside the search (M5 follow-up; construction
-  shipped later in Task 5).
+  shipped later in M5).
 
 ## Checks
 

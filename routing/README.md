@@ -7,4 +7,4 @@
 - Time-dependent curfews (`timed`) and corridor audit (`audit`).
 - `TruckProfile` and `MatrixStrategy`.
 
-Real-extract timing/memory are operator steps (see `docs/PLAN.md`).
+Measured on the NSW extract (258 MB, 4.89 M road nodes: CH 126.8 s vs Dijkstra 205.9 s); see `docs/PLAN.md`.

@@ -6,6 +6,7 @@ members = ["cli", "api", "domain", "geo-au", "routing", "sim", "solver", "consol
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/LachlanMayes/grocery-routes"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -40,6 +41,7 @@ eframe = { version = "0.37", default-features = false, features = [
   "x11",
 ] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 jiff = { version = "0.2", features = ["serde"] }
 
@@ -49,3 +51,7 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "warn"
+private_intra_doc_links = "warn"

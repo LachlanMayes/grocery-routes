@@ -11,5 +11,6 @@ mod geocode;
 mod kpis;
 mod map_nodes;
 mod problem_builder;
+mod truck_load;
 
 pub use app::ConsoleApp;

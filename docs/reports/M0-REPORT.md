@@ -93,9 +93,8 @@ M1 vendors a ~50-line Solomon/VRPLib parser in the bench harness.
 
 ## Deviations and environment notes
 
-- `rust-toolchain.toml` pins `stable-x86_64-pc-windows-gnu`: this machine has
-  no MSVC linker (`link.exe` missing), so `channel = "stable"` (msvc host)
-  cannot link anything.
+- `rust-toolchain.toml` pins `stable-x86_64-pc-windows-gnu` so Windows builds
+  do not require an MSVC linker (`link.exe`).
 - `criterion` is pinned to 0.5 with `default-features = false` (the registry
   offered 0.8.2; 0.5 was chosen for API stability in a stub bench, upgrade
   deferred) and `solver/Cargo.toml` gained

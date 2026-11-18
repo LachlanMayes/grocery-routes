@@ -13,18 +13,19 @@ Scope and gates per [PLAN.md](../PLAN.md).
   writes `returnables.csv`.
 - **Curfew enforcement** (`routing::timed`, `solver::curfew`): post-solve
   feasibility restore; `solve --enforce-curfews --network-timezone <IANA>`.
-- **Curfew-aware construction** (Task 5, `e5a8130`): `Legs` enum threaded
+- **Curfew-aware construction** (`e5a8130`): `Legs` enum threaded
   through the greedy scheduler; `solver::curfew_aware`, `solve --curfew-aware`.
-- **Relay/rest placement** (Task 4, `b17b5a0`): `solver::relay` post-pass
+- **Relay/rest placement** (`b17b5a0`): `solver::relay` post-pass
   with backtracking over (driver, shift) pairs; `solve --relay`.
 - **G-NAF geocoder** (`geo-au`): flat-file ingest → SQLite,
   `geocode`/`reverse`; validated against the Aug 2026 release
   (16,970,406 addresses, 0 skipped).
 
-## What remains (out of scope for this project)
+## What remains (out of scope for software release)
 
-- Corridor legality verification (simulated pet project — no real truck
-  dispatches; see [PLAN.md](../PLAN.md) known gaps item 1).
+- Corridor legality verification (operator responsibility — per-bridge load
+  ratings and human sign-off of `constraints/truck-constraints.json`; see
+  [PLAN.md](../PLAN.md) known gaps item 1).
 - Curfew-aware LS/LNS improvement phases (construction is aware; improvement
   loops still use the static matrix).
 - LNS promotion (closed negatively; see [M1-REPORT.md](M1-REPORT.md)).

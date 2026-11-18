@@ -1,9 +1,8 @@
-//! End-to-end CLI test: `gen-sim` -> `solve` -> `export`.
+//! End-to-end CLI integration tests via the compiled `grocery-routes` binary.
 //!
-//! This test exercises the `sim` and `solver` crates through the binary. While
-//! either of them is still `unimplemented!()`, the corresponding step exits
-//! with a panic and this test is expected to be red — the CLI wiring itself is
-//! covered by the other tests until those crates land.
+//! Covers `gen-sim` -> `solve` -> `export` round trips, anchored local-time and
+//! public-holiday rendering, curfew error handling, curated truck constraints
+//! SQLite export, and `import-gnaf` -> `geocode` -> `reverse`.
 
 use std::fs;
 use std::path::Path;

@@ -1,13 +1,13 @@
-# Corridor legality checklist — simulated-project edition (2026-11-10)
+# Corridor legality checklist (2026-11-10)
 
-> **Scope decision (2026-11-11): load ratings and human sign-off are out of
-> scope. This is a simulated pet project — no real truck is dispatched.**
-> This checklist is kept for completeness and for anyone who later wants
-> legal verification for a real run. Nothing on it is required to consider
-> the project complete.
+> **Scope note: Per-bridge load ratings and human sign-off of
+> `constraints/truck-constraints.json` are an operator deployment
+> responsibility before dispatching heavy vehicles on real roads.**
+> This checklist records the published desktop findings for the synthetic
+> Sydney plan and shows how to complete route verification for production use.
 >
 > Honesty note: none of the entries in the draft file were on-site verified;
-> they are desktop research only.
+> they are unverified desktop research only.
 
 This is everything you need to complete the corridor legality task for the
 synthetic Sydney plan. It is a work checklist, not legal verification. The
@@ -160,7 +160,7 @@ out of this repo — the repo ships no verified limits by design.
 
 ## Honesty notes
 
-- The draft entries came from published sources only, marked as AI-assisted
+- The draft entries came from published sources only, marked as unverified
   desktop research — they are **not** on-site verification and must not be
   treated as legal sign-off.
 - Bridge load limits for the 92 bridge ways remain unverified; there is no

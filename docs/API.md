@@ -24,9 +24,12 @@ points it at a standalone API instead.
 ### `POST /problems`
 
 Body: `{ "problem": <domain::Problem> }`. Returns `{ "id": "<string>" }`.
-Validates dense 0..len ids for depots/stores/vehicles/drivers, depot
-references, time windows, shifts and IANA timezones; returns `400 Bad Request`
-on failure.
+Validates dense `0..len` ids for depots/stores/vehicles/drivers, valid depot
+references, finite WGS-84 coordinates (`lat` in `[-90, 90]`, `lon` in
+`[-180, 180]`), positive finite vehicle speeds (`avg_speed_kmh > 0`), valid
+time windows (`start <= end`), valid shifts (`start < end`), valid IANA
+timezones, and the `5,000`-node ceiling (`depots + stores <= 5000`); returns
+`400 Bad Request` on failure.
 
 ### `GET /problems`
 
@@ -67,7 +70,7 @@ Body:
 - `local_search` — run iterative local search when `lns` is false.
 - `ch` — use Contraction Hierarchies instead of Dijkstra for OSM matrix queries (`osm_path` only).
 - `osm_path` — OSM PBF for road-network distances (optional).
-- `maxweight` / `maxheight` / `hgv` — truck filters, used with `osm_path` (persisted on the solution for geometry replay).
+- `maxweight` / `maxheight` / `hgv` — truck filters, used with `osm_path` (persisted on the solution for geometry replay). When set, `maxweight` and `maxheight` must be finite and `> 0` (`400 Bad Request` otherwise).
 
 Returns:
 

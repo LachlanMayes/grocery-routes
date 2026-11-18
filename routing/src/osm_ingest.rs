@@ -15,7 +15,7 @@ use domain::LatLon;
 
 /// Parses an OSM PBF file at `path` and builds a drivable road graph.
 ///
-/// Only ways tagged as drivable (`highway` in [`DRIVABLE_HIGHWAY`]) are included.
+/// Only ways tagged as drivable (`highway` in `DRIVABLE_HIGHWAY`) are included.
 /// One-way tags are respected: a one-way way adds a single directed edge; a
 /// two-way way adds edges in both directions.
 pub fn ingest_pbf(path: &Path) -> anyhow::Result<Graph> {

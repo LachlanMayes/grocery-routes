@@ -13,7 +13,7 @@ Scope and gates per [PLAN.md](../PLAN.md).
   plans; the earlier LNS output failed `Solution::validate`.
 - **LNS multi-start** (`2b88822`): `solve --ls --repeat N` runs N seeded
   LNS searches in parallel (scoped threads, no `rayon`) and keeps the best.
-- **Curfew re-scheduling remains a restore**, not an optimiser (see M5 / Task 5).
+- **Curfew re-scheduling remains a restore**, not an optimiser (see M5).
 
 ## C101 calibration (2026-11-06)
 

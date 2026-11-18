@@ -3,6 +3,12 @@ name = "console"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Desktop TMS Control Tower (egui) featuring route setup, physical truck load cubing, dispatch & BOL exports, ESG/OTIF KPIs, and interactive OSM maps"
+
+[lints]
+workspace = true
 
 [dependencies]
 eframe.workspace = true
@@ -15,7 +21,6 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 domain = { path = "../domain" }
 geo-au = { path = "../geo-au" }
-rusqlite = { version = "0.32", features = ["bundled"] }
 sim = { path = "../sim" }
 chrono.workspace = true
 rfd = "0.15"
@@ -26,4 +31,5 @@ walkers = { version = "0.65", default-features = false, features = ["rustls-aws-
 
 [dev-dependencies]
 axum.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true

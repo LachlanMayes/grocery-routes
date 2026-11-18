@@ -3,6 +3,9 @@ name = "geo-au"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Australian G-NAF flat-file SQLite importer, forward geocoder, and reverse geocoder"
 
 [lints]
 workspace = true
@@ -10,7 +13,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 domain = { path = "../domain" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -56,7 +56,7 @@ cargo clippy --workspace --all-targets
 # exits 0 with zero warnings
 ```
 
-## Harder benchmark (Task 6, 2026-11-08)
+## Harder benchmark (2026-11-08)
 
 C101 cannot tell the two metaheuristics apart at the top: its windows are
 wide (102–138 minutes; depot aside) and its best known is 828.94, while LS
@@ -84,7 +84,7 @@ constraint on LNS service rate.
 **Conclusion (no solver change):** on both C101 and the harder fixture, LS
 is the quality path and LNS stays opt-in. The "measured win" condition for
 LNS did not hold; per the plan, solver code does not change. See
-[PLAN.md](../PLAN.md) "Next sprint plan" item 6.
+[PLAN.md](../PLAN.md) "Known gaps and next priorities".
 
 ## Deviations from PLAN.md
 

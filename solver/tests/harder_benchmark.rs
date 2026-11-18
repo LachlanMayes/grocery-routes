@@ -16,9 +16,8 @@
 //!
 //! The test prints both solvers' distances and asserts validity and full
 //! service. It does not assert that LNS beats LS — the comparison is
-//! reported, not gated, because whether LNS wins at this scale is the open
-//! question of task 6. The numbers decide whether the "LNS needs a measured
-//! win" condition holds.
+//! reported, not gated, to measure empirically whether the "LNS needs a
+//! measured win" condition holds.
 
 use domain::{
     Chain, ChainRules, CostModel, CurfewRules, Depot, DepotId, Driver, DriverId, FatigueRules,

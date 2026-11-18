@@ -265,6 +265,8 @@ pub(crate) struct RouteKpiRow {
     pub distance_km: f64,
     pub duration_min: i64,
     pub service_min: i64,
+    pub wait_min: i64,
+    pub drive_min: i64,
     pub travel_and_wait_min: i64,
     pub max_duration_min: i64,
     pub duration_pct: f64,
@@ -273,6 +275,9 @@ pub(crate) struct RouteKpiRow {
     pub cost: CostBreakdown,
     pub cost_per_km_cents: f64,
     pub cost_per_stop_cents: f64,
+    pub cost_per_unit_cents: f64,
+    pub est_fuel_litres: f64,
+    pub est_co2_kg: f64,
     pub load: LoadUtilization,
 }
 
@@ -331,12 +336,19 @@ pub(crate) struct KpisReport {
     pub avg_distance_per_route_km: f64,
     pub total_duration_min: i64,
     pub total_service_min: i64,
+    pub total_wait_min: i64,
+    pub total_drive_min: i64,
     pub total_travel_wait_min: i64,
     pub avg_duration_min: f64,
     pub cost: CostBreakdown,
     pub avg_cost_per_route_cents: f64,
     pub cost_per_km_cents: f64,
     pub cost_per_stop_cents: f64,
+    pub cost_per_unit_cents: f64,
+    pub on_time_stops: usize,
+    pub otif_pct: f64,
+    pub est_fuel_litres: f64,
+    pub est_co2_kg: f64,
     pub total_delivered: Load,
     pub unassigned_demand: Load,
     pub active_capacity: Load,
@@ -361,17 +373,27 @@ pub(crate) fn build_kpis_report(
     let mut routes = Vec::with_capacity(solution.routes.len());
     let mut total_cost = CostBreakdown::default();
     let mut total_service_min = 0_i64;
+    let mut total_wait_min = 0_i64;
+    let mut total_drive_min = 0_i64;
     let mut total_duration_min = 0_i64;
     let mut total_delivered = Load::ZERO;
     let mut active_capacity = Load::ZERO;
+    let mut on_time_stops = 0_usize;
+    let mut est_fuel_litres = 0.0_f64;
+    let mut est_co2_kg = 0.0_f64;
 
     for (index, route) in solution.routes.iter().enumerate() {
         let row = build_route_row(problem, route, index);
         total_cost += row.cost;
         total_service_min += row.service_min;
+        total_wait_min += row.wait_min;
+        total_drive_min += row.drive_min;
         total_duration_min += row.duration_min;
         total_delivered = total_delivered.saturating_add(row.load.delivered);
         active_capacity = active_capacity.saturating_add(row.load.capacity);
+        on_time_stops += count_on_time_stops(problem, route);
+        est_fuel_litres += row.est_fuel_litres;
+        est_co2_kg += row.est_co2_kg;
         routes.push(row);
     }
 
@@ -421,6 +443,17 @@ pub(crate) fn build_kpis_report(
     } else {
         0.0
     };
+    let delivered_units = total_delivered.total();
+    let cost_per_unit_cents = if delivered_units > 0 {
+        kpis.cost_cents as f64 / delivered_units as f64
+    } else {
+        0.0
+    };
+    let otif_pct = if kpis.total > 0 {
+        (on_time_stops as f64 / kpis.total as f64) * 100.0
+    } else {
+        0.0
+    };
 
     let unassigned_stores = collect_unassigned_stores(problem, &solution.unassigned);
     let unassigned_demand = unassigned_stores
@@ -444,12 +477,19 @@ pub(crate) fn build_kpis_report(
         avg_distance_per_route_km,
         total_duration_min,
         total_service_min,
+        total_wait_min,
+        total_drive_min,
         total_travel_wait_min,
         avg_duration_min,
         cost: total_cost,
         avg_cost_per_route_cents,
         cost_per_km_cents,
         cost_per_stop_cents,
+        cost_per_unit_cents,
+        on_time_stops,
+        otif_pct,
+        est_fuel_litres,
+        est_co2_kg,
         total_delivered,
         unassigned_demand,
         active_capacity,
@@ -460,6 +500,29 @@ pub(crate) fn build_kpis_report(
         unassigned_stores,
         history,
     }
+}
+
+fn count_on_time_stops(problem: &Problem, route: &RoutePlan) -> usize {
+    route
+        .steps
+        .iter()
+        .filter(|step| {
+            let Node::Store(store_id) = step.node else {
+                return false;
+            };
+            let Some(store) = problem.store(store_id) else {
+                return false;
+            };
+            let service_start =
+                (step.depart.minutes() - store.service.minutes().max(0)).max(step.arrive.minutes());
+            match problem.chain_rules.windows_for_store(store) {
+                Some(windows) if !windows.is_empty() => windows.iter().any(|w| {
+                    service_start >= w.start.minutes() && service_start <= w.end.minutes()
+                }),
+                _ => true,
+            }
+        })
+        .count()
 }
 
 fn build_route_row(problem: &Problem, route: &RoutePlan, index: usize) -> RouteKpiRow {
@@ -478,19 +541,22 @@ fn build_route_row(problem: &Problem, route: &RoutePlan, index: usize) -> RouteK
 
     let mut delivered = Load::ZERO;
     let mut service_min = 0_i64;
+    let mut wait_min = 0_i64;
     for step in &route.steps {
         if let Node::Store(store_id) = step.node
             && let Some(store) = problem.store(store_id)
         {
             delivered = delivered.saturating_add(store.demand);
-            let step_svc = (step.depart.minutes() - step.arrive.minutes())
-                .max(store.service.minutes())
-                .max(0);
-            service_min += step_svc;
+            let store_svc = store.service.minutes().max(0);
+            let step_wait = (step.depart.minutes() - store_svc - step.arrive.minutes()).max(0);
+            service_min += store_svc;
+            wait_min += step_wait;
         }
     }
     service_min = service_min.min(duration_min.max(0));
+    wait_min = wait_min.min(duration_min.saturating_sub(service_min).max(0));
     let travel_and_wait_min = duration_min.saturating_sub(service_min).max(0);
+    let drive_min = duration_min.saturating_sub(service_min + wait_min).max(0);
 
     let start_min = route.steps.first().map(|s| s.depart.minutes());
     let end_min = route.steps.last().map(|s| s.depart.minutes());
@@ -512,6 +578,17 @@ fn build_route_row(problem: &Problem, route: &RoutePlan, index: usize) -> RouteK
     } else {
         0.0
     };
+    let delivered_units = delivered.total();
+    let cost_per_unit_cents = if delivered_units > 0 {
+        route.cost_cents as f64 / delivered_units as f64
+    } else {
+        0.0
+    };
+    let load = LoadUtilization::from_loads(delivered, capacity);
+    // Mid-duty rigid diesel baseline (0.30 L/km) + up to +0.06 L/km load penalty, NGA 2.68 kg CO2e/L.
+    let est_fuel_litres =
+        route.distance_km.max(0.0) * (0.30 + 0.06 * (load.total_pct / 100.0).clamp(0.0, 1.5));
+    let est_co2_kg = est_fuel_litres * 2.68;
 
     RouteKpiRow {
         route_index: index,
@@ -523,6 +600,8 @@ fn build_route_row(problem: &Problem, route: &RoutePlan, index: usize) -> RouteK
         distance_km: route.distance_km,
         duration_min,
         service_min,
+        wait_min,
+        drive_min,
         travel_and_wait_min,
         max_duration_min,
         duration_pct,
@@ -531,7 +610,10 @@ fn build_route_row(problem: &Problem, route: &RoutePlan, index: usize) -> RouteK
         cost,
         cost_per_km_cents,
         cost_per_stop_cents,
-        load: LoadUtilization::from_loads(delivered, capacity),
+        cost_per_unit_cents,
+        est_fuel_litres,
+        est_co2_kg,
+        load,
     }
 }
 
@@ -683,7 +765,7 @@ pub(crate) fn format_duration_hm(minutes: i64) -> String {
     }
 }
 
-/// Format horizon minutes using domain's `HH:MM` / `Nd HH:MM` convention.
+/// Format horizon minutes using domain's `HH:MM` / `<days>d HH:MM` convention.
 pub(crate) fn format_horizon_time(minutes: i64) -> String {
     Minutes::from_minutes(minutes).to_string()
 }
@@ -748,6 +830,16 @@ pub(crate) fn format_kpis_summary(report: &KpisReport) -> String {
         report.unassigned_demand.chilled,
         report.unassigned_demand.frozen
     ));
+    out.push_str(&format!(
+        "Sustainability & OTIF: {:.1}% OTIF ({}/{} on-time) · Dock Wait {}m · Drive {}m · Est. Fuel {:.1} L · Est. CO2e {:.1} kg\n",
+        report.otif_pct,
+        report.on_time_stops,
+        report.total,
+        report.total_wait_min,
+        report.total_drive_min,
+        report.est_fuel_litres,
+        report.est_co2_kg
+    ));
 
     if !report.routes.is_empty() {
         out.push_str("\nPer-Route Breakdown:\n");
@@ -772,7 +864,7 @@ pub(crate) fn format_kpis_summary(report: &KpisReport) -> String {
     out
 }
 
-fn csv_escape(field: &str) -> String {
+pub(crate) fn csv_escape(field: &str) -> String {
     if field.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
@@ -1108,9 +1200,35 @@ fn render_executive_cards(ui: &mut egui::Ui, report: &KpisReport) {
             "Total Cost",
             &format!("${:.2}", report.cost.total_cents as f64 / 100.0),
             &format!(
-                "${:.2}/km · ${:.2}/stop",
+                "${:.2}/km · ${:.2}/stop · ${:.2}/unit",
                 report.cost_per_km_cents / 100.0,
-                report.cost_per_stop_cents / 100.0
+                report.cost_per_stop_cents / 100.0,
+                report.cost_per_unit_cents / 100.0
+            ),
+            None,
+        );
+        metric_card_with_sub(
+            ui,
+            "OTIF & Dock Wait",
+            &format!("{:.1}% OTIF", report.otif_pct),
+            &format!(
+                "{}m dock wait · {}m drive",
+                report.total_wait_min, report.total_drive_min
+            ),
+            Some(serve_rate_color(report.otif_pct / 100.0)),
+        );
+        metric_card_with_sub(
+            ui,
+            "Carbon & Fuel (ESG)",
+            &format!("{:.1} kg CO₂e", report.est_co2_kg),
+            &format!(
+                "{:.1} L diesel · {:.2} kg/stop",
+                report.est_fuel_litres,
+                if report.served > 0 {
+                    report.est_co2_kg / report.served as f64
+                } else {
+                    0.0
+                }
             ),
             None,
         );
@@ -2544,5 +2662,33 @@ mod tests {
         assert!(empty_report.cost_per_km_cents.is_finite());
         assert!(empty_report.cost_per_stop_cents.is_finite());
         assert!(empty_report.overall_load.peak_pct.is_finite());
+    }
+
+    #[test]
+    fn tms_metrics_track_wait_drive_otif_and_carbon() {
+        let (mut bundle, history) = sample_problem_and_solution();
+        // Force a 15-minute early arrival wait at Stop 0 (arrive 365, service 20 -> depart 400).
+        bundle.detail.solution.routes[0].steps[1].arrive = Minutes::from_minutes(365);
+        bundle.detail.solution.routes[0].steps[1].depart = Minutes::from_minutes(400);
+
+        let report = build_kpis_report(&bundle, &history);
+        let r = &report.routes[0];
+        assert_eq!(r.service_min, 45);
+        assert_eq!(r.wait_min, 15);
+        assert_eq!(r.drive_min, 60);
+        assert_eq!(report.total_wait_min, 15);
+        assert_eq!(report.total_drive_min, 60);
+        // 33,000 cents across 20 delivered units = 1,650 cents/unit.
+        assert!((r.cost_per_unit_cents - 1_650.0).abs() < 1e-6);
+        assert!((report.cost_per_unit_cents - 1_650.0).abs() < 1e-6);
+        // 2 on-time served stops out of 3 total orders = 66.67% OTIF.
+        assert_eq!(report.on_time_stops, 2);
+        assert!((report.otif_pct - (200.0 / 3.0)).abs() < 0.01);
+        assert!(r.est_fuel_litres > 9.0);
+        assert!((r.est_co2_kg - r.est_fuel_litres * 2.68).abs() < 1e-6);
+
+        let summary = format_kpis_summary(&report);
+        assert!(summary.contains("Sustainability & OTIF:"));
+        assert!(summary.contains("Dock Wait 15m"));
     }
 }

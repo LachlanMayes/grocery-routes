@@ -1,5 +1,6 @@
 //! Core domain model for the grocery-routes system: route planning for
-//! Australian supermarket distribution (Coles, Woolworths, ALDI, IGA/Metcash).
+//! Australian supermarket distribution (`Coles`, `Woolworths`, `ALDI`,
+//! `IGA/Metcash`) as well as custom general delivery routes (`Chain::General`).
 //!
 //! The model is deliberately **timeline-based**: every timestamp is an offset
 //! in [`Minutes`] from the start of a planning horizon. A horizon may span

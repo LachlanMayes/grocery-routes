@@ -227,6 +227,10 @@ pub struct SolveArgs {
     /// Enable Large Neighborhood Search (LNS/ALNS) metaheuristic (M2).
     #[arg(long)]
     pub ls: bool,
+    /// Run iterative local search (2-opt, relocate, exchange) over the greedy
+    /// plan (M2; conflicts with `--ls`).
+    #[arg(long, conflicts_with = "ls")]
+    pub local_search: bool,
     /// Run N independent LNS searches in parallel and keep the best plan
     /// (requires `--ls`; default 1).
     #[arg(long, default_value_t = 1, requires = "ls")]
@@ -884,7 +888,14 @@ pub fn run_solve(args: &SolveArgs) -> anyhow::Result<()> {
         if args.ch {
             println!("  matrix strategy: contraction hierarchy (time-optimal)");
         }
-        let solution = solve_aware_osm(&problem, &mut cache, timezone, profile, args.ls, strategy)?;
+        let solution = solve_aware_osm(
+            &problem,
+            &mut cache,
+            timezone,
+            profile,
+            args.ls || args.local_search,
+            strategy,
+        )?;
         check_solution(&problem, &solution)?;
         write_solution_json(&args.out, &solution)?;
         print_solve_summary(args, &problem, &solution);
@@ -977,6 +988,19 @@ fn solve_matrix_variant(
     profile: routing::TruckProfile,
     strategy: routing::MatrixStrategy,
 ) -> anyhow::Result<Solution> {
+    if args.local_search {
+        let entries = cached
+            .matrix_for_with(problem, profile, strategy)?
+            .context("local search requires a loaded OSM road matrix")?;
+        let node_count = problem.depots.len() + problem.stores.len();
+        let matrix =
+            solver::DistanceMatrix::from_routing(problem.depots.len(), node_count, &entries);
+        return Ok(solver::solve_with_local_search(
+            problem,
+            solver::LSConfig::default(),
+            matrix,
+        ));
+    }
     if !args.ls {
         return solver::solve_greedy_routing_with(problem, cached, profile, strategy);
     }
@@ -1000,7 +1024,7 @@ fn solve_with_haversine(
     args: &SolveArgs,
     problem: &Problem,
 ) -> (Solution, Option<routing::CachedMatrix>) {
-    if !args.ls {
+    if !args.ls && !args.local_search {
         if args.relay {
             let (solution, report) =
                 solver::solve_greedy_with_relay(problem, solver::RelayConfig::default());
@@ -1009,16 +1033,20 @@ fn solve_with_haversine(
         }
         return (solver::solve(problem), None);
     }
-    let config = solver::LNSConfig::default();
-    let solution = if args.repeat > 1 {
-        solver::solve_with_lns_multistart(
-            problem,
-            config,
-            solver::DistanceMatrix::new(problem),
-            args.repeat,
-        )
+    let solution = if args.local_search {
+        solver::solve_with_local_search_haversine(problem, solver::LSConfig::default())
     } else {
-        solver::solve_with_lns_haversine(problem, config)
+        let config = solver::LNSConfig::default();
+        if args.repeat > 1 {
+            solver::solve_with_lns_multistart(
+                problem,
+                config,
+                solver::DistanceMatrix::new(problem),
+                args.repeat,
+            )
+        } else {
+            solver::solve_with_lns_haversine(problem, config)
+        }
     };
     if args.relay {
         let (solution, report) =
@@ -1133,6 +1161,8 @@ fn print_solve_summary(args: &SolveArgs, problem: &Problem, solution: &Solution)
         } else {
             " (with LNS)".to_string()
         }
+    } else if args.local_search {
+        " (with local search)".to_string()
     } else {
         String::new()
     };
@@ -1617,6 +1647,34 @@ mod tests {
         assert_eq!(
             audit_args.constraints.as_deref(),
             Some(std::path::Path::new("curated.json"))
+        );
+
+        let ls_cli = Cli::try_parse_from([
+            "grocery-routes",
+            "solve",
+            "--problem",
+            "p.json",
+            "--out",
+            "s.json",
+            "--local-search",
+        ])
+        .unwrap();
+        let Command::Solve(ls_args) = ls_cli.command else {
+            panic!("expected Solve");
+        };
+        assert!(ls_args.local_search && !ls_args.ls);
+        assert!(
+            Cli::try_parse_from([
+                "grocery-routes",
+                "solve",
+                "--problem",
+                "p.json",
+                "--out",
+                "s.json",
+                "--ls",
+                "--local-search",
+            ])
+            .is_err()
         );
     }
 }

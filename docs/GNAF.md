@@ -37,11 +37,11 @@ cargo run -p cli -- reverse --db data/gnaf.sqlite --lat=-33.8688 --lon=151.2093
 
 ## Limits — read before trusting results
 
-- **Not validated against a full G-NAF release.** Ingestion and queries are
-  exercised against synthetic fixtures in the repository's own release
-  format. Run `import-gnaf` against a real release before relying on it and
-  check the printed `skipped` counters (incomplete rows, addresses without a
-  geocode) against the release notes.
+- **Unit tests use synthetic fixtures; real release verified separately.**
+  Automated in-repo tests run against synthetic fixtures in the release
+  format. Full validation against the Aug 2026 G-NAF release is recorded in
+  `## Status` below; when importing a newer quarterly release, check the printed
+  `skipped` counters against the release notes.
 - **Zip archives are not read.** Unzip first.
 - **Queries use indexed prefix lookups** (`UPPER(street)` / `UPPER(locality)`
   bounds plus state/postcode indexes) with escaped `LIKE` fallback and no FTS
@@ -65,5 +65,6 @@ Validated against the G-NAF Aug 2026 release (GDA2020, `g-naf_aug26_allstates_gd
 16,970,406 addresses imported, 0 incomplete rows, 0 without a geocode).
 `geocode` and `reverse` return sensible results (e.g. "1 Pitt Street, Sydney NSW 2000"
 → 18 PITT STREET; reverse at (-33.8688, 151.2093) → nearest addresses within
-metres). Wiring geocoding into store import remains an optional engineering step
-(tracked in [docs/PLAN.md](PLAN.md)).
+metres). Address geocoding is wired into both the `cli import-stores` command
+and the `console` interactive route builder (`geo-au` SQLite with Nominatim
+fallback).

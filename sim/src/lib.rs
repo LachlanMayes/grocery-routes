@@ -84,7 +84,7 @@ pub struct SimOptions {
     /// Random seed; the same seed always produces the same problem.
     pub seed: u64,
     /// Apply the Christmas-peak trading profile: higher demand and wider
-    /// receiving windows (see [`apply_christmas_peak`]). Illustrative
+    /// receiving windows (see `apply_christmas_peak`). Illustrative
     /// fixture parameters, not researched operator data.
     pub christmas_peak: bool,
 }

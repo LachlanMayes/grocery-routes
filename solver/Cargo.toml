@@ -3,6 +3,9 @@ name = "solver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "VRPTW solver implementing greedy insertion, local search, LNS/ALNS multi-start, curfew scheduling, and two-shift relay planning"
 
 [lints]
 workspace = true
@@ -16,7 +19,6 @@ rand.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
-anyhow.workspace = true
 jiff.workspace = true
 tempfile.workspace = true
 

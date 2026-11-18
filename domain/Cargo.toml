@@ -3,6 +3,9 @@ name = "domain"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Core TMS domain model, NHVR fatigue rules, Australian holiday calendars, returnables ledger, and schedule validation"
 
 [lints]
 workspace = true

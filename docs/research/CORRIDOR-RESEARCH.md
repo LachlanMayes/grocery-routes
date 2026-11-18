@@ -94,7 +94,7 @@ general mass limits apply per structure with no signage or notice.
 
 `constraints/draft-desktop-research-2026-11.json` holds the tunnel entries
 above, validated with `cargo run -p cli -- constraints --file ...` (9 entries,
-format OK). They are marked `verified_by: "desktop-research (AI-assisted)..."`
+format OK). They are marked `verified_by: "desktop-research (unverified on-site); pending operator sign-off"`
 and **must not be copied into `truck-constraints.json` without human review**.
 
 ## What remains

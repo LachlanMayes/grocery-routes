@@ -14,7 +14,7 @@ plans out of the system.
 | One-way awareness | Honors `oneway=yes` and reverses for `oneway=-1`. | `routing/src/osm_ingest.rs` |
 | Curated way constraints | Folds **hand-verified** per-way limits (weight/height) into the graph after ingest. Tightening only; never loosens an existing limit. CLI: `solve --osm … --constraints constraints/truck-constraints.json`. | `routing/src/curated.rs` |
 | Refusal to route | If no legal path exists between depot and store under the profile, the leg is rejected rather than routed through the barrier. | `routing/src/router.rs` |
-| Curfew enforcement | A curfew names a road class (OSM `highway` value) and a local day/time window. After solving, each leg is recomputed time-dependently: a truck **waits at the previous node** until its traversal would be clear of every window, and a store whose waits no longer fit its receiving windows, shift, duration limit or driver occupancy moves to `unassigned` with a recorded reason. CLI: `solve --enforce-curfews --network-timezone <IANA>` (needs `--osm` and `Problem.horizon_start`). | `routing/src/timed.rs`, `solver/src/curfew.rs` |
+| Curfew enforcement | A curfew names a road class (OSM `highway` value) and a local day/time window. Two modes exist: post-solve feasibility re-scheduling (`solve --enforce-curfews --network-timezone <IANA>`, `solver::curfew`), which waits before entering curfewed ways and drops stores whose waits break constraints, and curfew-aware construction (`solve --curfew-aware`, `solver::curfew_aware`), which prices waiting into insertion decisions. Both require `--osm` and `Problem.horizon_start`. | `routing/src/timed.rs`, `solver/src/curfew.rs`, `solver/src/curfew_aware.rs` |
 | Corridor audit | Reports every OSM way a solved plan traverses with its limit tags, and explicitly flags ways with **no limit data**. CLI: `audit`. This is reporting, not enforcement. | `routing/src/audit.rs` |
 
 Curfew modelling choices worth knowing:
@@ -38,7 +38,7 @@ Curfew modelling choices worth knowing:
 |---|---|
 | Legal bridge/tunnel weight & height limits not present in OSM tags and not curated | OSM tag coverage in Sydney bbox (M0 Overpass count, 2026-11-03): `maxweight` 3.2%, `maxheight` 0.8%, `hgv` 0.4% of ways. **The empty `constraints/truck-constraints.json` means no such limit is assumed anywhere.** Plans through un-annotated ways are not legally verified — see "Operator responsibilities". |
 | Curfew rules that are not encoded in `Problem::curfews` | The enforcer only knows the windows you give it; school zones, event closures and ad-hoc restrictions are not inferred from OSM. |
-| Curfew-aware optimisation | Enforcement is a post-solve feasibility restore (waiting and dropping stores), not time-dependent costs inside the search. A plan may therefore use more vehicles or serve fewer stores than a curfew-aware optimiser would. |
+| Curfew-aware metaheuristic improvement | `--curfew-aware` makes initial construction time-dependent, whereas LS/LNS improvement phases and `--enforce-curfews` still optimise on the static matrix and restore curfew legality afterwards. |
 | B-double / HML / PBS permit route networks | Permits are a legal class, not a physical property of a way; OSM does not model them reliably. No permit data is embedded. |
 | Commodity/vehicle-specific rules (dangerous goods, ADR) | Not modelled; treat as out of scope. |
 | State access pre-approvals, NHVR notices | Not modelled. |
@@ -152,7 +152,8 @@ Desktop research for the synthetic Sydney plan corridor (tunnel clearances
 from TfNSW/Linkt published sources, bridge-register check outstanding) is in
 [docs/CORRIDOR-RESEARCH.md](research/CORRIDOR-RESEARCH.md). Draft constraint entries
 live in `constraints/draft-desktop-research-2026-11.json` and carry
-AI-desktop provenance only — see the doc before loading them anywhere.
+desktop-research provenance only (unverified on-site) — see the doc before
+loading them anywhere.
 
 ## Future work (explicitly not done)
 

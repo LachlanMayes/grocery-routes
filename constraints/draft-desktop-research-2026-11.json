@@ -5,7 +5,7 @@
       "maxheight_m": 4.4,
       "note": "Cross City Tunnel - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('Cross City Tunnel - 4.4 metres'); confirmed by Linkt vehicle height limits page",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -13,7 +13,7 @@
       "maxheight_m": 4.4,
       "note": "Cross City Tunnel - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('Cross City Tunnel - 4.4 metres'); confirmed by Linkt vehicle height limits page",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -21,7 +21,7 @@
       "maxheight_m": 4.4,
       "note": "Cross City Tunnel - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('Cross City Tunnel - 4.4 metres'); confirmed by Linkt vehicle height limits page",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -29,7 +29,7 @@
       "maxheight_m": 4.4,
       "note": "Cross City Tunnel - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('Cross City Tunnel - 4.4 metres'); confirmed by Linkt vehicle height limits page",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -37,7 +37,7 @@
       "maxheight_m": 4.4,
       "note": "Cross City Tunnel - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('Cross City Tunnel - 4.4 metres'); confirmed by Linkt vehicle height limits page",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -45,7 +45,7 @@
       "maxheight_m": 5.1,
       "note": "M4 East tunnel (WestConnex M4) - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('M4 Tunnels - 5.1 metres'); confirmed by Linkt vehicle height limits page ('WestConnex M4: 5.1m')",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -53,7 +53,7 @@
       "maxheight_m": 5.1,
       "note": "M4 East tunnel (WestConnex M4) - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('M4 Tunnels - 5.1 metres'); confirmed by Linkt vehicle height limits page ('WestConnex M4: 5.1m')",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -61,7 +61,7 @@
       "maxheight_m": 5.1,
       "note": "M4 East tunnel (WestConnex M4) - published clearance",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('M4 Tunnels - 5.1 metres'); confirmed by Linkt vehicle height limits page ('WestConnex M4: 5.1m')",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     },
     {
@@ -69,7 +69,7 @@
       "maxheight_m": 4.4,
       "note": "M5 East tunnel section - set to the lower of the two published clearances (Cooks River 4.4 m vs Main 4.6 m); OSM tag 'tunnel' with name 'M5 Motorway' does not distinguish which tube; needs on-site confirmation",
       "source": "https://www.transport.nsw.gov.au/operations/nsw-roads-network/using-sydneys-tunnels ('M5 East Cooks River - 4.4 metres', 'M5 East Main - 4.6 metres')",
-      "verified_by": "desktop-research (AI-assisted), NOT on-site verified; pending human sign-off",
+      "verified_by": "desktop-research (unverified on-site); pending operator sign-off",
       "verified_at": "2026-11-10"
     }
   ]

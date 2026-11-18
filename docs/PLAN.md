@@ -1,17 +1,31 @@
 # grocery-routes — plan
 
-Route + delivery planning for Australian supermarket distribution: Coles,
-Woolworths, ALDI and IGA/Metcash store networks. Rust, built from scratch as a
-passion project; designed to hold up at 10+ trucks across states, executed
-one-chain-one-metro at a time.
+Transportation Management System (TMS) and delivery route optimization for
+Australian supermarket distribution (`Coles`, `Woolworths`, `ALDI`,
+`IGA/Metcash`) as well as custom general commercial fleets (`Chain::General`).
+Built from scratch in Rust; designed to scale across multi-depot fleets and
+Australian state road networks.
 
-## Status (2026-11-09)
+## Status (2026-11-17)
 
-M0–M4 are implemented and verified. The seven gaps listed in the previous
-status were closed in software (commits `98a3f96` … `aded0ee`), and the
-next-sprint plan (tasks 1–6) is also closed: truck-constraints tooling
-(`03b984d`), relay/rest post-pass (`b17b5a0`), curfew-aware construction
-(`e5a8130`), and the LNS-vs-LS harder benchmark (`a263534`).
+M0–M6 are implemented and verified, including the TMS Control Tower operator
+console (`Orders & Network` custom builder with `Rate Card & Meta` carrier
+presets and 100 km / 4 hr benchmark, G-NAF/Nominatim geocoding, bulk stop paste,
+window presets, inline driver shift editing & **Auto-Fit Shifts to Windows**,
+1-click **Solve Route Now**, and **Load into Builder**; `Load Planner`
+physical cubing & 3-view cargo bay visualizer; `Optimizer` with `local_search`
+default, `LNS`, `CH`, and HGV limits; `Dispatch & BOL` interactive dispatch
+board with stop `▲`/`▼` re-sequencing, `Unassign`, `+ Assign to Route N`, live
+CoR compliance banner, schedule CSV, and printable HTML Run Sheet / BOL with
+pre-departure checklist & ePOD blocks; `Freight KPIs` analytics with OTIF %,
+dock wait vs drive time, `$/unit`, Gantt timeline, and NGA diesel/`CO₂e` ESG
+metrics; and `Fleet Map` interactive `walkers` map with directional route
+arrows, numbered stop markers, Prev/Next navigation, leg/load/wait telemetry,
+and unassigned diagnostics), `solve --local-search` CLI support, and hardened
+API boundary validation (WGS-84 bounds, positive vehicle speed/truck limits,
+and the 5,000-node ceiling).
+
+Core capabilities and architecture highlights:
 
 - **Curfew enforcement** — `routing::timed` computes time-dependent legs
   (a truck waits at the previous node until a traversal is clear of every
@@ -39,21 +53,25 @@ next-sprint plan (tasks 1–6) is also closed: truck-constraints tooling
   709.10 for a single run; local search (621.42) remains the best measured
   path.
 - **G-NAF geocoder** — new `geo-au`: flat-file ingest → SQLite,
-  `geocode`/`reverse`; CLI `import-gnaf`, `geocode`, `reverse`. Validated
-  against synthetic fixtures only; see [GNAF.md](GNAF.md).
+  `geocode`/`reverse`; CLI `import-gnaf`, `geocode`, `reverse`. Unit tests
+  use synthetic fixtures; validated against the Aug 2026 G-NAF release (16.97 M
+  addresses, 0 skipped); see [GNAF.md](GNAF.md).
 - **Corridor audit** — CLI `audit` lists every OSM way a plan traverses and
   flags the ones with no truck-limit data. Legal verification of corridors
   remains an operator responsibility.
 
-M6 driver-side scope is unchanged: the route sheet (with OSM deep links,
-local times and holiday flags) is the deliverable — no live tracking, no
-proof of delivery, no further console UI.
+M6 driver-side scope: printable HTML driver Run Sheets / Bills of Lading (with
+CoR pre-departure verification checklist and per-stop ePOD signature blocks from
+`Dispatch & BOL`) and the CLI route sheet (with OSM deep links, local times, and
+holiday flags) remain the driver deliverable — no live mobile GPS tracking or
+connected cloud proof-of-delivery yet; operator-side planning, dispatch editing,
+and visualization live in `console`.
 
-Current checks:
+Current checks (2026-11-17):
 
-- `cargo test --workspace`: all **254** tests pass (2026-11-09).
-- `cargo clippy --workspace --all-targets`: exits 0 with **zero warnings**
-  (whole-tree sweep, 2026-11-06).
+- `cargo test --workspace --no-fail-fast`: all **314** active tests pass (**1** ignored timing measurement `routing::ch::tests::grid_measurement`).
+- `cargo clippy --workspace --all-targets -- -D warnings`: exits 0 with **zero warnings**.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, `cargo fmt --all -- --check`, and `cargo bench -p solver --no-run`: pass.
 - Latest commits: `fc88c9b` (console: eframe/egui 0.37 upgrade, glow
   renderer), `decd8cd` (dependency-audit record), `91f9abf` (maintenance:
   clippy sweep 91 -> 0, dependency patch updates), `497ac2b` (quality +
@@ -108,13 +126,13 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 | Crate | Role | Milestone | Status |
 |---|---|---|---|
 | `domain` | Timeline model, chains/stores/vehicles/drivers, validation rules, multi-day fixture, horizon anchor + local-time conversion (`clock`), national + state holidays (`holidays`), returnables ledger (`ledger`) | M0/M5 | Implemented; NHVR fatigue rules (between-shift rest and work caps), chain receiving defaults and returnables fixtures, DST-aware local times, national and per-jurisdiction holiday calendars, invalid IANA names rejected via `Problem::validate_timezones`. In-shift break placement is not modelled. |
-| `sim` | Seeded synthetic network generator (city × chain), Christmas-peak profile | M0 | Implemented; `City::iana_timezone` with `gen-sim --timezones`; `--christmas-peak` uplift/windows are illustrative fixtures. |
+| `sim` | Seeded synthetic network generator (5 cities × 5 chains including `general`), Christmas-peak profile | M0 | Implemented; `City::iana_timezone` with `gen-sim --timezones`; `--christmas-peak` uplift/windows are illustrative fixtures. |
 | `solver` | Haversine/road matrices + deterministic greedy insertion → local search → LNS/ALNS, multi-start, curfew re-scheduling | M0–M2 | Implemented; greedy default; LS 621.42 / LNS 709.10 single / 679.85 ×8 on C101; `--repeat N` multi-start; curfew enforcement re-schedules and reports drops. |
 | `routing` | OSM PBF ingest → directed graph → truck tag filtering → matrices; curated limits; contraction hierarchy; time-dependent curfews; corridor audit | M3 | Implemented; Dijkstra and CH strategies; `routing::timed` curfew waiting; `routing::audit` corridor report. No real extract ships in-repo; corridor legality stays human-verified. |
-| `geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented and fixture-tested; not yet validated against a real G-NAF release (operator step, see `docs/GNAF.md`). |
-| `cli` | `gen-sim` / `solve` / `export` plus `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented; C101 dataset is tracked. |
-| `api` | axum + SQLite; SSE events; import/solve/solution/KPIs | M4 | Implemented; endpoint integration tests pass; OSM matrices default to Dijkstra (CH is CLI-only for now). |
-| `console` | egui desktop ops console | M4 | Implemented operator console (eframe 0.37, glow renderer), backed by the API server binary (`cargo run -p api`); no live tracking / proof-of-delivery integration (M6). No `walkers` map/PMTiles work is shipped. |
+| `geo-au` | G-NAF flat-file ingest → SQLite; geocode + reverse | later | Implemented, fixture-tested, and validated against the Aug 2026 G-NAF release (16.97 M addresses, 0 skipped; see `docs/GNAF.md`). |
+| `cli` | `gen-sim` / `solve` / `export` plus `import-stores`, `constraints`, `holidays`, `audit`, `import-gnaf`, `geocode`, `reverse` | M0/M3 | Implemented (`solve` supports greedy, `--local-search`, and `--ls`); C101 dataset is tracked. |
+| `api` | axum + SQLite; SSE events; import/solve/solution/geometry/KPIs | M4 | Implemented; endpoint integration tests pass; supports greedy, `local_search`, and `lns`, Contraction Hierarchies (`ch`), OSM road geometry replay, and input bounds validation. |
+| `console` | egui TMS Control Tower desktop console | M4/M6 | Implemented TMS operator console (`eframe` 0.37 `glow` + `walkers` 0.65 map); embeds API in-process by default (`--no-embedded-api` for external); **Orders & Network** (`Chain::General` + G-NAF/Nominatim geocoding, bulk paste, shift fitting, **Carrier Rate Card Presets** & 100 km / 4 hr benchmark, 1-click **Solve Route Now**), **Load Planner** (physical cargo bay cubing + 3-view visualizer), **Optimizer**, **Dispatch & BOL** (interactive stop `▲`/`▼`/`Unassign`/`+ Assign to Route N`, live CoR validation banner, schedule CSV & printable HTML Run Sheet / BOL), **Freight KPIs** (OTIF %, dock detention wait, `$/unit`, NGA diesel/`CO₂e`, charts, Gantt, history), **Fleet Map** (directional arrows, numbered stops, Prev/Next & diagnostics), and live SSE **Control Tower**. |
 
 ## Milestones
 
@@ -141,19 +159,22 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
   all implemented. Curfew-aware *construction* now also exists
   (`solver::curfew_aware`, `--curfew-aware`); LS/LNS improvement phases
   still operate on the static matrix.
-- **M6 — Driver side** — **decision made (2026-11-05)**: route sheet + OSM
-  deep links is the deliverable; no live tracking, proof of delivery,
-  driver app or further console surface.
+- **M6 — Driver side & console polish** — **done**: route sheet + OSM
+  deep links remain the driver deliverable (no live tracking, proof of
+  delivery, or driver mobile app); interactive operator tooling (`walkers` map,
+  Custom Route Builder, KPI charts, and Truck Load & Capacity Optimizer) lives
+  in `console`.
 
 ## Known gaps and next priorities
 
-1. **Corridor legality — out of scope (simulated pet project, 2026-11-11).**
-   This project never dispatches a real truck, so per-bridge load ratings and
-   human sign-off of `constraints/truck-constraints.json` are not required
-   for it to be complete. The `audit` command, the curated-constraints
+1. **Corridor legality sign-off — operator responsibility.**
+   Because this repository ships software and synthetic/open-data examples
+   rather than verified road-manager registers, per-bridge load ratings and
+   human sign-off of `constraints/truck-constraints.json` remain an operator
+   deployment step. The `audit` command, the curated-constraints
    tooling (`03b984d`), the research report (`docs/CORRIDOR-RESEARCH.md`)
-   and the draft desktop-research entries remain available for anyone who
-   later wants legal verification for a real run — see
+   and the draft desktop-research entries remain available for operators
+   completing legal verification for production dispatches — see
    [CORRIDOR-CHECKLIST.md](research/CORRIDOR-CHECKLIST.md).
 2. **Curfew enforcement has two modes now.** `--enforce-curfews` is still a
    post-solve feasibility restore (route order and fleet assignment fixed;
@@ -173,9 +194,10 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
    days and part-day holidays are out of scope; every authority's own
    calendar is authoritative.
 5. **G-NAF**: validated against the Aug 2026 release (16,970,406 addresses,
-   0 skipped); `geocode`/`reverse` return sensible results. Store import now
-   geocodes addresses via the `import-stores` CLI command. Queries are `LIKE`
-   scans with no FTS/R-tree.
+   0 skipped); `geocode`/`reverse` return sensible results. Geocoding is wired
+   into both `cli import-stores` and the `console` route builder. Queries use
+   indexed prefix lookups (`UPPER(street)`/`UPPER(locality)`/`state`/`postcode`)
+   with escaped `LIKE` fallback (no FTS/R-tree).
 6. **CH memory/timing on a real extract — measured** (2026-11-09): NSW
    extract (258 MB, 4.89 M road nodes after filtering). CH solve 126.8 s
    vs Dijkstra 205.9 s (~1.6×) on an 8-store problem; 18/100 matrix
@@ -213,14 +235,13 @@ vehicles and what is not; `docs/GNAF.md` covers the geocoder.
 
 ## Environment notes
 
-- The repo pins `stable-x86_64-pc-windows-gnu` because this machine has no
-  MSVC linker. `rustfmt` and `clippy` components are wired; the local
-  toolchain reports Rust 1.99.1.
+- The repo pins `stable-x86_64-pc-windows-gnu` in `rust-toolchain.toml` (with
+  `rustfmt` and `clippy` components) so Windows builds do not require the MSVC
+  linker; the local toolchain reports Rust 1.99.1.
 - Workspace lints: `unsafe_code = "forbid"`; `clippy::all` at warn level.
-- Latest local verification (2026-11-07): `cargo test --workspace` passes
-  (239 tests); `cargo clippy --workspace --all-targets` exits 0 with **zero
-  warnings**; `cargo audit` exits 0 — see [SECURITY.md](SECURITY.md); the
-  console starts and renders under eframe 0.37 (glow) in a manual smoke
-  run. `-D warnings` is still not enforced.
+- Latest local verification (2026-11-17): `cargo test --workspace --no-fail-fast`
+  passes (**314** active tests, **1** ignored); `cargo clippy --workspace --all-targets -- -D warnings`
+  exits 0 with **zero warnings**; `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`,
+  `cargo fmt --all -- --check`, and `cargo bench -p solver --no-run` pass; `cargo audit` (2026-11-07) exits 0 — see [SECURITY.md](SECURITY.md).
 - `Cargo.lock` is checked in and is the source of truth for dependency
   resolution.

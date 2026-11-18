@@ -18,11 +18,17 @@ pub(crate) const IDLE_DEPOT_COLOR: egui::Color32 = egui::Color32::from_rgb(95, 1
 pub(crate) struct MapNodeVisit {
     pub route_index: usize,
     pub step_index: usize,
+    pub stop_sequence: Option<usize>,
     pub total_steps: usize,
     pub vehicle_name: String,
     pub driver_names: String,
     pub arrive: Minutes,
     pub depart: Minutes,
+    pub wait_minutes: i64,
+    pub prev_leg_km: f64,
+    pub cumulative_km: f64,
+    pub cumulative_load: Load,
+    pub vehicle_capacity: Load,
 }
 
 /// Kind-specific metadata for rendering tooltips, badges, and inspector cards.
@@ -44,6 +50,7 @@ pub(crate) enum MapNodeKind {
         service: Minutes,
         windows: Vec<TimeWindow>,
         from_chain_defaults: bool,
+        reason: String,
     },
 }
 
@@ -80,12 +87,9 @@ pub(crate) fn collect_map_nodes(
             continue;
         }
         let color = route_color(route_index);
-        let veh_name = problem
-            .vehicles
-            .get(route.vehicle.0 as usize)
-            .map(|v| v.name.as_str())
-            .unwrap_or("?")
-            .to_string();
+        let vehicle = problem.vehicles.get(route.vehicle.0 as usize);
+        let veh_name = vehicle.map(|v| v.name.as_str()).unwrap_or("?").to_string();
+        let veh_cap = vehicle.map(|v| v.capacity).unwrap_or_default();
         let drv_names = route
             .drivers
             .iter()
@@ -99,39 +103,85 @@ pub(crate) fn collect_map_nodes(
             .collect::<Vec<_>>()
             .join(", ");
         let total_steps = route.steps.len();
+        let mut prev_loc: Option<domain::LatLon> = None;
+        let mut cum_km = 0.0_f64;
+        let mut cum_load = Load::ZERO;
+        let mut customer_seq = 0usize;
 
         for (step_index, stop) in route.steps.iter().enumerate() {
-            let visit = MapNodeVisit {
-                route_index,
-                step_index,
-                total_steps,
-                vehicle_name: veh_name.clone(),
-                driver_names: drv_names.clone(),
-                arrive: stop.arrive,
-                depart: stop.depart,
+            let step_loc = node_location(problem, stop.node);
+            let prev_leg_km = match (prev_loc, step_loc) {
+                (Some(a), Some(b)) => domain::haversine_km(a, b),
+                _ => 0.0,
             };
+            cum_km += prev_leg_km;
+            if let Some(loc) = step_loc {
+                prev_loc = Some(loc);
+            }
+
             match stop.node {
                 Node::Depot(depot_id) => {
+                    let visit = MapNodeVisit {
+                        route_index,
+                        step_index,
+                        stop_sequence: None,
+                        total_steps,
+                        vehicle_name: veh_name.clone(),
+                        driver_names: drv_names.clone(),
+                        arrive: stop.arrive,
+                        depart: stop.depart,
+                        wait_minutes: 0,
+                        prev_leg_km,
+                        cumulative_km: cum_km,
+                        cumulative_load: cum_load,
+                        vehicle_capacity: veh_cap,
+                    };
                     depot_visits.entry(depot_id.0).or_default().push(visit);
                 }
                 Node::Store(store_id) => {
+                    customer_seq += 1;
+                    let store = problem.store(store_id);
+                    if let Some(store) = store {
+                        cum_load += store.demand;
+                    }
                     if !seen_stores.insert(store_id.0) {
                         continue;
                     }
-                    if let Some(store) = problem.store(store_id) {
+                    if let Some(store) = store {
+                        let wait_minutes = (stop.depart.minutes()
+                            - store.service.minutes()
+                            - stop.arrive.minutes())
+                        .max(0);
+                        let visit = MapNodeVisit {
+                            route_index,
+                            step_index,
+                            stop_sequence: Some(customer_seq),
+                            total_steps,
+                            vehicle_name: veh_name.clone(),
+                            driver_names: drv_names.clone(),
+                            arrive: stop.arrive,
+                            depart: stop.depart,
+                            wait_minutes,
+                            prev_leg_km,
+                            cumulative_km: cum_km,
+                            cumulative_load: cum_load,
+                            vehicle_capacity: veh_cap,
+                        };
                         let (windows, from_chain_defaults) = effective_windows(problem, store);
                         let total_demand = store.demand.total();
-                        store_infos.push(MapNodeInfo {
-                            node: Node::Store(store_id),
-                            title: format!("{} (#{})", store.name, store_id.0),
-                            short_badge: format!(
-                                "R{}#{} {} ({})",
-                                route_index + 1,
-                                step_index,
-                                store.name,
-                                visit.arrive
-                            ),
-                            detail_badge: format!(
+                        let detail_badge = if wait_minutes > 0 {
+                            format!(
+                                "{}-{} (+{}m wait) · {}u ({}A/{}C/{}F)",
+                                visit.arrive,
+                                visit.depart,
+                                wait_minutes,
+                                total_demand,
+                                store.demand.ambient,
+                                store.demand.chilled,
+                                store.demand.frozen
+                            )
+                        } else {
+                            format!(
                                 "{}-{} · {}u ({}A/{}C/{}F)",
                                 visit.arrive,
                                 visit.depart,
@@ -139,7 +189,19 @@ pub(crate) fn collect_map_nodes(
                                 store.demand.ambient,
                                 store.demand.chilled,
                                 store.demand.frozen
+                            )
+                        };
+                        store_infos.push(MapNodeInfo {
+                            node: Node::Store(store_id),
+                            title: format!("{} (#{})", store.name, store_id.0),
+                            short_badge: format!(
+                                "R{}#{} {} ({})",
+                                route_index + 1,
+                                customer_seq,
+                                store.name,
+                                visit.arrive
                             ),
+                            detail_badge,
                             address: store.address.clone(),
                             lon: store.location.lon,
                             lat: store.location.lat,
@@ -212,6 +274,7 @@ pub(crate) fn collect_map_nodes(
         if let Some(store) = problem.store(store_id) {
             let (windows, from_chain_defaults) = effective_windows(problem, store);
             let total_demand = store.demand.total();
+            let reason = diagnose_unassigned_store(problem, store);
             nodes.push(MapNodeInfo {
                 node: Node::Store(store_id),
                 title: format!("{} (#{})", store.name, store_id.0),
@@ -231,6 +294,7 @@ pub(crate) fn collect_map_nodes(
                     service: store.service,
                     windows,
                     from_chain_defaults,
+                    reason,
                 },
                 visits: Vec::new(),
             });
@@ -238,6 +302,94 @@ pub(crate) fn collect_map_nodes(
     }
 
     nodes
+}
+
+fn node_location(problem: &Problem, node: Node) -> Option<domain::LatLon> {
+    match node {
+        Node::Depot(id) => problem.depots.get(id.0 as usize).map(|d| d.location),
+        Node::Store(id) => problem.store(id).map(|s| s.location),
+    }
+}
+
+/// Diagnoses the primary structural reason an unassigned store could not be routed.
+pub(crate) fn diagnose_unassigned_store(problem: &Problem, store: &Store) -> String {
+    if problem.vehicles.is_empty() {
+        return "No vehicles configured".to_string();
+    }
+
+    let fits_any_vehicle = problem.vehicles.iter().any(|v| {
+        v.capacity.ambient >= store.demand.ambient
+            && v.capacity.chilled >= store.demand.chilled
+            && v.capacity.frozen >= store.demand.frozen
+    });
+    if !fits_any_vehicle {
+        let max_a = problem
+            .vehicles
+            .iter()
+            .map(|v| v.capacity.ambient)
+            .max()
+            .unwrap_or(0);
+        let max_c = problem
+            .vehicles
+            .iter()
+            .map(|v| v.capacity.chilled)
+            .max()
+            .unwrap_or(0);
+        let max_f = problem
+            .vehicles
+            .iter()
+            .map(|v| v.capacity.frozen)
+            .max()
+            .unwrap_or(0);
+        return format!(
+            "Demand ({}A/{}C/{}F) exceeds vehicle capacity (max {}A/{}C/{}F)",
+            store.demand.ambient, store.demand.chilled, store.demand.frozen, max_a, max_c, max_f
+        );
+    }
+
+    let (windows, _) = effective_windows(problem, store);
+    if windows.is_empty() {
+        return "No receiving window configured".to_string();
+    }
+
+    let any_shift_overlaps = problem.drivers.iter().any(|driver| {
+        driver.shifts.iter().any(|shift| {
+            windows
+                .iter()
+                .any(|win| shift.start < win.end && win.start < shift.end)
+        })
+    });
+    if !any_shift_overlaps {
+        return "Receiving window(s) do not overlap any driver shift".to_string();
+    }
+
+    if !problem.depots.is_empty() {
+        let min_depot_km = problem
+            .depots
+            .iter()
+            .map(|d| domain::haversine_km(d.location, store.location))
+            .fold(f64::INFINITY, f64::min);
+        let max_speed_kmh = problem
+            .vehicles
+            .iter()
+            .map(|v| v.avg_speed_kmh)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .fold(0.0_f64, f64::max);
+        if min_depot_km.is_finite() && max_speed_kmh > 0.0 {
+            let min_round_trip = (2.0 * min_depot_km / max_speed_kmh * 60.0).round() as i64
+                + store.service.minutes();
+            if problem
+                .vehicles
+                .iter()
+                .all(|v| min_round_trip > v.max_duration.minutes())
+            {
+                return "Round-trip travel + service exceeds vehicle max duration".to_string();
+            }
+        }
+    }
+
+    "Fleet time or capacity saturated by other stops — add a vehicle, increase capacity, or widen windows"
+        .to_string()
 }
 
 fn effective_windows(problem: &Problem, store: &Store) -> (Vec<TimeWindow>, bool) {
@@ -478,5 +630,163 @@ mod tests {
             vec![0, 1]
         );
         assert!(nodes_near_pointer(&pts, egui::pos2(250.0, 250.0), 12.0).is_empty());
+    }
+
+    #[test]
+    fn visit_tracks_sequence_wait_leg_km_and_cum_load() {
+        let problem = Problem {
+            name: "metrics".into(),
+            depots: vec![Depot {
+                id: DepotId(0),
+                name: "Main DC".into(),
+                location: LatLon::new(-33.87, 151.21),
+                address: None,
+                timezone: None,
+            }],
+            stores: vec![Store {
+                id: StoreId(0),
+                chain: Chain::General,
+                name: "Early Stop".into(),
+                location: LatLon::new(-33.89, 151.21),
+                address: None,
+                demand: Load::new(3, 1, 0),
+                service: Minutes::from_minutes(15),
+                receiving: vec![TimeWindow::new(
+                    Minutes::from_minutes(400),
+                    Minutes::from_minutes(600),
+                )],
+                timezone: None,
+            }],
+            vehicles: vec![Vehicle {
+                id: VehicleId(0),
+                name: "Van 1".into(),
+                depot: DepotId(0),
+                capacity: Load::new(10, 5, 0),
+                max_duration: Minutes::from_minutes(480),
+                avg_speed_kmh: 50.0,
+            }],
+            drivers: vec![Driver {
+                id: DriverId(0),
+                name: "Sam".into(),
+                shifts: vec![Shift::new(Minutes::ZERO, Minutes::from_minutes(600))],
+                fatigue_rules: FatigueRules::default(),
+            }],
+            cost: CostModel::default(),
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
+            horizon_start: None,
+        };
+        let solution = Solution {
+            routes: vec![RoutePlan {
+                vehicle: VehicleId(0),
+                drivers: vec![DriverId(0)],
+                steps: vec![
+                    PlannedStop {
+                        node: Node::Depot(DepotId(0)),
+                        arrive: Minutes::from_minutes(360),
+                        depart: Minutes::from_minutes(360),
+                    },
+                    PlannedStop {
+                        node: Node::Store(StoreId(0)),
+                        arrive: Minutes::from_minutes(380),
+                        // Arrives at 380, window opens at 400 (+20m wait), serves 15m -> departs 415.
+                        depart: Minutes::from_minutes(415),
+                    },
+                    PlannedStop {
+                        node: Node::Depot(DepotId(0)),
+                        arrive: Minutes::from_minutes(435),
+                        depart: Minutes::from_minutes(435),
+                    },
+                ],
+                distance_km: 4.5,
+                duration: Minutes::from_minutes(75),
+                cost_cents: 1000,
+            }],
+            unassigned: vec![],
+            total_distance_km: 4.5,
+            total_duration: Minutes::from_minutes(75),
+            total_cost_cents: 1000,
+        };
+
+        let nodes = collect_map_nodes(&problem, &solution, &HashSet::new(), dummy_color);
+        let store_node = &nodes[1];
+        let visit = &store_node.visits[0];
+        assert_eq!(visit.stop_sequence, Some(1));
+        assert_eq!(visit.wait_minutes, 20);
+        assert!(visit.prev_leg_km > 1.5);
+        assert!((visit.cumulative_km - visit.prev_leg_km).abs() < 1e-9);
+        assert_eq!(visit.cumulative_load, Load::new(3, 1, 0));
+        assert_eq!(visit.vehicle_capacity, Load::new(10, 5, 0));
+        assert!(store_node.detail_badge.contains("+20m wait"));
+    }
+
+    #[test]
+    fn diagnose_unassigned_store_explains_capacity_and_shift_failures() {
+        let base_problem = Problem {
+            name: "diag".into(),
+            depots: vec![Depot {
+                id: DepotId(0),
+                name: "Depot".into(),
+                location: LatLon::new(-33.87, 151.21),
+                address: None,
+                timezone: None,
+            }],
+            stores: vec![],
+            vehicles: vec![Vehicle {
+                id: VehicleId(0),
+                name: "Truck".into(),
+                depot: DepotId(0),
+                capacity: Load::new(10, 4, 2),
+                max_duration: Minutes::from_minutes(480),
+                avg_speed_kmh: 50.0,
+            }],
+            drivers: vec![Driver {
+                id: DriverId(0),
+                name: "Driver".into(),
+                shifts: vec![Shift::new(
+                    Minutes::from_minutes(360),
+                    Minutes::from_minutes(720),
+                )],
+                fatigue_rules: FatigueRules::default(),
+            }],
+            cost: CostModel::default(),
+            chain_rules: ChainRules::default(),
+            curfews: CurfewRules::default(),
+            horizon_start: None,
+        };
+
+        let oversize_store = Store {
+            id: StoreId(0),
+            chain: Chain::General,
+            name: "Heavy Stop".into(),
+            location: LatLon::new(-33.88, 151.22),
+            address: None,
+            demand: Load::new(15, 0, 0),
+            service: Minutes::from_minutes(15),
+            receiving: vec![TimeWindow::new(
+                Minutes::from_minutes(400),
+                Minutes::from_minutes(600),
+            )],
+            timezone: None,
+        };
+        let cap_reason = diagnose_unassigned_store(&base_problem, &oversize_store);
+        assert!(
+            cap_reason.contains("exceeds vehicle capacity"),
+            "{cap_reason}"
+        );
+
+        let late_store = Store {
+            demand: Load::new(4, 0, 0),
+            receiving: vec![TimeWindow::new(
+                Minutes::from_minutes(900),
+                Minutes::from_minutes(1100),
+            )],
+            ..oversize_store
+        };
+        let shift_reason = diagnose_unassigned_store(&base_problem, &late_store);
+        assert!(
+            shift_reason.contains("do not overlap any driver shift"),
+            "{shift_reason}"
+        );
     }
 }

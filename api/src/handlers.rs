@@ -7,6 +7,7 @@
 //! - POST /solve - solve a problem (greedy or LNS, optional OSM routing)
 //! - GET /solutions - list recent solutions (summaries, optional ?problem_id filter)
 //! - GET /solutions/{id} - retrieve a solution
+//! - GET /solutions/{id}/geometry - road polylines per route
 //! - GET /solutions/{id}/kpis - KPI summary for a solution
 //! - GET /events - SSE stream of live solve events
 
@@ -30,7 +31,7 @@ use crate::db::{
     StoredRoutingProfile, import_problem, list_problems, list_solutions, load_problem,
     load_solution_with_problem, solution_routing_params, store_solution_with_profile,
 };
-use domain::{Problem, Solution};
+use domain::{LatLon, Problem, Solution};
 use routing::{CachedMatrix, MatrixStrategy, TruckProfile};
 
 /// Error returned from HTTP handlers, preserving the HTTP status code while
@@ -263,9 +264,46 @@ fn check_dense_ids(kind: &str, len: usize, ids: impl Iterator<Item = u32>) -> Re
     Ok(())
 }
 
+/// Hard ceiling on total nodes (depots + stores) matching the CLI solver limit.
+const MAX_SOLVE_NODES: usize = 5_000;
+
+/// Checks that a geographic coordinate is finite and within WGS-84 bounds.
+fn check_valid_location(kind: &str, id: u32, loc: LatLon) -> Result<(), ApiError> {
+    if !loc.lat.is_finite()
+        || !loc.lon.is_finite()
+        || !(-90.0..=90.0).contains(&loc.lat)
+        || !(-180.0..=180.0).contains(&loc.lon)
+    {
+        return Err(ApiError::bad_request(format!(
+            "{kind} {id} has invalid location ({}, {})",
+            loc.lat, loc.lon
+        )));
+    }
+    Ok(())
+}
+
+/// Checks an optional positive finite truck profile limit (`maxweight`, `maxheight`).
+fn check_positive_limit(name: &str, value: Option<f64>) -> Result<(), ApiError> {
+    if let Some(limit) = value
+        && (!limit.is_finite() || limit <= 0.0)
+    {
+        return Err(ApiError::bad_request(format!(
+            "{name} must be finite and > 0 (got {limit})"
+        )));
+    }
+    Ok(())
+}
+
 /// Validates the structure the solver relies on. Returns BAD_REQUEST when it
 /// cannot produce a valid plan.
 fn validate_problem(problem: &Problem) -> Result<(), ApiError> {
+    let node_count = problem.depots.len() + problem.stores.len();
+    if node_count > MAX_SOLVE_NODES {
+        return Err(ApiError::bad_request(format!(
+            "problem has {node_count} nodes (depots + stores), exceeding maximum {MAX_SOLVE_NODES}"
+        )));
+    }
+
     check_dense_ids(
         "depot",
         problem.depots.len(),
@@ -286,6 +324,24 @@ fn validate_problem(problem: &Problem) -> Result<(), ApiError> {
         problem.drivers.len(),
         problem.drivers.iter().map(|driver| driver.id.0),
     )?;
+
+    for depot in &problem.depots {
+        check_valid_location("depot", depot.id.0, depot.location)?;
+    }
+    for store in &problem.stores {
+        check_valid_location("store", store.id.0, store.location)?;
+    }
+
+    if let Some(vehicle) = problem
+        .vehicles
+        .iter()
+        .find(|vehicle| !vehicle.avg_speed_kmh.is_finite() || vehicle.avg_speed_kmh <= 0.0)
+    {
+        return Err(ApiError::bad_request(format!(
+            "vehicle {} has non-positive or non-finite avg_speed_kmh ({})",
+            vehicle.id.0, vehicle.avg_speed_kmh
+        )));
+    }
 
     if problem
         .vehicles
@@ -500,6 +556,8 @@ async fn solve_handler(
         .ok_or_else(|| ApiError::not_found(format!("problem {} not found", payload.problem_id)))?;
 
     validate_problem(&problem)?;
+    check_positive_limit("maxweight", payload.maxweight)?;
+    check_positive_limit("maxheight", payload.maxheight)?;
     let run_lns = payload.lns;
     let run_ls = payload.local_search;
     let strategy = if payload.ch {

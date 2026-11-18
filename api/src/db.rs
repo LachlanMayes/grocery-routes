@@ -109,9 +109,9 @@ pub async fn import_problem(pool: &SqlitePool, problem: &Problem) -> Result<Stri
 
 /// Summary of a stored problem, for the list endpoint.
 ///
-/// Counts are parsed from the stored JSON on read: the problems table has no
-/// count columns. Only used for recent-import dropdowns, so the cost of
-/// deserializing the handful of JSON blobs it reads is fine.
+/// Store, vehicle, and depot counts are read from stored columns when present,
+/// falling back to JSON deserialization for legacy rows created before counts
+/// were persisted.
 #[derive(Clone, Debug)]
 pub struct ProblemSummaryRow {
     pub id: String,
@@ -298,17 +298,6 @@ pub async fn store_solution_with_profile(
     .await
     .context("inserting solution")?;
     Ok(id)
-}
-
-/// The OSM extract a solution was solved against, if any. Used to redraw its
-/// route geometry.
-pub async fn solution_osm_path(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT osm_path FROM solutions WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.and_then(|(path,)| path))
 }
 
 /// The recorded OSM extract path and truck profile a solution was solved with.

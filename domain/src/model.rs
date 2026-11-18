@@ -55,7 +55,7 @@ pub struct ChainRules {
     /// Default receiving windows for IGA stores.
     pub iga: Vec<TimeWindow>,
     /// Empties each banner's stores hand back per visit, used by
-    /// [`crate::ledger`]. Illustrative fixture data; defaults to "collect
+    /// [`mod@crate::ledger`]. Illustrative fixture data; defaults to "collect
     /// nothing".
     #[serde(default)]
     pub returnables: ReturnablesDefaults,
@@ -92,7 +92,7 @@ impl ChainRules {
 }
 
 /// Empties (roll cages) each banner's stores hand back on a visit, used by
-/// [`crate::ledger`] to balance issued cages against collections.
+/// [`mod@crate::ledger`] to balance issued cages against collections.
 ///
 /// These are illustrative fixture defaults, not researched operator data;
 /// `Load::ZERO` (the default) means the banner collects nothing.

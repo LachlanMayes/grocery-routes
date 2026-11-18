@@ -1,5 +1,4 @@
-# This machine has no MSVC linker, so the repo pins the GNU toolchain
-# (the host default Rust toolchain here).
+# Pins the stable GNU toolchain on Windows (no MSVC linker required).
 [toolchain]
 channel = "stable-x86_64-pc-windows-gnu"
 components = ["clippy", "rustfmt"]

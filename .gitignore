@@ -1,3 +1,28 @@
+# Build outputs
 /target
-/data
 /out
+
+# Local datasets & runtime databases (keep tracked Solomon benchmark fixture)
+/data/*
+!/data/solomon/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.osm.pbf
+
+# Exported schedules & run sheets
+routes-*.csv
+runsheet-bol-*.html
+
+# Environment & credentials
+.env
+.env.*
+
+# Editor & OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

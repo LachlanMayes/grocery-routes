@@ -73,10 +73,10 @@ impl DistanceMatrix {
         }
     }
 
-    /// Builds a distance matrix from a [`CachedMatrix`] road-network result.
+    /// Builds a distance matrix from a [`routing::CachedMatrix`] road-network result.
     ///
     /// `entries` is the `Vec<Vec<Option<MatrixEntry>>>` returned by
-    /// [`CachedMatrix::matrix_for`], indexed `[from_node][to_node]` in depot-
+    /// [`routing::CachedMatrix::matrix_for`], indexed `[from_node][to_node]` in depot-
     /// then-store order. Legs with no road-network path (`None` entry) are
     /// marked unreachable.
     pub fn from_routing(

@@ -3,18 +3,10 @@
 //! Wraps reqwest to talk to the axum backend (M4 API).
 //! All methods return [`anyhow::Result`] so the UI can display errors.
 
-// Mirrors the API surface: some endpoints and payload fields are not yet
-// consumed by the console UI, so dead-code warnings are expected here.
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::time::Duration;
-
-/// Base URL for the API. Defaults to the loopback IPv4 address because on
-/// Windows `localhost` resolves to `::1` first and the API binds IPv4.
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
 
 /// Import request body: a serialized domain problem.
 #[derive(Clone, Debug, Serialize)]
@@ -52,12 +44,14 @@ pub struct SolveResponse {
     pub served: usize,
     pub total: usize,
     pub distance_km: f64,
+    #[allow(dead_code)] // Part of API JSON schema; cost is shown from solution KPIs.
     pub cost_cents: i64,
 }
 
 /// Solution response.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SolutionResponse {
+    #[allow(dead_code)] // Part of API JSON schema; requested id is already held by caller.
     pub id: String,
     pub problem_id: String,
     pub solution: serde_json::Value,
@@ -71,6 +65,7 @@ pub struct Kpis {
     pub serve_rate: f64,
     pub distance_km: f64,
     pub cost_cents: i64,
+    #[allow(dead_code)] // Read in unit tests and mirrored from API JSON schema.
     pub routes: usize,
 }
 
@@ -82,6 +77,7 @@ pub struct ProblemSummary {
     pub created_at: String,
     pub stores: usize,
     pub vehicles: usize,
+    #[allow(dead_code)] // Part of API JSON schema; dropdown summarizes stores and vehicles.
     pub depots: usize,
 }
 
@@ -126,7 +122,7 @@ pub struct SolveEvent {
 }
 
 /// HTTP client for the grocery-routes API.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ApiClient {
     inner: Client,
     solve_client: Client,
@@ -168,11 +164,6 @@ impl ApiClient {
         }
     }
 
-    /// Default client pointing at 127.0.0.1:8080.
-    pub fn default_local() -> Self {
-        Self::new(DEFAULT_BASE_URL)
-    }
-
     /// Returns the base URL of the API.
     pub fn base_url(&self) -> &str {
         &self.base_url
@@ -187,9 +178,7 @@ impl ApiClient {
             .send()
             .await
             .context("GET /problems")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /problems failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "GET /problems").await?;
         let json: Vec<ProblemSummary> = resp.json().await.context("parsing problems list")?;
         Ok(json)
     }
@@ -212,9 +201,7 @@ impl ApiClient {
             .send()
             .await
             .context("GET /solutions")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /solutions failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "GET /solutions").await?;
         let json: Vec<SolutionSummary> = resp.json().await.context("parsing solutions list")?;
         Ok(json)
     }
@@ -231,10 +218,7 @@ impl ApiClient {
             .send()
             .await
             .context("POST /problems")?;
-        if !resp.status().is_success() {
-            check_success(resp, "POST /problems").await?;
-            unreachable!();
-        }
+        let resp = check_success(resp, "POST /problems").await?;
         let json: ImportResponse = resp.json().await.context("parsing import response")?;
         Ok(json)
     }
@@ -247,9 +231,7 @@ impl ApiClient {
             .send()
             .await
             .context("GET /problems/{id}")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /problems/{id} failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "GET /problems/{id}").await?;
         let json: serde_json::Value = resp.json().await.context("parsing problem response")?;
         Ok(json)
     }
@@ -277,9 +259,7 @@ impl ApiClient {
             .send()
             .await
             .context("GET /solutions/{id}")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /solutions/{id} failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "GET /solutions/{id}").await?;
         let json: SolutionResponse = resp.json().await.context("parsing solution response")?;
         Ok(json)
     }
@@ -292,9 +272,7 @@ impl ApiClient {
             .send()
             .await
             .context("GET /solutions/{id}/kpis")?;
-        if !resp.status().is_success() {
-            anyhow::bail!("GET /solutions/{id}/kpis failed: {}", resp.status());
-        }
+        let resp = check_success(resp, "GET /solutions/{id}/kpis").await?;
         let json: Kpis = resp.json().await.context("parsing kpis response")?;
         Ok(json)
     }
@@ -314,12 +292,6 @@ impl ApiClient {
             .await
             .context("parsing solution geometry response")?;
         Ok(json)
-    }
-
-    /// GET /solutions/{id}/geometry — road polylines per route (each point
-    /// `[lat, lon]`); empty `routes` when the solution had no OSM extract.
-    pub async fn get_solution_geometry(&self, id: &str) -> Result<Vec<Vec<[f64; 2]>>> {
-        Ok(self.get_solution_geometry_detail(id).await?.routes)
     }
 
     /// Open an SSE event stream. Uses a dedicated client with no total request

@@ -3,7 +3,7 @@
 //!
 //! Each delivery hands the store `Store::demand` handling units; each visit
 //! collects the banner's configured empties
-//! ([`ChainRules::returnables_for`]) back onto the truck. The outstanding
+//! ([`crate::model::ChainRules::returnables_for`]) back onto the truck. The outstanding
 //! balance is what must still be recovered from that store:
 //!
 //! ```text

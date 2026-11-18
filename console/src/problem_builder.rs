@@ -72,6 +72,8 @@ pub(crate) struct ProblemBuilderState {
     pub lookup_status: Option<String>,
     pub show_map_picker: bool,
     pub map_pick_mode: MapPickMode,
+    pub show_bulk_paste: bool,
+    pub bulk_stops_input: String,
 
     // Draft document & active editor table
     pub section: EditorSection,
@@ -117,6 +119,8 @@ impl Default for ProblemBuilderState {
             lookup_status: None,
             show_map_picker: false,
             map_pick_mode: MapPickMode::AddStop,
+            show_bulk_paste: false,
+            bulk_stops_input: String::new(),
             section: EditorSection::Stores,
             draft,
             editor_error: None,
@@ -376,32 +380,50 @@ impl ProblemBuilderState {
         lon: f64,
         address_override: Option<String>,
     ) -> Result<()> {
-        anyhow::ensure!(
-            lat.is_finite() && (-90.0..=90.0).contains(&lat),
-            "latitude {lat} must be within -90..=90"
+        validate_lat_lon(lat, lon)?;
+        if self.draft.stores.len() == 1 && is_untouched_starter_store(&self.draft.stores[0]) {
+            self.draft.stores.clear();
+        }
+        let raw_name = self.stop_name_input.trim().to_string();
+        let address = address_override.or_else(|| {
+            let trimmed = self.stop_address_input.trim();
+            (!trimmed.is_empty() && parse_lat_lon_pair(trimmed).is_none())
+                .then(|| trimmed.to_string())
+        });
+        let demand = Load::new(
+            self.stop_demand_ambient,
+            self.stop_demand_chilled,
+            self.stop_demand_frozen,
         );
-        anyhow::ensure!(
-            lon.is_finite() && (-180.0..=180.0).contains(&lon),
-            "longitude {lon} must be within -180..=180"
-        );
+        self.push_configured_stop(&raw_name, lat, lon, address, demand);
+        reindex_problem(&mut self.draft);
+        self.stop_name_input.clear();
+        self.stop_address_input.clear();
+        self.stop_resolved_query.clear();
+        self.stop_matches.clear();
+        self.editor_error = None;
+        Ok(())
+    }
+
+    fn push_configured_stop(
+        &mut self,
+        raw_name: &str,
+        lat: f64,
+        lon: f64,
+        address: Option<String>,
+        demand: Load,
+    ) {
         let start = self.stop_window_start_minutes;
         let end = self.stop_window_end_minutes.max(start + 1);
-
         let idx = self.draft.stores.len();
-        let raw_name = self.stop_name_input.trim();
-        let name = if !raw_name.is_empty() {
-            raw_name.to_string()
+        let name = if !raw_name.trim().is_empty() {
+            raw_name.trim().to_string()
         } else {
             match self.stop_chain {
                 Chain::General => format!("Place {}", idx + 1),
                 other => format!("{other} #{}", idx + 1),
             }
         };
-        let address = address_override.or_else(|| {
-            let trimmed = self.stop_address_input.trim();
-            (!trimmed.is_empty() && parse_lat_lon_pair(trimmed).is_none())
-                .then(|| trimmed.to_string())
-        });
         let tz = self
             .use_city_timezones
             .then(|| self.city.iana_timezone().to_string());
@@ -412,11 +434,7 @@ impl ProblemBuilderState {
             name,
             location: LatLon::new(lat, lon),
             address,
-            demand: Load::new(
-                self.stop_demand_ambient,
-                self.stop_demand_chilled,
-                self.stop_demand_frozen,
-            ),
+            demand,
             service: Minutes::from_minutes(self.stop_service_minutes.max(0)),
             receiving: vec![TimeWindow::new(
                 Minutes::from_minutes(start),
@@ -424,13 +442,129 @@ impl ProblemBuilderState {
             )],
             timezone: tz,
         });
-        reindex_problem(&mut self.draft);
-        self.stop_name_input.clear();
-        self.stop_address_input.clear();
-        self.stop_resolved_query.clear();
+    }
+
+    /// Resets `self.draft.stores` to a single starter stop near the main depot.
+    pub(crate) fn clear_stores_to_starter(&mut self) {
+        let base = self
+            .draft
+            .depots
+            .first()
+            .map(|d| d.location)
+            .unwrap_or_else(|| {
+                let (lat, lon) = city_center(self.city);
+                LatLon::new(lat, lon)
+            });
+        let tz = self
+            .use_city_timezones
+            .then(|| self.city.iana_timezone().to_string());
+        self.draft.stores = vec![Store {
+            id: StoreId(0),
+            chain: Chain::General,
+            name: "Stop 1".to_string(),
+            location: LatLon::new(base.lat - 0.012, base.lon - 0.005),
+            address: None,
+            demand: Load::new(1, 0, 0),
+            service: Minutes::from_minutes(15),
+            receiving: vec![TimeWindow::new(
+                Minutes::from_minutes(360),
+                Minutes::from_minutes(1080),
+            )],
+            timezone: tz,
+        }];
         self.stop_matches.clear();
         self.editor_error = None;
-        Ok(())
+        reindex_problem(&mut self.draft);
+    }
+
+    /// Parses lines from `bulk_stops_input` (`Name, lat, lon[, A, C, F]` or `lat, lon`)
+    /// and appends valid places into `self.draft`.
+    pub(crate) fn add_bulk_coord_lines(&mut self) -> Result<usize> {
+        let mut parsed_entries: Vec<(String, f64, f64, Load)> = Vec::new();
+        let default_demand = Load::new(
+            self.stop_demand_ambient,
+            self.stop_demand_chilled,
+            self.stop_demand_frozen,
+        );
+
+        for (line_idx, raw_line) in self.bulk_stops_input.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+            if parsed_entries.is_empty()
+                && parts.len() >= 2
+                && parts[1].parse::<f64>().is_err()
+                && (parts[0].eq_ignore_ascii_case("name")
+                    || parts[1].eq_ignore_ascii_case("lat")
+                    || parts[1].eq_ignore_ascii_case("latitude"))
+            {
+                continue;
+            }
+
+            let line_no = line_idx + 1;
+            let entry = match parts.as_slice() {
+                [lat_s, lon_s] => {
+                    let lat: f64 = lat_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid latitude '{lat_s}'"))?;
+                    let lon: f64 = lon_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid longitude '{lon_s}'"))?;
+                    (String::new(), lat, lon, default_demand)
+                }
+                [name, lat_s, lon_s] => {
+                    let lat: f64 = lat_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid latitude '{lat_s}'"))?;
+                    let lon: f64 = lon_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid longitude '{lon_s}'"))?;
+                    ((*name).to_string(), lat, lon, default_demand)
+                }
+                [name, lat_s, lon_s, a_s, c_s, f_s] => {
+                    let lat: f64 = lat_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid latitude '{lat_s}'"))?;
+                    let lon: f64 = lon_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid longitude '{lon_s}'"))?;
+                    let a: u32 = a_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid ambient '{a_s}'"))?;
+                    let c: u32 = c_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid chilled '{c_s}'"))?;
+                    let f: u32 = f_s
+                        .parse()
+                        .with_context(|| format!("line {line_no}: invalid frozen '{f_s}'"))?;
+                    ((*name).to_string(), lat, lon, Load::new(a, c, f))
+                }
+                _ => anyhow::bail!(
+                    "line {line_no}: expected 'lat, lon', 'Name, lat, lon', or 'Name, lat, lon, A, C, F'"
+                ),
+            };
+            validate_lat_lon(entry.1, entry.2)
+                .with_context(|| format!("line {line_no} coordinates out of range"))?;
+            parsed_entries.push(entry);
+        }
+
+        if parsed_entries.is_empty() {
+            anyhow::bail!("enter at least one line in the format 'Name, lat, lon[, A, C, F]'");
+        }
+
+        if self.draft.stores.len() == 1 && is_untouched_starter_store(&self.draft.stores[0]) {
+            self.draft.stores.clear();
+        }
+        let added = parsed_entries.len();
+        for (name, lat, lon, demand) in parsed_entries {
+            self.push_configured_stop(&name, lat, lon, None, demand);
+        }
+        reindex_problem(&mut self.draft);
+        self.bulk_stops_input.clear();
+        self.editor_error = None;
+        Ok(added)
     }
 
     /// Attempts to add a stop from `stop_*` fields directly. Returns `Ok(false)`
@@ -586,6 +720,93 @@ impl ProblemBuilderState {
         }
         reindex_problem(&mut self.draft);
     }
+
+    /// Ensures `self.draft.drivers` has an entry with at least one shift at `vehicle_idx`.
+    pub(crate) fn ensure_driver_for_vehicle(&mut self, vehicle_idx: usize) {
+        while self.draft.drivers.len() <= vehicle_idx {
+            let drv_idx = self.draft.drivers.len();
+            self.draft.drivers.push(Driver {
+                id: DriverId(drv_idx as u32),
+                name: format!("Driver {}", drv_idx + 1),
+                shifts: vec![Shift::new(
+                    Minutes::from_minutes(330),
+                    Minutes::from_minutes(1080),
+                )],
+                fatigue_rules: FatigueRules::default(),
+            });
+        }
+        if self.draft.drivers[vehicle_idx].shifts.is_empty() {
+            self.draft.drivers[vehicle_idx].shifts.push(Shift::new(
+                Minutes::from_minutes(330),
+                Minutes::from_minutes(1080),
+            ));
+        }
+        reindex_problem(&mut self.draft);
+    }
+
+    /// Expands all driver primary shifts and vehicle `max_duration` limits to cover
+    /// every stop receiving window in the draft (with depot stem margins).
+    pub(crate) fn auto_fit_shifts_to_windows(&mut self) {
+        let mut earliest: Option<i64> = None;
+        let mut latest: Option<i64> = None;
+        for store in &self.draft.stores {
+            let windows = self.draft.chain_rules.windows_for_store(store);
+            if let Some(windows) = windows {
+                for w in windows {
+                    let s = w.start.minutes();
+                    let e = w.end.minutes();
+                    earliest = Some(earliest.map_or(s, |cur| cur.min(s)));
+                    latest = Some(latest.map_or(e, |cur| cur.max(e)));
+                }
+            }
+        }
+        let earliest_start = earliest.unwrap_or(360);
+        let latest_end = latest.unwrap_or(1080);
+        let min_start = (earliest_start - 60).max(0);
+        let max_end = (latest_end + 120).max(min_start + 60);
+
+        for idx in 0..self.draft.vehicles.len() {
+            self.ensure_driver_for_vehicle(idx);
+        }
+        for driver in &mut self.draft.drivers {
+            let shift = Shift::new(
+                Minutes::from_minutes(min_start),
+                Minutes::from_minutes(max_end),
+            );
+            if driver.shifts.is_empty() {
+                driver.shifts.push(shift);
+            } else {
+                driver.shifts[0] = shift;
+            }
+        }
+        let needed_dur = Minutes::from_minutes(max_end - min_start);
+        for vehicle in &mut self.draft.vehicles {
+            if vehicle.max_duration < needed_dur {
+                vehicle.max_duration = needed_dur;
+            }
+        }
+        reindex_problem(&mut self.draft);
+    }
+}
+
+fn validate_lat_lon(lat: f64, lon: f64) -> Result<()> {
+    anyhow::ensure!(
+        lat.is_finite() && (-90.0..=90.0).contains(&lat),
+        "latitude {lat} must be within -90..=90"
+    );
+    anyhow::ensure!(
+        lon.is_finite() && (-180.0..=180.0).contains(&lon),
+        "longitude {lon} must be within -180..=180"
+    );
+    Ok(())
+}
+
+fn is_untouched_starter_store(store: &Store) -> bool {
+    store.name == "Stop 1"
+        && store.address.is_none()
+        && store.chain == Chain::General
+        && store.demand == Load::new(1, 0, 0)
+        && store.service == Minutes::from_minutes(15)
 }
 
 /// Ensures contiguous `0..len` ids across depots, stores, vehicles, and drivers,
@@ -705,8 +926,9 @@ mod tests {
         builder.stop_name_input = "Client Warehouse".into();
         builder.stop_address_input = "-33.9000, 151.1900".into();
         assert!(builder.try_add_stop_from_inputs().unwrap());
-        assert_eq!(builder.draft.stores.len(), 2);
-        let added = &builder.draft.stores[1];
+        // Adding the first real place automatically replaces the untouched "Stop 1" starter.
+        assert_eq!(builder.draft.stores.len(), 1);
+        let added = &builder.draft.stores[0];
         assert_eq!(added.name, "Client Warehouse");
         assert_eq!(added.chain, Chain::General);
         assert_eq!(added.address, None);
@@ -725,8 +947,9 @@ mod tests {
             },
         );
         assert!(builder.try_add_stop_from_inputs().unwrap());
+        assert_eq!(builder.draft.stores.len(), 2);
         assert_eq!(
-            builder.draft.stores[2].address.as_deref(),
+            builder.draft.stores[1].address.as_deref(),
             Some("45 King Street, Newtown NSW 2042")
         );
         assert!(builder.build_validated_json().is_ok());
@@ -800,5 +1023,32 @@ mod tests {
         let mut reloaded = ProblemBuilderState::default();
         reloaded.load_from_json(&serialized).unwrap();
         assert_eq!(reloaded.draft.name, builder.draft.name);
+    }
+
+    #[test]
+    fn bulk_paste_and_auto_fit_shifts_update_draft() {
+        let mut builder = ProblemBuilderState {
+            bulk_stops_input:
+                "name,lat,lon\n# comment\nBakery, -33.860, 151.200\nDeli, -33.875, 151.215, 2, 1, 0\n-33.880, 151.220"
+                    .into(),
+            ..Default::default()
+        };
+        let count = builder.add_bulk_coord_lines().unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(builder.draft.stores.len(), 3);
+        assert_eq!(builder.draft.stores[0].name, "Bakery");
+        assert_eq!(builder.draft.stores[1].demand, Load::new(2, 1, 0));
+        assert_eq!(builder.draft.stores[2].name, "Place 3");
+        assert!(builder.bulk_stops_input.is_empty());
+
+        builder.draft.stores[1].receiving = vec![TimeWindow::new(
+            Minutes::from_minutes(240),
+            Minutes::from_minutes(1260),
+        )];
+        builder.auto_fit_shifts_to_windows();
+        let shift = &builder.draft.drivers[0].shifts[0];
+        assert_eq!(shift.start, Minutes::from_minutes(180));
+        assert_eq!(shift.end, Minutes::from_minutes(1380));
+        assert!(builder.draft.vehicles[0].max_duration >= Minutes::from_minutes(1200));
     }
 }

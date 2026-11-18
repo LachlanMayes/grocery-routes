@@ -6,8 +6,7 @@ Date: 2026-11-07. Run from the repository root:
 cargo audit
 ```
 
-`cargo audit` scans `Cargo.lock`, which covers every platform and feature,
-not just this machine's build. Configuration lives in
+`cargo audit` scans `Cargo.lock`, which covers every target platform and feature. Configuration lives in
 [`.cargo/audit.toml`](../.cargo/audit.toml) (this cargo-audit build reads
 the config from `.cargo/`, not the repository root); this page records why
 each entry exists. Currently the audit exits 0: two advisories are ignored for
@@ -46,7 +45,7 @@ against them.
   bump was reverted to keep the graph buildable. The advisory is ignored with
   a dated reason above; no operator-facing path opens a second-party SQLite
   file. `cargo audit` exits 0 with 2 ignores.
-- **2026-11-09** - post-sprint audit re-check: still 1 ignore (rsa,
+- **2026-11-09** - audit re-check: still 1 ignore (rsa,
   unreachable, upstream unfixed) and 4 informational warnings (zbus family
   on the Linux-only accessibility path, `memmap2` 0.5.10 via `osmpbf`
   0.3.8). No new advisories; `cargo audit --no-fetch` exits 0.

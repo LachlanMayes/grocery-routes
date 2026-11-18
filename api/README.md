@@ -1,5 +1,6 @@
 # `api` — axum + SQLite HTTP API
 
-Endpoints for import/solve/solution/KPIs and an SSE solve-event stream.
-OSM graphs cached per canonical PBF path. Request body limit 16 MiB.
-See `docs/API.md`. The console (`console`) is the egui client.
+Endpoints for `/problems`, `/solve`, `/solutions`, `/solutions/{id}/geometry`,
+`/solutions/{id}/kpis`, and the `/events` SSE solve-event stream. OSM graphs
+are cached per canonical PBF path with a 16 MiB request body limit.
+See `docs/API.md`. `console` embeds this API in-process by default (`--no-embedded-api` to connect externally).

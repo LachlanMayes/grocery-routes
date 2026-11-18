@@ -3,6 +3,9 @@ name = "routing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "OSM PBF graph ingestion, heavy-vehicle constraint filtering, Contraction Hierarchies, time-dependent curfews, and corridor auditing"
 
 [lints]
 workspace = true

@@ -1,7 +1,8 @@
 //! Main egui application state and UI.
 //!
 //! Provides a tabbed operator console:
-//! - **Import**: paste a problem JSON and POST it to the API
+//! - **Import**: paste a problem JSON, build custom routes, and POST to the API
+//! - **Truck Load**: configure truck dimensions/volume/payload and visualize packing
 //! - **Solve**: select a problem, choose solver options, kick off a solve
 //! - **Solutions**: list and inspect solved plans
 //! - **KPIs**: view KPI summary for a solution
@@ -19,14 +20,15 @@ use crate::api_client::{
     SolveResponse, from_json,
 };
 use crate::geocode::{GeocodeMatch, GeocodeResponse, GeocodeTarget};
-use crate::kpis::{KpisAction, KpisUiState, render_kpis_dashboard};
+use crate::kpis::{KpisAction, KpisUiState, csv_escape, render_kpis_dashboard};
 use crate::map_nodes::{
-    MapNodeInfo, MapNodeKind, collect_map_nodes, format_windows, nodes_near_pointer,
-    pick_non_overlapping_rect,
+    MapNodeInfo, MapNodeKind, collect_map_nodes, diagnose_unassigned_store, format_windows,
+    nodes_near_pointer, pick_non_overlapping_rect,
 };
 use crate::problem_builder::{
     ALL_CHAINS, EditorSection, MapPickMode, ProblemBuilderState, city_center, city_label,
 };
+use crate::truck_load::{LoadTargetSource, TruckLoadAction, TruckLoadState, render_truck_load_tab};
 use eframe::egui;
 use tokio::runtime::Handle;
 use tokio_stream::StreamExt;
@@ -35,6 +37,7 @@ use walkers::{Map, MapMemory, Plugin, Projector, lon_lat};
 /// Messages passed from background tasks to the UI thread.
 enum Msg {
     ProblemImported(Result<String, anyhow::Error>),
+    ProblemFetchedForBuilder(Result<Box<domain::Problem>, anyhow::Error>),
     GeocodeCompleted(Result<GeocodeResponse, anyhow::Error>),
     SolutionSolved(Result<SolveResponse, anyhow::Error>),
     SolutionFetched(Result<Box<SolutionBundle>, anyhow::Error>),
@@ -70,6 +73,7 @@ pub(crate) struct KpisBundle {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
     Import,
+    Truck,
     Solve,
     Solutions,
     Kpis,
@@ -95,6 +99,9 @@ pub struct ConsoleApp {
     builder_map_fit_pending: bool,
     geocode_client: reqwest::Client,
 
+    // Truck Load tab state
+    truck_ui: TruckLoadState,
+
     // Solve tab state
     problem_id_input: String,
     solve_lns: bool,
@@ -110,7 +117,10 @@ pub struct ConsoleApp {
     // Solutions tab state
     solution_id_input: String,
     solution_status: Option<Result<Box<SolutionBundle>, anyhow::Error>>,
+    solution_export_status: Option<(bool, String)>,
     selected_route: usize,
+    auto_solve_after_import: bool,
+    open_map_after_solve: bool,
 
     // KPIs tab state
     kpis_id_input: String,
@@ -148,6 +158,15 @@ pub struct ConsoleApp {
     recent_solutions: Vec<SolutionSummary>,
     problems_error: Option<String>,
     solutions_error: Option<String>,
+}
+
+impl std::fmt::Debug for ConsoleApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsoleApp")
+            .field("api_base_url", &self.api_base_url)
+            .field("tab", &self.tab)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A solved event for display in the events tab.
@@ -190,9 +209,10 @@ impl ConsoleApp {
             builder_map_memory: MapMemory::default(),
             builder_map_fit_pending: true,
             geocode_client: reqwest::Client::new(),
+            truck_ui: TruckLoadState::default(),
             problem_id_input: String::new(),
             solve_lns: false,
-            solve_ls: false,
+            solve_ls: true,
             solve_ch: false,
             osm_path: default_osm_path,
             maxweight: String::new(),
@@ -202,7 +222,10 @@ impl ConsoleApp {
             solve_in_flight: false,
             solution_id_input: String::new(),
             solution_status: None,
+            solution_export_status: None,
             selected_route: 0,
+            auto_solve_after_import: false,
+            open_map_after_solve: false,
             kpis_id_input: String::new(),
             kpis_status: None,
             kpis_ui: KpisUiState::default(),
@@ -285,15 +308,17 @@ impl eframe::App for ConsoleApp {
 impl ConsoleApp {
     /// Render the left-hand navigation sidebar.
     fn render_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Route Planner");
+        ui.heading("TMS Control Tower");
+        ui.weak("Orders · Cubing · Dispatch · ESG");
         ui.separator();
 
-        self.tab_button(ui, "Import", Tab::Import);
-        self.tab_button(ui, "Solve", Tab::Solve);
-        self.tab_button(ui, "Solutions", Tab::Solutions);
-        self.tab_button(ui, "KPIs", Tab::Kpis);
-        self.tab_button(ui, "Map", Tab::Map);
-        self.tab_button(ui, "Events", Tab::Events);
+        self.tab_button(ui, "Orders & Network", Tab::Import);
+        self.tab_button(ui, "Load Planner", Tab::Truck);
+        self.tab_button(ui, "Optimizer", Tab::Solve);
+        self.tab_button(ui, "Dispatch & BOL", Tab::Solutions);
+        self.tab_button(ui, "Freight KPIs", Tab::Kpis);
+        self.tab_button(ui, "Fleet Map", Tab::Map);
+        self.tab_button(ui, "Control Tower", Tab::Events);
 
         ui.separator();
         ui.label(format!("API: {}", self.client.base_url()));
@@ -318,6 +343,7 @@ impl ConsoleApp {
     fn render_content(&mut self, ui: &mut egui::Ui) {
         match self.tab {
             Tab::Import => self.render_import_tab(ui),
+            Tab::Truck => self.render_truck_tab(ui),
             Tab::Solve => self.render_solve_tab(ui),
             Tab::Solutions => self.render_solutions_tab(ui),
             Tab::Kpis => self.render_kpis_tab(ui),
@@ -330,14 +356,41 @@ impl ConsoleApp {
     fn handle_msg(&mut self, msg: Msg) {
         match msg {
             Msg::ProblemImported(res) => {
-                // Pre-fill the solve tab so the ID does not have to be copied
-                // by hand after every import, and refresh the dropdowns.
-                if let Ok(id) = &res {
-                    self.problem_id_input.clone_from(id);
-                    self.refresh_lists();
+                let auto_solve = std::mem::take(&mut self.auto_solve_after_import);
+                match &res {
+                    Ok(id) => {
+                        self.problem_id_input.clone_from(id);
+                        self.refresh_lists();
+                        if auto_solve {
+                            self.start_solve();
+                        }
+                    }
+                    Err(_) => {
+                        self.open_map_after_solve = false;
+                    }
                 }
                 self.import_status = Some(res);
             }
+            Msg::ProblemFetchedForBuilder(res) => match res {
+                Ok(problem) => match serde_json::to_string_pretty(&problem) {
+                    Ok(json) => {
+                        if let Err(err) = self.problem_builder.load_from_json(&json) {
+                            self.problem_builder.editor_error = Some(err.to_string());
+                        } else {
+                            self.import_json = json;
+                            self.builder_map_fit_pending = true;
+                            self.problem_builder.lookup_status =
+                                Some(format!("Loaded problem '{}' into builder.", problem.name));
+                        }
+                    }
+                    Err(err) => {
+                        self.problem_builder.editor_error = Some(err.to_string());
+                    }
+                },
+                Err(err) => {
+                    self.problem_builder.editor_error = Some(format!("Loading problem: {err}"));
+                }
+            },
             Msg::GeocodeCompleted(res) => {
                 self.problem_builder.lookup_in_flight = None;
                 let auto_add = std::mem::take(&mut self.problem_builder.lookup_pending_add_stop);
@@ -390,13 +443,20 @@ impl ConsoleApp {
                 }
             }
             Msg::SolutionSolved(res) => {
-                // Pre-fill the solutions and KPIs tabs with the new solution.
+                // Pre-fill and preload Solutions, KPIs, and Map tabs with the new solution.
                 self.solve_in_flight = false;
+                let open_map = std::mem::take(&mut self.open_map_after_solve);
                 if let Ok(resp) = &res {
                     self.solution_id_input.clone_from(&resp.id);
                     self.kpis_id_input.clone_from(&resp.id);
                     self.map_id_input.clone_from(&resp.id);
+                    self.load_solution(resp.id.clone());
+                    self.load_kpis(resp.id.clone());
+                    self.load_map(resp.id.clone());
                     self.refresh_lists();
+                    if open_map {
+                        self.tab = Tab::Map;
+                    }
                 }
                 self.solve_status = Some(res);
             }
@@ -486,9 +546,9 @@ impl ConsoleApp {
         egui::ScrollArea::vertical()
             .id_salt("import_tab_scroll")
             .show(ui, |ui| {
-                ui.heading("Import / Set Problem");
+                ui.heading("Orders, Hubs & Fleet Network");
                 ui.label(
-                    "Set an existing problem, configure/generate one below, load a JSON file, or paste JSON.",
+                    "Load an existing order network, configure depots/consignments/vehicles & rate cards below, or import JSON.",
                 );
 
                 ui.add_space(6.0);
@@ -502,10 +562,19 @@ impl ConsoleApp {
                     ) {
                         self.refresh_lists();
                     }
-                    if !self.problem_id_input.trim().is_empty()
-                        && ui.button("Go to Solve").clicked()
-                    {
-                        self.tab = Tab::Solve;
+                    if !self.problem_id_input.trim().is_empty() {
+                        if ui
+                            .button("Load into Builder")
+                            .on_hover_text(
+                                "Fetch this problem from the API into the visual builder for editing.",
+                            )
+                            .clicked()
+                        {
+                            self.load_problem_into_builder(self.problem_id_input.clone());
+                        }
+                        if ui.button("Go to Solve").clicked() {
+                            self.tab = Tab::Solve;
+                        }
                     }
                 });
 
@@ -521,55 +590,60 @@ impl ConsoleApp {
                 );
                 self.handle_builder_action(action);
 
-                ui.add_space(8.0);
-                ui.label("Load a file on disk:");
-                ui.horizontal(|ui| {
-                    if ui.button("Browse…").clicked()
-                        && let Some(path) = rfd::FileDialog::new()
-                            .set_title("Choose a problem JSON file")
-                            .add_filter("JSON", &["json"])
-                            .set_directory(self.browse_dir())
-                            .pick_file()
-                    {
-                        self.import_path = path.display().to_string();
-                        self.start_import_from_file();
-                    }
-                    ui.label("Path:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.import_path)
-                            .desired_width(320.0)
-                            .hint_text("data/demo/problem.json"),
-                    );
-                    if ui.button("Import from file").clicked() {
-                        self.start_import_from_file();
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.label("…or inspect/paste a problem JSON document (`domain::Problem`):");
-
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("import_scroll")
-                    .max_height(260.0)
+                ui.add_space(6.0);
+                egui::CollapsingHeader::new("File Import / Raw Problem JSON")
+                    .id_salt("raw_problem_json_section")
+                    .default_open(false)
                     .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.import_json)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(10),
-                        );
-                    });
+                        ui.label("Load a file on disk:");
+                        ui.horizontal(|ui| {
+                            if ui.button("Browse…").clicked()
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Choose a problem JSON file")
+                                    .add_filter("JSON", &["json"])
+                                    .set_directory(self.browse_dir())
+                                    .pick_file()
+                            {
+                                self.import_path = path.display().to_string();
+                                self.start_import_from_file();
+                            }
+                            ui.label("Path:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.import_path)
+                                    .desired_width(320.0)
+                                    .hint_text("data/demo/problem.json"),
+                            );
+                            if ui.button("Import from file").clicked() {
+                                self.start_import_from_file();
+                            }
+                        });
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Import Problem").clicked() {
-                        self.start_import();
-                    }
-                    if ui.button("Clear").clicked() {
-                        self.import_json.clear();
-                        self.import_status = None;
-                    }
-                });
+                        ui.add_space(8.0);
+                        ui.label("…or inspect/paste a problem JSON document (`domain::Problem`):");
+
+                        ui.add_space(4.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("import_scroll")
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.import_json)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(10),
+                                );
+                            });
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Import Problem").clicked() {
+                                self.start_import();
+                            }
+                            if ui.button("Clear").clicked() {
+                                self.import_json.clear();
+                                self.import_status = None;
+                            }
+                        });
+                    });
 
                 if self.render_import_status(ui) {
                     self.tab = Tab::Solve;
@@ -621,6 +695,18 @@ impl ConsoleApp {
                 }
             }
             BuilderAction::ImportDraft => self.import_validated_draft(),
+            BuilderAction::ImportAndSolve => {
+                self.auto_solve_after_import = true;
+                self.open_map_after_solve = true;
+                self.import_validated_draft();
+            }
+            BuilderAction::OpenTruckOptimizer(veh_idx) => {
+                if let Some(idx) = veh_idx {
+                    self.truck_ui.selected_vehicle_idx = idx;
+                }
+                self.truck_ui.target_source = LoadTargetSource::DraftVehicle;
+                self.tab = Tab::Truck;
+            }
             BuilderAction::SaveJson => {
                 let json_result = if self.import_json.trim().is_empty() {
                     self.problem_builder.build_validated_json()
@@ -718,9 +804,29 @@ impl ConsoleApp {
                 self.spawn_import(json);
             }
             Err(err) => {
+                self.auto_solve_after_import = false;
+                self.open_map_after_solve = false;
                 self.problem_builder.editor_error = Some(err.to_string());
             }
         }
+    }
+
+    fn load_problem_into_builder(&self, id: String) {
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        let repaint = Arc::clone(&self.repaint_ctx);
+        self.runtime.spawn(async move {
+            let result = async {
+                let raw = client.get_problem(&id).await?;
+                from_json::<domain::Problem>(&raw).map(Box::new)
+            }
+            .await;
+            send_msg(&tx, &repaint, Msg::ProblemFetchedForBuilder(result));
+        });
     }
 
     fn sync_builder_json(&mut self) {
@@ -853,8 +959,8 @@ impl ConsoleApp {
     // ── Solve tab ───────────────────────────────────────────────────────
 
     fn render_solve_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Solve Problem");
-        ui.label("Enter a problem ID and choose solver options:");
+        ui.heading("Route Optimizer & Road Compliance");
+        ui.label("Select an imported network and choose solver & HGV road legality options:");
 
         ui.add_space(8.0);
         ui.label("Problem ID:");
@@ -974,6 +1080,7 @@ impl ConsoleApp {
         let tx = self.msg_tx.clone();
         let repaint = Arc::clone(&self.repaint_ctx);
         self.solution_status = None;
+        self.solution_export_status = None;
         self.selected_route = 0;
         self.runtime.spawn(async move {
             let result = fetch_solution_bundle(client, id).await;
@@ -1060,11 +1167,12 @@ impl ConsoleApp {
     // ── Solutions tab ───────────────────────────────────────────────────
 
     fn render_solutions_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("View Solution");
-        ui.label("Enter a solution ID to retrieve it:");
+        ui.heading("Dispatch Board, Manifests & BOL");
+        ui.label("Manage live route stop sequences, check Chain of Responsibility (CoR) compliance, and export BOL/run sheets:");
 
         ui.add_space(8.0);
         ui.label("Solution ID:");
+        let prev_solution_id = self.solution_id_input.clone();
         if solutions_picker(
             ui,
             "recent_solutions_solutions",
@@ -1073,6 +1181,9 @@ impl ConsoleApp {
             &mut self.solution_id_input,
         ) {
             self.refresh_lists();
+        }
+        if self.solution_id_input != prev_solution_id && !self.solution_id_input.trim().is_empty() {
+            self.load_solution(self.solution_id_input.clone());
         }
         ui.text_edit_singleline(&mut self.solution_id_input);
 
@@ -1084,27 +1195,179 @@ impl ConsoleApp {
         });
 
         ui.add_space(8.0);
-        match &self.solution_status {
-            Some(Ok(bundle)) => Self::render_solution_view(ui, bundle, &mut self.selected_route),
+        let view_action = match self.solution_status.as_ref() {
+            Some(Ok(bundle)) => Self::render_solution_view(
+                ui,
+                bundle,
+                &mut self.selected_route,
+                &self.solution_export_status,
+            ),
             Some(Err(e)) => {
                 ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                SolutionViewAction::None
             }
-            None => {}
+            None => SolutionViewAction::None,
+        };
+        match &view_action {
+            SolutionViewAction::None => {}
+            SolutionViewAction::OpenTruckLoad(route_idx) => {
+                self.truck_ui.selected_route_idx = *route_idx;
+                self.truck_ui.target_source = LoadTargetSource::SolvedRoute;
+                self.tab = Tab::Truck;
+            }
+            SolutionViewAction::CopyManifest => {
+                if let Some(Ok(bundle)) = self.solution_status.as_ref() {
+                    let text = format_route_manifest_text(bundle);
+                    ui.ctx().copy_text(text);
+                    self.solution_export_status =
+                        Some((false, "Copied route manifest to clipboard.".to_string()));
+                }
+            }
+            SolutionViewAction::ExportScheduleCsv => {
+                let export_payload = self
+                    .solution_status
+                    .as_ref()
+                    .and_then(|res| res.as_ref().ok())
+                    .map(|bundle| (bundle.id.clone(), format_route_schedule_csv(bundle)));
+                if let Some((solution_id, csv)) = export_payload
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_title("Export route schedule CSV")
+                        .add_filter("CSV", &["csv"])
+                        .set_directory(self.browse_dir())
+                        .set_file_name(format!("routes-{solution_id}.csv"))
+                        .save_file()
+                {
+                    self.solution_export_status = Some(match std::fs::write(&path, csv) {
+                        Ok(()) => (false, format!("Saved schedule CSV to {}", path.display())),
+                        Err(err) => (true, format!("Saving CSV failed: {err}")),
+                    });
+                }
+            }
+            SolutionViewAction::ExportRunSheetHtml => {
+                let export_payload = self
+                    .solution_status
+                    .as_ref()
+                    .and_then(|res| res.as_ref().ok())
+                    .map(|bundle| (bundle.id.clone(), format_driver_run_sheet_html(bundle)));
+                if let Some((solution_id, html)) = export_payload
+                    && let Some(path) = rfd::FileDialog::new()
+                        .set_title("Export Driver Run Sheet & BOL (HTML)")
+                        .add_filter("HTML", &["html"])
+                        .set_directory(self.browse_dir())
+                        .set_file_name(format!("runsheet-bol-{solution_id}.html"))
+                        .save_file()
+                {
+                    self.solution_export_status = Some(match std::fs::write(&path, html) {
+                        Ok(()) => (
+                            false,
+                            format!("Saved Run Sheet / BOL to {}", path.display()),
+                        ),
+                        Err(err) => (true, format!("Saving Run Sheet failed: {err}")),
+                    });
+                }
+            }
+            SolutionViewAction::MoveStop { .. }
+            | SolutionViewAction::UnassignStop { .. }
+            | SolutionViewAction::AssignStoreToRoute { .. } => {
+                let edited_bundle = self
+                    .solution_status
+                    .as_ref()
+                    .and_then(|res| res.as_ref().ok())
+                    .map(|bundle| (**bundle).clone());
+                if let Some(mut edited_bundle) = edited_bundle
+                    && let Some(msg) =
+                        apply_dispatch_edit_to_bundle(&mut edited_bundle, &view_action)
+                {
+                    self.sync_bundle_after_dispatch_edit(edited_bundle, msg);
+                }
+            }
+        }
+    }
+
+    fn render_truck_tab(&mut self, ui: &mut egui::Ui) {
+        let action = {
+            let bundle = self
+                .solution_status
+                .as_ref()
+                .and_then(|res| res.as_ref().ok())
+                .map(|b| &**b)
+                .or_else(|| {
+                    self.kpis_status
+                        .as_ref()
+                        .and_then(|res| res.as_ref().ok())
+                        .map(|kb| &kb.detail)
+                })
+                .or_else(|| {
+                    self.map_status
+                        .as_ref()
+                        .and_then(|res| res.as_ref().ok())
+                        .map(|b| &**b)
+                });
+            render_truck_load_tab(ui, &mut self.truck_ui, &self.problem_builder.draft, bundle)
+        };
+        if let Some(action) = action {
+            match action {
+                TruckLoadAction::SetDraftVehicleCapacity {
+                    vehicle_idx,
+                    capacity,
+                } => {
+                    if let Some(veh) = self.problem_builder.draft.vehicles.get_mut(vehicle_idx) {
+                        veh.capacity = capacity;
+                        let name = veh.name.clone();
+                        self.sync_builder_json();
+                        self.truck_ui.status_banner = Some(format!(
+                            "Updated draft V{vehicle_idx} ({name}) capacity to A:{} C:{} F:{} ({} total units).",
+                            capacity.ambient,
+                            capacity.chilled,
+                            capacity.frozen,
+                            capacity.total()
+                        ));
+                    }
+                }
+                TruckLoadAction::SetAllDraftVehicleCapacities { capacity } => {
+                    let count = self.problem_builder.draft.vehicles.len();
+                    for veh in &mut self.problem_builder.draft.vehicles {
+                        veh.capacity = capacity;
+                    }
+                    self.sync_builder_json();
+                    self.truck_ui.status_banner = Some(format!(
+                        "Updated all {count} draft vehicle(s) to capacity A:{} C:{} F:{} ({} total units).",
+                        capacity.ambient,
+                        capacity.chilled,
+                        capacity.frozen,
+                        capacity.total()
+                    ));
+                }
+                TruckLoadAction::SyncSolverLimits {
+                    max_weight_tonnes,
+                    max_height_m,
+                } => {
+                    self.hgv = true;
+                    self.maxweight = format!("{max_weight_tonnes:.1}");
+                    self.maxheight = format!("{max_height_m:.2}");
+                    self.truck_ui.status_banner = Some(format!(
+                        "Synced Solve tab road limits: HGV = ON, maxweight = {:.1} t, maxheight = {:.2} m.",
+                        max_weight_tonnes, max_height_m
+                    ));
+                }
+            }
         }
     }
 
     /// Render the structured solution view: summary strip, route table with a
-    /// per-route timeline, unassigned stores, and a collapsible raw JSON
-    /// debug section.
+    /// detailed per-route timeline, unassigned store diagnostics, and a collapsible
+    /// raw JSON debug section.
     fn render_solution_view(
         ui: &mut egui::Ui,
         bundle: &SolutionBundle,
         selected_route: &mut usize,
-    ) {
+        export_status: &Option<(bool, String)>,
+    ) -> SolutionViewAction {
+        let mut action = SolutionViewAction::None;
         ui.separator();
 
         // Summary strip of stat cards.
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             stat_card(
                 ui,
                 "Served",
@@ -1127,8 +1390,48 @@ impl ConsoleApp {
             );
             copy_button(ui, "Copy solution ID", &bundle.id);
             copy_button(ui, "Copy problem ID", &bundle.problem_id);
+            if ui.button("Copy Route Manifest").clicked() {
+                action = SolutionViewAction::CopyManifest;
+            }
+            if ui.button("Export Schedule CSV…").clicked() {
+                action = SolutionViewAction::ExportScheduleCsv;
+            }
+            if ui.button("Export Run Sheet / BOL (HTML)…").clicked() {
+                action = SolutionViewAction::ExportRunSheetHtml;
+            }
         });
         ui.weak(format!("problem: {}", bundle.problem.name));
+        match bundle.solution.validate(&bundle.problem) {
+            Ok(()) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(44, 160, 72),
+                    "✓ CoR & Schedule Compliant — 0 violations (capacity, receiving windows, driver shifts & NHVR fatigue verified)",
+                );
+            }
+            Err(violations) => {
+                let preview = violations
+                    .iter()
+                    .take(3)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                ui.colored_label(
+                    egui::Color32::from_rgb(214, 55, 55),
+                    format!(
+                        "⚠ {} CoR / Schedule violation(s): {preview}",
+                        violations.len()
+                    ),
+                );
+            }
+        }
+        if let Some((is_err, msg)) = export_status {
+            let color = if *is_err {
+                egui::Color32::RED
+            } else {
+                egui::Color32::GREEN
+            };
+            ui.colored_label(color, msg);
+        }
 
         ui.add_space(8.0);
 
@@ -1168,39 +1471,137 @@ impl ConsoleApp {
         ui.add_space(8.0);
 
         // Timeline for the selected route.
-        if let Some(route) = bundle.solution.routes.get(*selected_route) {
-            ui.strong(format!(
-                "Route {} timeline ({})",
-                *selected_route + 1,
-                vehicle_name(&bundle.problem, route)
-            ));
-            egui::Grid::new("route_timeline_grid")
-                .striped(true)
+        let safe_route_idx = (*selected_route).min(bundle.solution.routes.len().saturating_sub(1));
+        if let Some(route) = bundle.solution.routes.get(safe_route_idx) {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(format!(
+                    "Route {} timeline ({})",
+                    safe_route_idx + 1,
+                    vehicle_name(&bundle.problem, route)
+                ));
+                if ui.small_button("View Truck Load").clicked() {
+                    action = SolutionViewAction::OpenTruckLoad(safe_route_idx);
+                }
+            });
+            egui::ScrollArea::horizontal()
+                .id_salt("route_timeline_hscroll")
                 .show(ui, |ui| {
-                    ui.strong("#");
-                    ui.strong("Stop");
-                    ui.strong("Arrive");
-                    ui.strong("Depart");
-                    ui.end_row();
-                    for (index, stop) in route.steps.iter().enumerate() {
-                        ui.label((index + 1).to_string());
-                        ui.label(node_label(&bundle.problem, stop.node));
-                        ui.label(stop.arrive.to_string());
-                        ui.label(stop.depart.to_string());
-                        ui.end_row();
-                    }
+                    egui::Grid::new("route_timeline_grid")
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("#");
+                            ui.strong("Seq");
+                            ui.strong("Stop");
+                            ui.strong("Address / Coords");
+                            ui.strong("Demand (A/C/F)");
+                            ui.strong("Arrive");
+                            ui.strong("Wait / Svc");
+                            ui.strong("Depart");
+                            ui.strong("Dispatch");
+                            ui.end_row();
+                            let mut seq = 0usize;
+                            for (index, stop) in route.steps.iter().enumerate() {
+                                let seq_opt = if matches!(stop.node, domain::Node::Store(_)) {
+                                    seq += 1;
+                                    Some(seq)
+                                } else {
+                                    None
+                                };
+                                let detail = step_row_details(&bundle.problem, stop, seq_opt);
+                                ui.label((index + 1).to_string());
+                                ui.label(
+                                    seq_opt
+                                        .map(|s| format!("#{s}"))
+                                        .unwrap_or_else(|| "—".to_string()),
+                                );
+                                ui.label(&detail.label);
+                                ui.weak(&detail.location_text);
+                                ui.label(&detail.demand_text);
+                                ui.label(stop.arrive.to_string());
+                                ui.label(&detail.wait_svc_text);
+                                ui.label(stop.depart.to_string());
+                                if matches!(stop.node, domain::Node::Store(_)) {
+                                    let can_up = index > 0
+                                        && matches!(
+                                            route.steps.get(index - 1).map(|s| s.node),
+                                            Some(domain::Node::Store(_))
+                                        );
+                                    let can_down = matches!(
+                                        route.steps.get(index + 1).map(|s| s.node),
+                                        Some(domain::Node::Store(_))
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(can_up, egui::Button::new("▲").small())
+                                            .on_hover_text("Move stop earlier in route")
+                                            .clicked()
+                                        {
+                                            action = SolutionViewAction::MoveStop {
+                                                route_idx: safe_route_idx,
+                                                step_idx: index,
+                                                delta: -1,
+                                            };
+                                        }
+                                        if ui
+                                            .add_enabled(can_down, egui::Button::new("▼").small())
+                                            .on_hover_text("Move stop later in route")
+                                            .clicked()
+                                        {
+                                            action = SolutionViewAction::MoveStop {
+                                                route_idx: safe_route_idx,
+                                                step_idx: index,
+                                                delta: 1,
+                                            };
+                                        }
+                                        if ui
+                                            .small_button("Unassign")
+                                            .on_hover_text("Remove stop from route and recalculate")
+                                            .clicked()
+                                        {
+                                            action = SolutionViewAction::UnassignStop {
+                                                route_idx: safe_route_idx,
+                                                step_idx: index,
+                                            };
+                                        }
+                                    });
+                                } else {
+                                    ui.weak("—");
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
         }
 
-        // Unassigned stores, if any.
+        // Unassigned stores, if any, with root-cause diagnostics and quick assign.
         if !bundle.solution.unassigned.is_empty() {
             ui.add_space(8.0);
             ui.colored_label(
                 egui::Color32::from_rgb(200, 120, 0),
                 format!("Unassigned ({}):", bundle.solution.unassigned.len()),
             );
-            for store_id in &bundle.solution.unassigned {
-                ui.label(format!("• {}", store_name(&bundle.problem, *store_id)));
+            for &store_id in &bundle.solution.unassigned {
+                let reason = bundle
+                    .problem
+                    .store(store_id)
+                    .map(|store| diagnose_unassigned_store(&bundle.problem, store))
+                    .unwrap_or_default();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "• {} — {reason}",
+                        store_name(&bundle.problem, store_id)
+                    ));
+                    if !bundle.solution.routes.is_empty()
+                        && ui
+                            .small_button(format!("+ Assign to Route {}", safe_route_idx + 1))
+                            .clicked()
+                    {
+                        action = SolutionViewAction::AssignStoreToRoute {
+                            store_id,
+                            route_idx: safe_route_idx,
+                        };
+                    }
+                });
             }
         }
 
@@ -1215,16 +1616,18 @@ impl ConsoleApp {
                         ui.label(serde_json::to_string_pretty(&bundle.raw).unwrap_or_default());
                     });
             });
+        action
     }
 
     // ── KPIs tab ────────────────────────────────────────────────────────
 
     fn render_kpis_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Solution KPIs");
-        ui.label("Select or enter a solution ID to explore route performance, costs, load utilization, timeline & run comparisons:");
+        ui.heading("Freight, OTIF & Sustainability KPIs");
+        ui.label("Explore freight cost per km/stop/unit, OTIF compliance, dock detention wait, diesel/CO₂e & fleet utilization:");
 
         ui.add_space(6.0);
         ui.label("Solution ID:");
+        let prev_kpis_id = self.kpis_id_input.clone();
         if solutions_picker(
             ui,
             "recent_solutions_kpis",
@@ -1233,6 +1636,9 @@ impl ConsoleApp {
             &mut self.kpis_id_input,
         ) {
             self.refresh_lists();
+        }
+        if self.kpis_id_input != prev_kpis_id && !self.kpis_id_input.trim().is_empty() {
+            self.load_kpis(self.kpis_id_input.clone());
         }
         ui.horizontal_wrapped(|ui| {
             ui.text_edit_singleline(&mut self.kpis_id_input);
@@ -1291,11 +1697,12 @@ impl ConsoleApp {
     // ── Map tab ──────────────────────────────────────────────────────
 
     fn render_map_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Route Map");
-        ui.label("Draw a solution's routes on OpenStreetMap tiles.");
+        ui.heading("Fleet Route & Corridor Map");
+        ui.label("Inspect sequenced consignments, road polylines, and vehicle corridors on OpenStreetMap.");
 
         ui.add_space(8.0);
         ui.label("Solution ID:");
+        let prev_map_id = self.map_id_input.clone();
         if recent_solutions_dropdown(
             ui,
             "recent_solutions_map",
@@ -1303,6 +1710,9 @@ impl ConsoleApp {
             &mut self.map_id_input,
         ) {
             self.refresh_lists();
+        }
+        if self.map_id_input != prev_map_id && !self.map_id_input.trim().is_empty() {
+            self.load_map(self.map_id_input.clone());
         }
         if let Some(err) = &self.solutions_error {
             ui.colored_label(
@@ -1318,28 +1728,46 @@ impl ConsoleApp {
         });
 
         ui.add_space(8.0);
-        match &self.map_status {
-            Some(Ok(bundle)) => render_map_body(
-                ui,
-                bundle,
-                &self.map_geometry,
-                self.map_geometry_loading,
-                self.map_geometry_error.as_deref(),
-                &mut self.map_tiles,
-                &mut self.map_memory,
-                &mut self.map_fit_pending,
-                &mut self.hidden_routes,
-                &mut self.show_map_labels,
-                &mut self.selected_map_node,
-            ),
-            Some(Err(e)) => {
-                ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+        if let Some(res) = &self.map_status {
+            match res {
+                Ok(bundle) => {
+                    let bundle = bundle.clone();
+                    if let Some(route_idx) = self.render_map_body(ui, &bundle) {
+                        self.truck_ui.selected_route_idx = route_idx;
+                        self.truck_ui.target_source = LoadTargetSource::SolvedRoute;
+                        self.tab = Tab::Truck;
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                }
             }
-            None => {
-                ui.weak("(no solution loaded - pick one above and click Load Map)");
-            }
+        } else {
+            ui.weak("(no solution loaded - pick one above and click Load Map)");
         }
     }
+}
+
+/// Action emitted by the Solutions structured view.
+enum SolutionViewAction {
+    None,
+    OpenTruckLoad(usize),
+    CopyManifest,
+    ExportScheduleCsv,
+    ExportRunSheetHtml,
+    MoveStop {
+        route_idx: usize,
+        step_idx: usize,
+        delta: isize,
+    },
+    UnassignStop {
+        route_idx: usize,
+        step_idx: usize,
+    },
+    AssignStoreToRoute {
+        store_id: domain::StoreId,
+        route_idx: usize,
+    },
 }
 
 /// Action emitted by the problem configuration panel inside the Import tab.
@@ -1357,6 +1785,8 @@ enum BuilderAction {
     NewCustom,
     LoadFromJson,
     ImportDraft,
+    ImportAndSolve,
+    OpenTruckOptimizer(Option<usize>),
     SaveJson,
 }
 
@@ -1386,6 +1816,15 @@ fn render_builder_controls(
             {
                 state.custom_name = state.draft.name.clone();
                 edited = true;
+            }
+            if ui
+                .button(egui::RichText::new("Solve Route Now").strong())
+                .on_hover_text(
+                    "Import this route, solve it with local search, and open the Route Map.",
+                )
+                .clicked()
+            {
+                action = BuilderAction::ImportAndSolve;
             }
             if ui.button("Import & Use Route").clicked() {
                 action = BuilderAction::ImportDraft;
@@ -1639,6 +2078,22 @@ fn render_stop_quick_add(
             state.stop_window_end_minutes = min_end;
         }
         ui.add(egui::DragValue::new(&mut state.stop_window_end_minutes).range(min_end..=20_000));
+        ui.weak(format!(
+            "({}–{})",
+            format_hhmm(state.stop_window_start_minutes),
+            format_hhmm(state.stop_window_end_minutes)
+        ));
+        for (preset_label, p_start, p_end) in [
+            ("All Day", 0_i64, 1440_i64),
+            ("06–18", 360, 1080),
+            ("06–12", 360, 720),
+            ("12–18", 720, 1080),
+        ] {
+            if ui.small_button(preset_label).clicked() {
+                state.stop_window_start_minutes = p_start;
+                state.stop_window_end_minutes = p_end;
+            }
+        }
 
         if ui.button("+ Add Place").clicked() {
             match state.try_add_stop_from_inputs() {
@@ -1663,7 +2118,57 @@ fn render_stop_quick_add(
             state.map_pick_mode = MapPickMode::AddStop;
             *map_fit_pending = true;
         }
+        if ui
+            .selectable_label(state.show_bulk_paste, "Bulk Paste…")
+            .on_hover_text(
+                "Paste multiple stops as 'Name, lat, lon' or 'Name, lat, lon, A, C, F' lines.",
+            )
+            .clicked()
+        {
+            state.show_bulk_paste = !state.show_bulk_paste;
+        }
+        if ui
+            .small_button("Clear Places")
+            .on_hover_text("Reset places back to the starter stop.")
+            .clicked()
+        {
+            state.clear_stores_to_starter();
+            *map_fit_pending = true;
+            *edited = true;
+        }
     });
+
+    if state.show_bulk_paste {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(
+                "Paste one place per line: Name, lat, lon   or   Name, lat, lon, A, C, F   or   lat, lon",
+            );
+            ui.add(
+                egui::TextEdit::multiline(&mut state.bulk_stops_input)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Warehouse North, -33.8120, 151.1040\nCBD Depot Drop, -33.8688, 151.2093, 2, 1, 0"),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("+ Add Lines").clicked() {
+                    match state.add_bulk_coord_lines() {
+                        Ok(added) => {
+                            state.lookup_status =
+                                Some(format!("Added {added} place(s) from pasted list."));
+                            *map_fit_pending = true;
+                            *edited = true;
+                        }
+                        Err(err) => {
+                            state.editor_error = Some(err.to_string());
+                        }
+                    }
+                }
+                if ui.small_button("Hide").clicked() {
+                    state.show_bulk_paste = false;
+                }
+            });
+        });
+    }
 
     if let Some(idx) = render_geocode_match_list(ui, &state.stop_matches, "stop_matches") {
         let chosen = state.stop_matches[idx].clone();
@@ -1946,7 +2451,7 @@ fn render_draft_tables(
             EditorSection::Vehicles,
             format!("Vehicles ({})", state.draft.vehicles.len()),
         );
-        ui.selectable_value(&mut state.section, EditorSection::Costs, "Costs & Meta");
+        ui.selectable_value(&mut state.section, EditorSection::Costs, "Rate Card & Meta");
         ui.separator();
         if ui.small_button("Import Configured Route").clicked() {
             *action = BuilderAction::ImportDraft;
@@ -2151,14 +2656,32 @@ fn render_draft_tables(
             }
         }
         EditorSection::Vehicles => {
-            if ui.small_button("+ Add Vehicle").clicked() {
-                state.add_vehicle();
-                *edited = true;
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("+ Add Vehicle").clicked() {
+                    state.add_vehicle();
+                    *edited = true;
+                }
+                if ui.small_button("Optimize Truck Capacity…").clicked() {
+                    *action = BuilderAction::OpenTruckOptimizer(None);
+                }
+                if ui
+                    .small_button("Auto-Fit Shifts to Windows")
+                    .on_hover_text(
+                        "Expand all driver shifts and vehicle max_duration to cover every stop receiving window.",
+                    )
+                    .clicked()
+                {
+                    state.auto_fit_shifts_to_windows();
+                    *edited = true;
+                }
+            });
+            for idx in 0..state.draft.vehicles.len() {
+                state.ensure_driver_for_vehicle(idx);
             }
             let mut remove_idx: Option<usize> = None;
             let can_remove = state.draft.vehicles.len() > 1;
             let depot_count = state.draft.depots.len();
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .id_salt("edit_vehicles_scroll")
                 .max_height(180.0)
                 .show(ui, |ui| {
@@ -2171,6 +2694,7 @@ fn render_draft_tables(
                             ui.strong("Cap A/C/F");
                             ui.strong("MaxDur(m)");
                             ui.strong("km/h");
+                            ui.strong("Driver Shift (m)");
                             ui.label("");
                             ui.end_row();
                             for (idx, veh) in state.draft.vehicles.iter_mut().enumerate() {
@@ -2229,12 +2753,52 @@ fn render_draft_tables(
                                             .range(5.0..=120.0),
                                     )
                                     .changed();
-                                if ui
-                                    .add_enabled(can_remove, egui::Button::new("Remove"))
-                                    .clicked()
+                                if let Some(shift) = state
+                                    .draft
+                                    .drivers
+                                    .get_mut(idx)
+                                    .and_then(|d| d.shifts.first_mut())
                                 {
-                                    remove_idx = Some(idx);
+                                    ui.horizontal(|ui| {
+                                        let mut s_min = shift.start.minutes();
+                                        let mut e_min = shift.end.minutes();
+                                        let c1 = ui
+                                            .add(egui::DragValue::new(&mut s_min).range(0..=10_000))
+                                            .changed();
+                                        ui.label("–");
+                                        let c2 = ui
+                                            .add(
+                                                egui::DragValue::new(&mut e_min)
+                                                    .range((s_min + 15)..=20_000),
+                                            )
+                                            .changed();
+                                        ui.weak(format!(
+                                            "({}–{})",
+                                            format_hhmm(s_min),
+                                            format_hhmm(e_min.max(s_min + 15))
+                                        ));
+                                        if c1 || c2 {
+                                            shift.start = domain::Minutes::from_minutes(s_min);
+                                            shift.end = domain::Minutes::from_minutes(
+                                                e_min.max(s_min + 15),
+                                            );
+                                            *edited = true;
+                                        }
+                                    });
+                                } else {
+                                    ui.weak("—");
                                 }
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("Fill / Size").clicked() {
+                                        *action = BuilderAction::OpenTruckOptimizer(Some(idx));
+                                    }
+                                    if ui
+                                        .add_enabled(can_remove, egui::Button::new("Remove"))
+                                        .clicked()
+                                    {
+                                        remove_idx = Some(idx);
+                                    }
+                                });
                                 ui.end_row();
                             }
                         });
@@ -2245,6 +2809,43 @@ fn render_draft_tables(
             }
         }
         EditorSection::Costs => {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Carrier Rate Card Presets:");
+                for (label, fixed, per_km, per_hr) in [
+                    (
+                        "Metro Van ($65 + $0.65/km + $42/h)",
+                        6_500_i64,
+                        65_i64,
+                        4_200_i64,
+                    ),
+                    (
+                        "12-Pallet Rigid ($150 + $0.90/km + $45/h)",
+                        15_000,
+                        90,
+                        4_500,
+                    ),
+                    (
+                        "22-Pallet Semi ($280 + $1.45/km + $68/h)",
+                        28_000,
+                        145,
+                        6_800,
+                    ),
+                    (
+                        "Linehaul B-Double ($450 + $2.10/km + $85/h)",
+                        45_000,
+                        210,
+                        8_500,
+                    ),
+                ] {
+                    if ui.small_button(label).clicked() {
+                        state.draft.cost.fixed_per_route_cents = fixed;
+                        state.draft.cost.per_km_cents = per_km;
+                        state.draft.cost.per_hour_cents = per_hr;
+                        *edited = true;
+                    }
+                }
+            });
+            ui.add_space(4.0);
             egui::Grid::new("edit_costs_grid").show(ui, |ui| {
                 ui.label("Problem name:");
                 *edited |= ui
@@ -2300,6 +2901,14 @@ fn render_draft_tables(
                 });
                 ui.end_row();
             });
+            let bench_cents = state.draft.cost.fixed_per_route_cents
+                + 100 * state.draft.cost.per_km_cents
+                + 4 * state.draft.cost.per_hour_cents;
+            ui.add_space(4.0);
+            ui.weak(format!(
+                "Benchmark 100 km / 4 hr run: ${:.2}",
+                bench_cents as f64 / 100.0
+            ));
         }
     }
 }
@@ -2429,199 +3038,211 @@ fn route_chip(ui: &mut egui::Ui, index: usize, hidden_routes: &mut HashSet<usize
         });
 }
 
-/// Render the loaded map body: route chips, node controls, geometry status,
-/// optional selected-node inspector panel, the map itself, and attribution.
-#[allow(clippy::too_many_arguments)]
-fn render_map_body(
-    ui: &mut egui::Ui,
-    bundle: &SolutionBundle,
-    geometry: &SolutionGeometryData,
-    geometry_loading: bool,
-    geometry_error: Option<&str>,
-    map_tiles: &mut Option<walkers::HttpTiles>,
-    map_memory: &mut MapMemory,
-    map_fit_pending: &mut bool,
-    hidden_routes: &mut HashSet<usize>,
-    show_labels: &mut bool,
-    selected_node: &mut Option<domain::Node>,
-) {
-    let map_nodes = collect_map_nodes(
-        &bundle.problem,
-        &bundle.solution,
-        hidden_routes,
-        route_color,
-    );
+/// Navigation/action emitted by the Selected Node inspector panel.
+enum MapInspectorAction {
+    None,
+    Clear,
+    Center(f64, f64),
+    SelectNode(domain::Node, f64, f64),
+    OpenTruckRoute(usize),
+}
 
-    route_chips(ui, bundle, map_fit_pending, hidden_routes);
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Zoom −").clicked() {
-            let _ = map_memory.zoom_out();
-        }
-        if ui.button("Zoom +").clicked() {
-            let _ = map_memory.zoom_in();
-        }
-        ui.weak(format!("zoom {:.1}", map_memory.zoom()));
-        ui.separator();
-        ui.checkbox(show_labels, "Show node info");
-        ui.label("Inspect:");
-        let selected_text = selected_node
-            .and_then(|sel| map_nodes.iter().find(|n| n.node == sel))
-            .map(|info| truncate_for_dropdown(&info.title, 30))
-            .unwrap_or_else(|| format!("pick node ({})…", map_nodes.len()));
-        egui::ComboBox::from_id_salt("map_node_picker")
-            .selected_text(selected_text)
-            .show_ui(ui, |ui| {
-                for info in &map_nodes {
-                    let chosen = *selected_node == Some(info.node);
-                    if ui.selectable_label(chosen, &info.short_badge).clicked() {
-                        *selected_node = Some(info.node);
+impl ConsoleApp {
+    /// Render the loaded map body: route chips, node controls, geometry status,
+    /// optional selected-node inspector panel, the map itself, and attribution.
+    /// Returns `Some(route_idx)` when the operator clicks `Truck Load` for a route.
+    fn render_map_body(&mut self, ui: &mut egui::Ui, bundle: &SolutionBundle) -> Option<usize> {
+        let mut jump_to_truck_route: Option<usize> = None;
+        let map_nodes = collect_map_nodes(
+            &bundle.problem,
+            &bundle.solution,
+            &self.hidden_routes,
+            route_color,
+        );
+
+        route_chips(
+            ui,
+            bundle,
+            &mut self.map_fit_pending,
+            &mut self.hidden_routes,
+        );
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Zoom −").clicked() {
+                let _ = self.map_memory.zoom_out();
+            }
+            if ui.button("Zoom +").clicked() {
+                let _ = self.map_memory.zoom_in();
+            }
+            ui.weak(format!("zoom {:.1}", self.map_memory.zoom()));
+            ui.separator();
+            ui.checkbox(&mut self.show_map_labels, "Show node info");
+            ui.label("Inspect:");
+            let selected_text = self
+                .selected_map_node
+                .and_then(|sel| map_nodes.iter().find(|n| n.node == sel))
+                .map(|info| truncate_for_dropdown(&info.title, 30))
+                .unwrap_or_else(|| format!("pick node ({})…", map_nodes.len()));
+            egui::ComboBox::from_id_salt("map_node_picker")
+                .selected_text(selected_text)
+                .show_ui(ui, |ui| {
+                    for info in &map_nodes {
+                        let chosen = self.selected_map_node == Some(info.node);
+                        if ui.selectable_label(chosen, &info.short_badge).clicked() {
+                            self.selected_map_node = Some(info.node);
+                        }
                     }
+                });
+            ui.separator();
+            if self.map_geometry_loading {
+                ui.spinner();
+                ui.label("Loading OSM road geometry…");
+            } else if let Some(err) = &self.map_geometry_error {
+                ui.colored_label(egui::Color32::RED, format!("Road geometry error: {err}"));
+            } else if self.map_geometry.routes.iter().any(|r| !r.is_empty()) {
+                let routed = self
+                    .map_geometry
+                    .routes
+                    .iter()
+                    .filter(|r| !r.is_empty())
+                    .count();
+                let fallback_legs: usize = self
+                    .map_geometry
+                    .route_legs
+                    .iter()
+                    .flat_map(|legs| legs.iter())
+                    .filter(|leg| leg.fallback)
+                    .count();
+                if fallback_legs == 0 {
+                    ui.colored_label(
+                        egui::Color32::GREEN,
+                        format!("OSM road alignment ({routed} routed)"),
+                    );
+                } else {
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        format!(
+                            "OSM road alignment ({routed} routes, {fallback_legs} unrouted leg(s) dashed)"
+                        ),
+                    );
                 }
-            });
-        ui.separator();
-        if geometry_loading {
-            ui.spinner();
-            ui.label("Loading OSM road geometry…");
-        } else if let Some(err) = geometry_error {
-            ui.colored_label(egui::Color32::RED, format!("Road geometry error: {err}"));
-        } else if geometry.routes.iter().any(|r| !r.is_empty()) {
-            let routed = geometry.routes.iter().filter(|r| !r.is_empty()).count();
-            let fallback_legs: usize = geometry
-                .route_legs
-                .iter()
-                .flat_map(|legs| legs.iter())
-                .filter(|leg| leg.fallback)
-                .count();
-            if fallback_legs == 0 {
-                ui.colored_label(
-                    egui::Color32::GREEN,
-                    format!("OSM road alignment ({routed} routed)"),
-                );
             } else {
                 ui.colored_label(
                     egui::Color32::YELLOW,
-                    format!(
-                        "OSM road alignment ({routed} routes, {fallback_legs} unrouted leg(s) dashed)"
-                    ),
+                    "Straight-line preview (solved without OSM PBF — re-solve with OSM PBF for road alignment)",
                 );
             }
-        } else {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Straight-line preview (solved without OSM PBF — re-solve with OSM PBF for road alignment)",
-            );
-        }
-    });
-
-    // Tiles are created lazily on first paint; downloading starts when
-    // the tab is actually shown.
-    let tiles = map_tiles.get_or_insert_with(|| {
-        walkers::HttpTiles::new(walkers::sources::OpenStreetMap, ui.ctx().clone())
-    });
-
-    let selected_info = (*selected_node)
-        .and_then(|sel| map_nodes.iter().find(|n| n.node == sel))
-        .cloned();
-
-    let footer_height = 24.0_f32;
-    let avail_width = ui.available_width().max(200.0);
-    let show_side_inspector = selected_info.is_some() && avail_width >= 760.0;
-    let bottom_inspector_height = if !show_side_inspector && selected_info.is_some() {
-        175.0_f32
-    } else {
-        0.0
-    };
-    let map_height = (ui.available_height() - footer_height - bottom_inspector_height).max(200.0);
-    let inspector_width = if show_side_inspector { 290.0_f32 } else { 0.0 };
-    let map_width = (avail_width - inspector_width).max(200.0);
-
-    if *map_fit_pending {
-        fit_map_to_extents(
-            map_memory,
-            bundle,
-            geometry,
-            f64::from(map_width),
-            f64::from(map_height),
-        );
-        *map_fit_pending = false;
-    }
-
-    ui.separator();
-    let mut center_on: Option<(f64, f64)> = None;
-    let mut clear_selection = false;
-    ui.horizontal(|ui| {
-        ui.allocate_ui(egui::vec2(map_width, map_height), |ui| {
-            ui.add(
-                Map::new(Some(tiles), map_memory, lon_lat(151.21, -33.87))
-                    // Wheel zooms without needing Ctrl; double-click zooms in,
-                    // right-double-click zooms out. Drag still pans.
-                    .zoom_with_ctrl(false)
-                    .double_click_to_zoom(true)
-                    .double_click_to_zoom_out(true)
-                    .with_plugin(RouteOverlay {
-                        bundle,
-                        hidden: hidden_routes,
-                        geometry,
-                        nodes: &map_nodes,
-                        show_labels: *show_labels,
-                        selected_node,
-                    }),
-            );
         });
-        if show_side_inspector && let Some(info) = &selected_info {
-            ui.allocate_ui(egui::vec2(inspector_width - 8.0, map_height), |ui| {
-                render_selected_node_frame(
-                    ui,
-                    info,
-                    "map_selected_node_scroll",
-                    &mut clear_selection,
-                    &mut center_on,
+
+        // Tiles are created lazily on first paint; downloading starts when
+        // the tab is actually shown.
+        let tiles = self.map_tiles.get_or_insert_with(|| {
+            walkers::HttpTiles::new(walkers::sources::OpenStreetMap, ui.ctx().clone())
+        });
+
+        let selected_info = self
+            .selected_map_node
+            .and_then(|sel| map_nodes.iter().find(|n| n.node == sel))
+            .cloned();
+
+        let footer_height = 24.0_f32;
+        let avail_width = ui.available_width().max(200.0);
+        let show_side_inspector = selected_info.is_some() && avail_width >= 760.0;
+        let bottom_inspector_height = if !show_side_inspector && selected_info.is_some() {
+            175.0_f32
+        } else {
+            0.0
+        };
+        let map_height =
+            (ui.available_height() - footer_height - bottom_inspector_height).max(200.0);
+        let inspector_width = if show_side_inspector { 290.0_f32 } else { 0.0 };
+        let map_width = (avail_width - inspector_width).max(200.0);
+
+        if self.map_fit_pending {
+            fit_map_to_extents(
+                &mut self.map_memory,
+                bundle,
+                &self.map_geometry,
+                f64::from(map_width),
+                f64::from(map_height),
+            );
+            self.map_fit_pending = false;
+        }
+
+        ui.separator();
+        let mut inspector_action = MapInspectorAction::None;
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::vec2(map_width, map_height), |ui| {
+                ui.add(
+                    Map::new(Some(tiles), &mut self.map_memory, lon_lat(151.21, -33.87))
+                        // Wheel zooms without needing Ctrl; double-click zooms in,
+                        // right-double-click zooms out. Drag still pans.
+                        .zoom_with_ctrl(false)
+                        .double_click_to_zoom(true)
+                        .double_click_to_zoom_out(true)
+                        .with_plugin(RouteOverlay {
+                            bundle,
+                            hidden: &self.hidden_routes,
+                            geometry: &self.map_geometry,
+                            nodes: &map_nodes,
+                            show_labels: self.show_map_labels,
+                            selected_node: &mut self.selected_map_node,
+                        }),
                 );
             });
+            if show_side_inspector && let Some(info) = &selected_info {
+                ui.allocate_ui(egui::vec2(inspector_width - 8.0, map_height), |ui| {
+                    inspector_action =
+                        render_selected_node_frame(ui, info, bundle, "map_selected_node_scroll");
+                });
+            }
+        });
+        if !show_side_inspector && let Some(info) = &selected_info {
+            ui.allocate_ui(
+                egui::vec2(avail_width, bottom_inspector_height - 6.0),
+                |ui| {
+                    inspector_action =
+                        render_selected_node_frame(ui, info, bundle, "map_selected_node_drawer");
+                },
+            );
         }
-    });
-    if !show_side_inspector && let Some(info) = &selected_info {
-        ui.allocate_ui(
-            egui::vec2(avail_width, bottom_inspector_height - 6.0),
-            |ui| {
-                render_selected_node_frame(
-                    ui,
-                    info,
-                    "map_selected_node_drawer",
-                    &mut clear_selection,
-                    &mut center_on,
-                );
-            },
-        );
-    }
-    if clear_selection {
-        *selected_node = None;
-    }
-    if let Some((lon, lat)) = center_on {
-        map_memory.center_at(lon_lat(lon, lat));
-    }
+        match inspector_action {
+            MapInspectorAction::None => {}
+            MapInspectorAction::Clear => self.selected_map_node = None,
+            MapInspectorAction::Center(lon, lat) => {
+                self.map_memory.center_at(lon_lat(lon, lat));
+            }
+            MapInspectorAction::SelectNode(node, lon, lat) => {
+                self.selected_map_node = Some(node);
+                self.map_memory.center_at(lon_lat(lon, lat));
+            }
+            MapInspectorAction::OpenTruckRoute(route_idx) => {
+                jump_to_truck_route = Some(route_idx);
+            }
+        }
 
-    ui.horizontal(|ui| {
-        ui.weak("© OpenStreetMap contributors — tile.openstreetmap.org");
-        ui.weak(format!(
-            "· showing {} of {} routes · {} nodes",
-            bundle.solution.routes.len() - hidden_routes.len(),
-            bundle.solution.routes.len(),
-            map_nodes.len(),
-        ));
-        ui.weak(format!(
-            "· zoom {:.1} · hover/click any node for details",
-            map_memory.zoom()
-        ));
-    });
+        ui.horizontal(|ui| {
+            ui.weak("© OpenStreetMap contributors — tile.openstreetmap.org");
+            ui.weak(format!(
+                "· showing {} of {} routes · {} nodes",
+                bundle.solution.routes.len() - self.hidden_routes.len(),
+                bundle.solution.routes.len(),
+                map_nodes.len(),
+            ));
+            ui.weak(format!(
+                "· zoom {:.1} · hover/click any node for details",
+                self.map_memory.zoom()
+            ));
+        });
+        jump_to_truck_route
+    }
 }
 
 impl ConsoleApp {
     // ── Events tab ──────────────────────────────────────────────────────
 
     fn render_events_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Live Solve Events");
-        ui.label("SSE stream of solve completions from the server.");
+        ui.heading("Control Tower Event Stream");
+        ui.label("Live SSE dispatch & optimizer execution feed from the TMS backend.");
 
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2936,6 +3557,7 @@ impl Plugin for RouteOverlay<'_> {
                         draw_dashed_polyline(&painter, &pts, color);
                     } else {
                         draw_polyline(&painter, &pts, stroke);
+                        draw_polyline_arrows(&painter, &pts, color);
                     }
                 }
             } else {
@@ -2955,6 +3577,7 @@ impl Plugin for RouteOverlay<'_> {
                             .collect(),
                     };
                 draw_polyline(&painter, &line, stroke);
+                draw_polyline_arrows(&painter, &line, color);
             }
         }
 
@@ -3018,14 +3641,11 @@ impl Plugin for RouteOverlay<'_> {
 
         // Draw concise on-map information badges with screen-space collision avoidance.
         let show_detail_line = memory.zoom() >= 12.8;
-        draw_node_labels(
+        self.draw_node_labels(
             &painter,
             clip,
-            self.nodes,
             &projected_nodes,
             &hover_hits,
-            *self.selected_node,
-            self.show_labels,
             show_detail_line,
         );
 
@@ -3058,6 +3678,49 @@ fn draw_polyline(painter: &egui::Painter, points: &[egui::Pos2], stroke: egui::S
     }
 }
 
+/// Draw directional arrowheads along `points` when segments are visually long enough.
+fn draw_polyline_arrows(painter: &egui::Painter, points: &[egui::Pos2], color: egui::Color32) {
+    if points.len() < 2 {
+        return;
+    }
+    let total_len: f32 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if total_len < 55.0 {
+        return;
+    }
+    let mut since_arrow = 0.0_f32;
+    let spacing = 85.0_f32;
+    let mut drew_any = false;
+    let tip_size = 5.5_f32;
+    for seg in points.windows(2) {
+        let delta = seg[1] - seg[0];
+        let seg_len = delta.length();
+        if seg_len < 1.0 {
+            continue;
+        }
+        since_arrow += seg_len;
+        let threshold = if drew_any {
+            spacing
+        } else {
+            (total_len * 0.5).min(spacing)
+        };
+        if since_arrow >= threshold {
+            let dir = delta / seg_len;
+            let mid = seg[0] + delta * 0.5;
+            let tip = mid + dir * tip_size;
+            let perp = egui::vec2(-dir.y, dir.x) * (tip_size * 0.6);
+            let wing1 = mid - dir * (tip_size * 0.5) + perp;
+            let wing2 = mid - dir * (tip_size * 0.5) - perp;
+            painter.add(egui::Shape::convex_polygon(
+                vec![tip, wing1, wing2],
+                color,
+                egui::Stroke::new(0.8, egui::Color32::WHITE),
+            ));
+            since_arrow = 0.0;
+            drew_any = true;
+        }
+    }
+}
+
 /// Draw a subtle dashed segment for unrouted fallback legs.
 fn draw_dashed_polyline(painter: &egui::Painter, points: &[egui::Pos2], color: egui::Color32) {
     if points.len() >= 2 {
@@ -3066,7 +3729,7 @@ fn draw_dashed_polyline(painter: &egui::Painter, points: &[egui::Pos2], color: e
     }
 }
 
-/// Draw a depot (large circle), served store (dot), or unassigned store (diamond) marker.
+/// Draw a depot ("D"), served store (numbered), or unassigned store ("!") marker.
 fn draw_node_marker(
     painter: &egui::Painter,
     pos: egui::Pos2,
@@ -3075,9 +3738,9 @@ fn draw_node_marker(
     hovered: bool,
 ) {
     let base_radius = match info.kind {
-        MapNodeKind::Depot { .. } => 7.0_f32,
-        MapNodeKind::ServedStore { .. } => 4.5_f32,
-        MapNodeKind::UnassignedStore { .. } => 6.0_f32,
+        MapNodeKind::Depot { .. } => 9.0_f32,
+        MapNodeKind::ServedStore { .. } => 8.0_f32,
+        MapNodeKind::UnassignedStore { .. } => 8.0_f32,
     };
     let radius = if selected || hovered {
         base_radius + 1.5
@@ -3102,6 +3765,13 @@ fn draw_node_marker(
                 info.accent,
                 egui::Stroke::new(2.0, egui::Color32::WHITE),
             );
+            painter.text(
+                pos,
+                egui::Align2::CENTER_CENTER,
+                "D",
+                egui::FontId::proportional(10.5),
+                egui::Color32::WHITE,
+            );
         }
         MapNodeKind::ServedStore { .. } => {
             painter.circle(
@@ -3110,6 +3780,22 @@ fn draw_node_marker(
                 info.accent,
                 egui::Stroke::new(1.2, egui::Color32::WHITE),
             );
+            if let Some(seq) = info.visits.first().and_then(|v| v.stop_sequence) {
+                let font_size = if seq >= 100 {
+                    8.0
+                } else if seq >= 10 {
+                    9.5
+                } else {
+                    10.5
+                };
+                painter.text(
+                    pos,
+                    egui::Align2::CENTER_CENTER,
+                    seq.to_string(),
+                    egui::FontId::proportional(font_size),
+                    egui::Color32::WHITE,
+                );
+            }
         }
         MapNodeKind::UnassignedStore { .. } => {
             let pts = vec![
@@ -3123,114 +3809,146 @@ fn draw_node_marker(
                 info.accent,
                 egui::Stroke::new(1.5, egui::Color32::WHITE),
             ));
+            painter.text(
+                pos,
+                egui::Align2::CENTER_CENTER,
+                "!",
+                egui::FontId::proportional(10.5),
+                egui::Color32::WHITE,
+            );
         }
     }
 }
 
-/// Draws on-map node information badges prioritised so selected, hovered, and
-/// depot nodes claim screen space cleanly before individual stores.
-#[allow(clippy::too_many_arguments)]
-fn draw_node_labels(
-    painter: &egui::Painter,
-    clip: egui::Rect,
-    nodes: &[MapNodeInfo],
-    projected_nodes: &[(usize, egui::Pos2)],
-    hover_hits: &[usize],
-    selected_node: Option<domain::Node>,
-    show_labels: bool,
-    show_detail_line: bool,
-) {
-    let mut order: Vec<(u8, usize, egui::Pos2)> = projected_nodes
-        .iter()
-        .filter_map(|&(idx, pos)| {
-            let info = &nodes[idx];
-            let is_selected = selected_node == Some(info.node);
-            let is_hovered = hover_hits.contains(&idx);
-            if !show_labels && !is_selected && !is_hovered {
-                return None;
-            }
-            let priority = if is_selected {
-                0
-            } else if is_hovered {
-                1
-            } else if matches!(info.kind, MapNodeKind::Depot { .. }) {
-                2
-            } else if matches!(info.kind, MapNodeKind::UnassignedStore { .. }) {
-                3
+impl RouteOverlay<'_> {
+    /// Draws on-map node information badges prioritised so selected, hovered, and
+    /// depot nodes claim screen space cleanly before individual stores.
+    fn draw_node_labels(
+        &self,
+        painter: &egui::Painter,
+        clip: egui::Rect,
+        projected_nodes: &[(usize, egui::Pos2)],
+        hover_hits: &[usize],
+        show_detail_line: bool,
+    ) {
+        let mut order: Vec<(u8, usize, egui::Pos2)> = projected_nodes
+            .iter()
+            .filter_map(|&(idx, pos)| {
+                let info = &self.nodes[idx];
+                let is_selected = *self.selected_node == Some(info.node);
+                let is_hovered = hover_hits.contains(&idx);
+                if !self.show_labels && !is_selected && !is_hovered {
+                    return None;
+                }
+                let priority = if is_selected {
+                    0
+                } else if is_hovered {
+                    1
+                } else if matches!(info.kind, MapNodeKind::Depot { .. }) {
+                    2
+                } else if matches!(info.kind, MapNodeKind::UnassignedStore { .. }) {
+                    3
+                } else {
+                    4
+                };
+                Some((priority, idx, pos))
+            })
+            .collect();
+        order.sort_by_key(|(prio, idx, _)| (*prio, *idx));
+
+        let font_id = egui::FontId::proportional(11.0);
+        let mut occupied: Vec<egui::Rect> = Vec::with_capacity(order.len());
+        let bounds = clip.shrink(2.0);
+
+        for (prio, idx, pos) in order {
+            let info = &self.nodes[idx];
+            let include_detail = show_detail_line || prio <= 1;
+            let text = if include_detail {
+                format!("{}\n{}", info.short_badge, info.detail_badge)
             } else {
-                4
+                info.short_badge.clone()
             };
-            Some((priority, idx, pos))
-        })
-        .collect();
-    order.sort_by_key(|(prio, idx, _)| (*prio, *idx));
+            let galley = painter.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE);
+            let pill_size = galley.size() + egui::vec2(10.0, 4.0);
+            let rect = if let Some(placed) =
+                pick_non_overlapping_rect(pos, pill_size, &mut occupied, bounds)
+            {
+                placed
+            } else if prio <= 1 {
+                let fallback = egui::Rect::from_min_size(
+                    egui::pos2(pos.x + 10.0, pos.y - pill_size.y * 0.5),
+                    pill_size,
+                );
+                occupied.push(fallback);
+                fallback
+            } else {
+                continue;
+            };
 
-    let font_id = egui::FontId::proportional(11.0);
-    let mut occupied: Vec<egui::Rect> = Vec::with_capacity(order.len());
-    let bounds = clip.shrink(2.0);
-
-    for (prio, idx, pos) in order {
-        let info = &nodes[idx];
-        let include_detail = show_detail_line || prio <= 1;
-        let text = if include_detail {
-            format!("{}\n{}", info.short_badge, info.detail_badge)
-        } else {
-            info.short_badge.clone()
-        };
-        let galley = painter.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE);
-        let pill_size = galley.size() + egui::vec2(10.0, 4.0);
-        let rect = if let Some(placed) =
-            pick_non_overlapping_rect(pos, pill_size, &mut occupied, bounds)
-        {
-            placed
-        } else if prio <= 1 {
-            let fallback = egui::Rect::from_min_size(
-                egui::pos2(pos.x + 10.0, pos.y - pill_size.y * 0.5),
-                pill_size,
+            painter.rect_filled(
+                rect,
+                egui::CornerRadius::same(4),
+                egui::Color32::from_rgba_unmultiplied(18, 22, 28, 215),
             );
-            occupied.push(fallback);
-            fallback
-        } else {
-            continue;
-        };
-
-        painter.rect_filled(
-            rect,
-            egui::CornerRadius::same(4),
-            egui::Color32::from_rgba_unmultiplied(18, 22, 28, 215),
-        );
-        painter.rect_stroke(
-            rect,
-            egui::CornerRadius::same(4),
-            egui::Stroke::new(1.0, info.accent),
-            egui::StrokeKind::Inside,
-        );
-        painter.galley(
-            rect.min + egui::vec2(5.0, 2.0),
-            galley,
-            egui::Color32::WHITE,
-        );
+            painter.rect_stroke(
+                rect,
+                egui::CornerRadius::same(4),
+                egui::Stroke::new(1.0, info.accent),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(
+                rect.min + egui::vec2(5.0, 2.0),
+                galley,
+                egui::Color32::WHITE,
+            );
+        }
     }
 }
 
 /// Renders structured node metadata inside either a hover tooltip or the docked
-/// Selected Node inspector card.
+/// Selected Node inspector card, including Prev/Next route step navigation.
 fn render_selected_node_frame(
     ui: &mut egui::Ui,
     info: &MapNodeInfo,
+    bundle: &SolutionBundle,
     scroll_id: &str,
-    clear_selection: &mut bool,
-    center_on: &mut Option<(f64, f64)>,
-) {
+) -> MapInspectorAction {
+    let mut action = MapInspectorAction::None;
     egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.strong("Selected Node");
+            if let Some(visit) = info.visits.first()
+                && let Some(route) = bundle.solution.routes.get(visit.route_index)
+            {
+                if ui
+                    .add_enabled(visit.step_index > 0, egui::Button::new("◀ Prev").small())
+                    .clicked()
+                    && let Some(prev_stop) = route.steps.get(visit.step_index - 1)
+                    && let Some((lon, lat)) = node_lon_lat(&bundle.problem, prev_stop.node)
+                {
+                    action = MapInspectorAction::SelectNode(prev_stop.node, lon, lat);
+                }
+                if ui
+                    .add_enabled(
+                        visit.step_index + 1 < route.steps.len(),
+                        egui::Button::new("Next ▶").small(),
+                    )
+                    .clicked()
+                    && let Some(next_stop) = route.steps.get(visit.step_index + 1)
+                    && let Some((lon, lat)) = node_lon_lat(&bundle.problem, next_stop.node)
+                {
+                    action = MapInspectorAction::SelectNode(next_stop.node, lon, lat);
+                }
+                if ui.small_button("Truck Load").clicked() {
+                    action = MapInspectorAction::OpenTruckRoute(visit.route_index);
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("×").clicked() {
-                    *clear_selection = true;
+                    action = MapInspectorAction::Clear;
                 }
                 if ui.small_button("Center").clicked() {
-                    *center_on = Some((info.lon, info.lat));
+                    action = MapInspectorAction::Center(info.lon, info.lat);
                 }
             });
         });
@@ -3241,6 +3959,7 @@ fn render_selected_node_frame(
                 render_node_card(ui, info);
             });
     });
+    action
 }
 
 fn render_store_specs(
@@ -3251,7 +3970,9 @@ fn render_store_specs(
     windows: &[domain::TimeWindow],
     from_chain_defaults: bool,
 ) {
-    ui.label(format!("Category: {chain}"));
+    if chain != domain::Chain::General {
+        ui.label(format!("Banner: {chain}"));
+    }
     ui.label(format!(
         "Demand: {} units ({}A / {}C / {}F)",
         demand.total(),
@@ -3319,8 +4040,12 @@ fn render_node_card(ui: &mut egui::Ui, info: &MapNodeInfo) {
             from_chain_defaults,
         } => {
             if let Some(visit) = info.visits.first() {
+                let seq_label = visit
+                    .stop_sequence
+                    .map(|s| format!("Drop #{s}"))
+                    .unwrap_or_else(|| format!("Step #{}", visit.step_index + 1));
                 ui.label(format!(
-                    "Assignment: Route {} · Stop #{} of {}",
+                    "Assignment: Route {} · {seq_label} (step {}/{})",
                     visit.route_index + 1,
                     visit.step_index + 1,
                     visit.total_steps
@@ -3333,6 +4058,21 @@ fn render_node_card(ui: &mut egui::Ui, info: &MapNodeInfo) {
                     "Schedule: arrive {} · depart {}",
                     visit.arrive, visit.depart
                 ));
+                if visit.wait_minutes > 0 {
+                    ui.label(format!("Wait before service: +{}m", visit.wait_minutes));
+                }
+                ui.label(format!(
+                    "Leg: {:.1} km (cum {:.1} km)",
+                    visit.prev_leg_km, visit.cumulative_km
+                ));
+                ui.label(format!(
+                    "Cum. Load: {}u ({}A/{}C/{}F) of {}u cap",
+                    visit.cumulative_load.total(),
+                    visit.cumulative_load.ambient,
+                    visit.cumulative_load.chilled,
+                    visit.cumulative_load.frozen,
+                    visit.vehicle_capacity.total()
+                ));
             }
             render_store_specs(ui, *chain, demand, *service, windows, *from_chain_defaults);
         }
@@ -3342,10 +4082,15 @@ fn render_node_card(ui: &mut egui::Ui, info: &MapNodeInfo) {
             service,
             windows,
             from_chain_defaults,
+            reason,
         } => {
             ui.colored_label(
                 crate::map_nodes::UNASSIGNED_COLOR,
                 egui::RichText::new("Status: UNASSIGNED").strong(),
+            );
+            ui.colored_label(
+                crate::map_nodes::UNASSIGNED_COLOR,
+                format!("Why unassigned: {reason}"),
             );
             render_store_specs(ui, *chain, demand, *service, windows, *from_chain_defaults);
         }
@@ -3431,6 +4176,575 @@ fn node_label(problem: &domain::Problem, node: domain::Node) -> String {
         domain::Node::Depot(id) => depot_label(problem, id),
         domain::Node::Store(id) => store_name(problem, id),
     }
+}
+
+/// Formats horizon minutes as `HH:MM`.
+fn format_hhmm(minutes: i64) -> String {
+    let clamped = minutes.max(0);
+    format!("{:02}:{:02}", clamped / 60, clamped % 60)
+}
+
+/// Structured stop row data shared across the Solutions timeline grid, clipboard
+/// manifest, and schedule CSV export.
+struct StepRowDetails {
+    node_type: &'static str,
+    name: String,
+    label: String,
+    address_raw: String,
+    location_text: String,
+    lat: f64,
+    lon: f64,
+    wait_minutes: i64,
+    service_minutes: i64,
+    wait_svc_text: String,
+    demand: domain::Load,
+    demand_text: String,
+    seq: Option<usize>,
+}
+
+fn step_row_details(
+    problem: &domain::Problem,
+    stop: &domain::PlannedStop,
+    seq: Option<usize>,
+) -> StepRowDetails {
+    let label = node_label(problem, stop.node);
+    match stop.node {
+        domain::Node::Depot(id) => {
+            let depot = problem.depots.get(id.0 as usize);
+            let name = depot
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| format!("Depot #{}", id.0));
+            let (lat, lon) = depot
+                .map(|d| (d.location.lat, d.location.lon))
+                .unwrap_or((0.0, 0.0));
+            let address_raw = depot.and_then(|d| d.address.clone()).unwrap_or_default();
+            let location_text = if address_raw.is_empty() {
+                format!("{lat:.5}, {lon:.5}")
+            } else {
+                address_raw.clone()
+            };
+            StepRowDetails {
+                node_type: "Depot",
+                name,
+                label,
+                address_raw,
+                location_text,
+                lat,
+                lon,
+                wait_minutes: 0,
+                service_minutes: 0,
+                wait_svc_text: "—".to_string(),
+                demand: domain::Load::ZERO,
+                demand_text: "—".to_string(),
+                seq: None,
+            }
+        }
+        domain::Node::Store(id) => {
+            let store = problem.store(id);
+            let name = store
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("Store #{}", id.0));
+            let (lat, lon) = store
+                .map(|s| (s.location.lat, s.location.lon))
+                .unwrap_or((0.0, 0.0));
+            let address_raw = store.and_then(|s| s.address.clone()).unwrap_or_default();
+            let location_text = if address_raw.is_empty() {
+                format!("{lat:.5}, {lon:.5}")
+            } else {
+                address_raw.clone()
+            };
+            let service_minutes = store.map(|s| s.service.minutes()).unwrap_or(0);
+            let wait_minutes =
+                (stop.depart.minutes() - service_minutes - stop.arrive.minutes()).max(0);
+            let svc_label = store
+                .map(|s| s.service.to_string())
+                .unwrap_or_else(|| "0m".to_string());
+            let wait_svc_text = if wait_minutes > 0 {
+                format!("+{wait_minutes}m wait · {svc_label} svc")
+            } else {
+                svc_label
+            };
+            let demand = store.map(|s| s.demand).unwrap_or(domain::Load::ZERO);
+            let demand_text = format!("{}/{}/{}", demand.ambient, demand.chilled, demand.frozen);
+            StepRowDetails {
+                node_type: "Store",
+                name,
+                label,
+                address_raw,
+                location_text,
+                lat,
+                lon,
+                wait_minutes,
+                service_minutes,
+                wait_svc_text,
+                demand,
+                demand_text,
+                seq,
+            }
+        }
+    }
+}
+
+/// Formats a human-readable route manifest for clipboard/driver dispatch sharing.
+fn format_route_manifest_text(bundle: &SolutionBundle) -> String {
+    let served = served_store_count(&bundle.solution);
+    let total = total_store_count(bundle);
+    let mut out = format!(
+        "{} — {served}/{total} stops served · {} route(s) · {:.1} km · ${:.2}\n",
+        bundle.problem.name,
+        bundle.solution.routes.len(),
+        bundle.solution.total_distance_km,
+        bundle.solution.total_cost_cents as f64 / 100.0
+    );
+
+    for (r_idx, route) in bundle.solution.routes.iter().enumerate() {
+        out.push_str(&format!(
+            "\nRoute {} ({}, {}) — {} stops · {:.1} km · {} · ${:.2}\n",
+            r_idx + 1,
+            vehicle_name(&bundle.problem, route),
+            driver_names(&bundle.problem, route),
+            store_stop_count(route),
+            route.distance_km,
+            route.duration,
+            route.cost_cents as f64 / 100.0
+        ));
+        let mut seq = 0usize;
+        for (step_idx, stop) in route.steps.iter().enumerate() {
+            let seq_opt = if matches!(stop.node, domain::Node::Store(_)) {
+                seq += 1;
+                Some(seq)
+            } else {
+                None
+            };
+            let detail = step_row_details(&bundle.problem, stop, seq_opt);
+            let seq_tag = detail.seq.map(|s| format!("#{s} ")).unwrap_or_default();
+            out.push_str(&format!(
+                "  {}. {seq_tag}[{}] {} · {}–{} ({}) · {} · Demand {}\n",
+                step_idx + 1,
+                detail.node_type,
+                detail.label,
+                stop.arrive,
+                stop.depart,
+                detail.wait_svc_text,
+                detail.location_text,
+                detail.demand_text
+            ));
+        }
+    }
+
+    if !bundle.solution.unassigned.is_empty() {
+        out.push_str(&format!(
+            "\nUnassigned ({}):\n",
+            bundle.solution.unassigned.len()
+        ));
+        for store_id in &bundle.solution.unassigned {
+            let reason = bundle
+                .problem
+                .store(*store_id)
+                .map(|s| diagnose_unassigned_store(&bundle.problem, s))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  - {} — {reason}\n",
+                store_name(&bundle.problem, *store_id)
+            ));
+        }
+    }
+    out
+}
+
+/// Serializes every route step into an RFC-4180 CSV dispatch schedule.
+fn format_route_schedule_csv(bundle: &SolutionBundle) -> String {
+    let mut out = String::from(
+        "route,vehicle,drivers,step,stop_sequence,node_type,name,address,lat,lon,arrive,depart,wait_min,service_min,ambient,chilled,frozen\n",
+    );
+    for (r_idx, route) in bundle.solution.routes.iter().enumerate() {
+        let route_label = format!("Route {}", r_idx + 1);
+        let veh = vehicle_name(&bundle.problem, route);
+        let drivers = driver_names(&bundle.problem, route);
+        let mut seq = 0usize;
+        for (step_idx, stop) in route.steps.iter().enumerate() {
+            let seq_opt = if matches!(stop.node, domain::Node::Store(_)) {
+                seq += 1;
+                Some(seq)
+            } else {
+                None
+            };
+            let d = step_row_details(&bundle.problem, stop, seq_opt);
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{}\n",
+                csv_escape(&route_label),
+                csv_escape(veh),
+                csv_escape(&drivers),
+                step_idx + 1,
+                d.seq.map(|s| s.to_string()).unwrap_or_default(),
+                d.node_type,
+                csv_escape(&d.name),
+                csv_escape(&d.address_raw),
+                d.lat,
+                d.lon,
+                stop.arrive,
+                stop.depart,
+                d.wait_minutes,
+                d.service_minutes,
+                d.demand.ambient,
+                d.demand.chilled,
+                d.demand.frozen
+            ));
+        }
+    }
+    out
+}
+
+/// Syncs a manually edited solution into all downstream tabs (`Solutions`, `KPIs`, `Map`).
+impl ConsoleApp {
+    fn sync_bundle_after_dispatch_edit(&mut self, updated: SolutionBundle, status_msg: String) {
+        let updated_id = updated.id.clone();
+        self.solution_status = Some(Ok(Box::new(updated.clone())));
+        if let Some(Ok(kb)) = &mut self.kpis_status
+            && kb.detail.id == updated_id
+        {
+            kb.detail = updated.clone();
+            kb.kpis.served = served_store_count(&updated.solution);
+            kb.kpis.serve_rate = if kb.kpis.total > 0 {
+                kb.kpis.served as f64 / kb.kpis.total as f64
+            } else {
+                0.0
+            };
+            kb.kpis.distance_km = updated.solution.total_distance_km;
+            kb.kpis.cost_cents = updated.solution.total_cost_cents;
+        }
+        if let Some(Ok(mb)) = &mut self.map_status
+            && mb.id == updated_id
+        {
+            **mb = updated;
+            self.map_geometry = SolutionGeometryData::default();
+            self.map_geometry_error = None;
+        }
+        self.solution_export_status = Some((false, status_msg));
+    }
+}
+
+/// Applies one interactive dispatch board action (`MoveStop`, `UnassignStop`,
+/// or `AssignStoreToRoute`), recalculates route timing/costs, and updates raw JSON.
+fn apply_dispatch_edit_to_bundle(
+    bundle: &mut SolutionBundle,
+    action: &SolutionViewAction,
+) -> Option<String> {
+    let msg = match *action {
+        SolutionViewAction::MoveStop {
+            route_idx,
+            step_idx,
+            delta,
+        } => {
+            let route = bundle.solution.routes.get_mut(route_idx)?;
+            let target_isize = step_idx as isize + delta;
+            if target_isize < 0 {
+                return None;
+            }
+            let target_idx = target_isize as usize;
+            if step_idx >= route.steps.len() || target_idx >= route.steps.len() {
+                return None;
+            }
+            if !matches!(route.steps[step_idx].node, domain::Node::Store(_))
+                || !matches!(route.steps[target_idx].node, domain::Node::Store(_))
+            {
+                return None;
+            }
+            route.steps.swap(step_idx, target_idx);
+            recalculate_route_in_bundle(&bundle.problem, &mut bundle.solution, route_idx);
+            format!(
+                "Re-sequenced Route {} (recalculated distance, ETAs & CoR validation).",
+                route_idx + 1
+            )
+        }
+        SolutionViewAction::UnassignStop {
+            route_idx,
+            step_idx,
+        } => {
+            let route = bundle.solution.routes.get_mut(route_idx)?;
+            let stop = route.steps.get(step_idx)?;
+            let domain::Node::Store(store_id) = stop.node else {
+                return None;
+            };
+            route.steps.remove(step_idx);
+            if !bundle.solution.unassigned.contains(&store_id) {
+                bundle.solution.unassigned.push(store_id);
+            }
+            recalculate_route_in_bundle(&bundle.problem, &mut bundle.solution, route_idx);
+            format!(
+                "Removed {} from Route {} and moved to Unassigned.",
+                store_name(&bundle.problem, store_id),
+                route_idx + 1
+            )
+        }
+        SolutionViewAction::AssignStoreToRoute {
+            store_id,
+            route_idx,
+        } => {
+            let route = bundle.solution.routes.get_mut(route_idx)?;
+            let insert_at = if route
+                .steps
+                .last()
+                .is_some_and(|s| matches!(s.node, domain::Node::Depot(_)))
+            {
+                route.steps.len().saturating_sub(1)
+            } else {
+                route.steps.len()
+            };
+            route.steps.insert(
+                insert_at,
+                domain::PlannedStop {
+                    node: domain::Node::Store(store_id),
+                    arrive: domain::Minutes::ZERO,
+                    depart: domain::Minutes::ZERO,
+                },
+            );
+            bundle.solution.unassigned.retain(|id| *id != store_id);
+            recalculate_route_in_bundle(&bundle.problem, &mut bundle.solution, route_idx);
+            format!(
+                "Assigned {} to Route {} (check CoR banner for window/capacity status).",
+                store_name(&bundle.problem, store_id),
+                route_idx + 1
+            )
+        }
+        _ => return None,
+    };
+    bundle.raw = serde_json::to_value(&bundle.solution).unwrap_or_default();
+    Some(msg)
+}
+
+/// Recomputes step ETAs, wait times, haversine leg distances, duration, and route
+/// cost for `solution.routes[route_idx]`, then rolls totals back onto `solution`.
+fn recalculate_route_in_bundle(
+    problem: &domain::Problem,
+    solution: &mut domain::Solution,
+    route_idx: usize,
+) {
+    if let Some(route) = solution.routes.get_mut(route_idx) {
+        let speed_kmh = problem
+            .vehicles
+            .get(route.vehicle.0 as usize)
+            .map(|v| v.avg_speed_kmh)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or(50.0);
+        let depart_start = route
+            .drivers
+            .first()
+            .and_then(|d| problem.drivers.get(d.0 as usize))
+            .and_then(|d| d.shifts.first())
+            .map(|s| s.start)
+            .or_else(|| route.steps.first().map(|s| s.depart))
+            .unwrap_or(domain::Minutes::from_minutes(360));
+
+        let mut total_km = 0.0_f64;
+        let mut prev_loc: Option<domain::LatLon> = None;
+        let mut prev_depart = depart_start;
+
+        for (idx, step) in route.steps.iter_mut().enumerate() {
+            let loc = match step.node {
+                domain::Node::Depot(id) => problem.depots.get(id.0 as usize).map(|d| d.location),
+                domain::Node::Store(id) => problem.store(id).map(|s| s.location),
+            };
+            if idx == 0 {
+                step.arrive = depart_start;
+                step.depart = depart_start;
+                prev_depart = depart_start;
+                prev_loc = loc;
+                continue;
+            }
+            let leg_km = match (prev_loc, loc) {
+                (Some(a), Some(b)) => domain::haversine_km(a, b),
+                _ => 0.0,
+            };
+            total_km += leg_km;
+            let travel_mins = (leg_km / speed_kmh * 60.0).round() as i64;
+            let arrive = domain::Minutes::from_minutes(prev_depart.minutes() + travel_mins);
+            let depart = match step.node {
+                domain::Node::Depot(_) => arrive,
+                domain::Node::Store(sid) => {
+                    if let Some(store) = problem.store(sid) {
+                        let wait_target = problem
+                            .chain_rules
+                            .windows_for_store(store)
+                            .and_then(|wins| {
+                                wins.iter()
+                                    .filter(|w| w.end >= arrive)
+                                    .map(|w| w.start)
+                                    .min()
+                            })
+                            .unwrap_or(arrive);
+                        let service_start = arrive.max(wait_target);
+                        domain::Minutes::from_minutes(
+                            service_start.minutes() + store.service.minutes().max(0),
+                        )
+                    } else {
+                        arrive
+                    }
+                }
+            };
+            step.arrive = arrive;
+            step.depart = depart;
+            prev_depart = depart;
+            if loc.is_some() {
+                prev_loc = loc;
+            }
+        }
+
+        let duration_min = (prev_depart.minutes() - depart_start.minutes()).max(0);
+        route.distance_km = total_km;
+        route.duration = domain::Minutes::from_minutes(duration_min);
+        let dist_millikm = (total_km * 1000.0).round() as i64;
+        let dist_cents = (dist_millikm * problem.cost.per_km_cents + 500) / 1000;
+        let time_cents = (duration_min * problem.cost.per_hour_cents + 30) / 60;
+        route.cost_cents = if route
+            .steps
+            .iter()
+            .any(|s| matches!(s.node, domain::Node::Store(_)))
+        {
+            problem.cost.fixed_per_route_cents + dist_cents + time_cents
+        } else {
+            0
+        };
+    }
+
+    solution.total_distance_km = solution.routes.iter().map(|r| r.distance_km).sum();
+    solution.total_duration =
+        domain::Minutes::from_minutes(solution.routes.iter().map(|r| r.duration.minutes()).sum());
+    solution.total_cost_cents = solution.routes.iter().map(|r| r.cost_cents).sum();
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Renders a printable HTML TMS Driver Run Sheet / Bill of Lading (BOL) with
+/// Chain of Responsibility (CoR) checklist and per-stop ePOD signature blocks.
+fn format_driver_run_sheet_html(bundle: &SolutionBundle) -> String {
+    let served = served_store_count(&bundle.solution);
+    let total = total_store_count(bundle);
+    let active_routes = bundle.solution.routes.len();
+    let total_km = bundle.solution.total_distance_km;
+    let total_cost = bundle.solution.total_cost_cents as f64 / 100.0;
+    let est_fuel_l: f64 = bundle
+        .solution
+        .routes
+        .iter()
+        .map(|r| r.distance_km.max(0.0) * 0.33)
+        .sum();
+    let est_co2_kg = est_fuel_l * 2.68;
+
+    let mut out = format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <title>TMS Run Sheet &amp; BOL — {}</title>\n\
+         <style>\
+         body{{font-family:system-ui,-apple-system,sans-serif;margin:24px;color:#111;line-height:1.4;}}\
+         h1,h2{{margin:0 0 8px 0;}}\
+         .meta{{display:flex;flex-wrap:wrap;gap:16px;padding:12px;border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc;margin-bottom:16px;}}\
+         .cor{{border:2px solid #1e3a8a;border-radius:6px;padding:12px 16px;margin-bottom:20px;background:#eff6ff;}}\
+         .cor ul{{list-style:none;padding:0;margin:8px 0 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px;}}\
+         .route{{margin-bottom:24px;page-break-inside:avoid;}}\
+         table{{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;}}\
+         th,td{{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;vertical-align:top;}}\
+         th{{background:#f1f5f9;}}\
+         .epod{{min-width:150px;color:#64748b;}}\
+         @media print{{body{{margin:10mm;}} a{{color:#111;text-decoration:none;}}}}\
+         </style>\n</head>\n<body>\n\
+         <h1>TMS Driver Run Sheet &amp; Bill of Lading (BOL)</h1>\n\
+         <div class=\"meta\">\
+         <div><strong>Network:</strong> {}</div>\
+         <div><strong>Manifest ID:</strong> <code>{}</code></div>\
+         <div><strong>Consignments:</strong> {served}/{total}</div>\
+         <div><strong>Active Fleet:</strong> {active_routes}</div>\
+         <div><strong>Distance:</strong> {total_km:.1} km</div>\
+         <div><strong>Freight Cost:</strong> ${total_cost:.2}</div>\
+         <div><strong>Est. ESG:</strong> {est_fuel_l:.1} L diesel ({est_co2_kg:.1} kg CO&#8322;e)</div>\
+         </div>\n\
+         <div class=\"cor\"><strong>Chain of Responsibility (CoR) Pre-Departure Verification</strong>\
+         <ul>\
+         <li>&#9744; GVM &amp; Axle Mass Limits Checked</li>\
+         <li>&#9744; Route Height/Weight Clearance Verified</li>\
+         <li>&#9744; Cargo Restraint &amp; Bulkhead Locked</li>\
+         <li>&#9744; Chilled/Frozen Temperature Setpoints Verified</li>\
+         <li>&#9744; NHVR Driver Fitness &amp; Work Diary Checked</li>\
+         </ul></div>\n",
+        html_escape(&bundle.problem.name),
+        html_escape(&bundle.problem.name),
+        html_escape(&bundle.id),
+    );
+
+    for (r_idx, route) in bundle.solution.routes.iter().enumerate() {
+        let veh = vehicle_name(&bundle.problem, route);
+        let drv = driver_names(&bundle.problem, route);
+        let route_load = route.steps.iter().fold(domain::Load::ZERO, |acc, stop| {
+            if let domain::Node::Store(sid) = stop.node
+                && let Some(store) = bundle.problem.store(sid)
+            {
+                acc.saturating_add(store.demand)
+            } else {
+                acc
+            }
+        });
+        out.push_str(&format!(
+            "<div class=\"route\">\n<h2>Route {} &mdash; {} (Drivers: {})</h2>\n\
+             <p><strong>Distance:</strong> {:.1} km &middot; <strong>Duration:</strong> {} &middot; \
+             <strong>Cost:</strong> ${:.2} &middot; <strong>Total Cargo:</strong> {}A / {}C / {}F ({} units)</p>\n\
+             <table>\n<thead><tr>\
+             <th>Step</th><th>Consignment ID</th><th>Location / Customer</th>\
+             <th>Address / Map Link</th><th>Arrive</th><th>Wait / Svc</th><th>Depart</th>\
+             <th>Units (A/C/F)</th><th class=\"epod\">Receiver Name / Signature / Time (ePOD)</th>\
+             </tr></thead>\n<tbody>\n",
+            r_idx + 1,
+            html_escape(veh),
+            html_escape(&drv),
+            route.distance_km,
+            route.duration,
+            route.cost_cents as f64 / 100.0,
+            route_load.ambient,
+            route_load.chilled,
+            route_load.frozen,
+            route_load.total(),
+        ));
+
+        let mut seq = 0usize;
+        for (step_idx, stop) in route.steps.iter().enumerate() {
+            let seq_opt = if matches!(stop.node, domain::Node::Store(_)) {
+                seq += 1;
+                Some(seq)
+            } else {
+                None
+            };
+            let d = step_row_details(&bundle.problem, stop, seq_opt);
+            let consignment_id = match d.seq {
+                Some(s) => format!("CON-R{:02}-{s:03}", r_idx + 1),
+                None => "HUB".to_string(),
+            };
+            let osm_href = format!(
+                "https://www.openstreetmap.org/?mlat={:.6}&amp;mlon={:.6}#map=16/{:.6}/{:.6}",
+                d.lat, d.lon, d.lat, d.lon
+            );
+            out.push_str(&format!(
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td>\
+                 <td><a href=\"{osm_href}\">{}</a></td>\
+                 <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"epod\"></td></tr>\n",
+                step_idx + 1,
+                consignment_id,
+                html_escape(&d.label),
+                html_escape(&d.location_text),
+                stop.arrive,
+                html_escape(&d.wait_svc_text),
+                stop.depart,
+                html_escape(&d.demand_text),
+            ));
+        }
+        out.push_str("</tbody>\n</table>\n</div>\n");
+    }
+
+    out.push_str("</body>\n</html>\n");
+    out
 }
 
 fn solution_option_label(solution: &SolutionSummary) -> String {
@@ -3833,13 +5147,153 @@ mod tests {
             }],
         })));
         let parsed: domain::Problem = serde_json::from_str(&app.import_json).unwrap();
-        assert_eq!(parsed.stores.len(), 2);
-        assert_eq!(parsed.stores[1].name, "Hardware Warehouse");
-        assert_eq!(parsed.stores[1].chain, domain::Chain::General);
+        // First real stop replaces the untouched "Stop 1" starter placeholder.
+        assert_eq!(parsed.stores.len(), 1);
+        assert_eq!(parsed.stores[0].name, "Hardware Warehouse");
+        assert_eq!(parsed.stores[0].chain, domain::Chain::General);
         assert_eq!(
-            parsed.stores[1].address.as_deref(),
+            parsed.stores[0].address.as_deref(),
             Some("200 Bourke Street, Melbourne VIC 3000")
         );
+    }
+
+    #[tokio::test]
+    async fn solve_route_now_sets_auto_pipeline_and_exports_schedule() {
+        let mut app = ConsoleApp::new(Handle::current(), "http://127.0.0.1:8080".to_string());
+        assert!(app.solve_ls);
+
+        app.handle_builder_action(BuilderAction::ImportAndSolve);
+        assert!(app.auto_solve_after_import);
+        assert!(app.open_map_after_solve);
+
+        app.handle_msg(Msg::ProblemImported(Ok("prob-auto".into())));
+        assert!(!app.auto_solve_after_import);
+        assert_eq!(app.problem_id_input, "prob-auto");
+        assert!(app.solve_in_flight);
+
+        let mut bundle = test_solution_bundle();
+        bundle.solution.routes[0].steps = vec![
+            domain::PlannedStop {
+                node: domain::Node::Depot(domain::DepotId(0)),
+                arrive: domain::Minutes::from_minutes(360),
+                depart: domain::Minutes::from_minutes(360),
+            },
+            domain::PlannedStop {
+                node: domain::Node::Store(domain::StoreId(0)),
+                arrive: domain::Minutes::from_minutes(375),
+                depart: domain::Minutes::from_minutes(390),
+            },
+            domain::PlannedStop {
+                node: domain::Node::Depot(domain::DepotId(0)),
+                arrive: domain::Minutes::from_minutes(405),
+                depart: domain::Minutes::from_minutes(405),
+            },
+        ];
+
+        let csv = format_route_schedule_csv(&bundle);
+        assert!(csv.starts_with("route,vehicle,drivers,step,stop_sequence,"));
+        assert!(csv.contains(",1,Store,Store 0,"));
+
+        let manifest = format_route_manifest_text(&bundle);
+        assert!(manifest.contains("Route 1 (Rigid, Sam)"));
+        assert!(manifest.contains("#1 [Store] Store 0 (#0)"));
+    }
+
+    #[test]
+    fn dispatch_board_edits_resequence_assign_and_render_bol_html() {
+        use domain::{LatLon, Load, Minutes, PlannedStop, Store, StoreId, TimeWindow};
+
+        let mut bundle = test_solution_bundle();
+        // Add a second route store + an unassigned store so we can swap, unassign, and re-assign.
+        bundle.problem.stores.push(Store {
+            id: StoreId(1),
+            chain: domain::Chain::General,
+            name: "Store 1".into(),
+            location: LatLon::new(-33.95, 151.25),
+            address: Some("10 Market St".into()),
+            timezone: None,
+            demand: Load::new(2, 1, 0),
+            service: Minutes::from_minutes(10),
+            receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+        });
+        bundle.problem.stores.push(Store {
+            id: StoreId(2),
+            chain: domain::Chain::General,
+            name: "Store 2".into(),
+            location: LatLon::new(-33.89, 151.19),
+            address: None,
+            timezone: None,
+            demand: Load::new(1, 0, 0),
+            service: Minutes::from_minutes(10),
+            receiving: vec![TimeWindow::new(Minutes::ZERO, Minutes::from_minutes(600))],
+        });
+        bundle.solution.routes[0].steps = vec![
+            PlannedStop {
+                node: domain::Node::Depot(domain::DepotId(0)),
+                arrive: Minutes::ZERO,
+                depart: Minutes::ZERO,
+            },
+            PlannedStop {
+                node: domain::Node::Store(StoreId(0)),
+                arrive: Minutes::ZERO,
+                depart: Minutes::ZERO,
+            },
+            PlannedStop {
+                node: domain::Node::Store(StoreId(1)),
+                arrive: Minutes::ZERO,
+                depart: Minutes::ZERO,
+            },
+            PlannedStop {
+                node: domain::Node::Depot(domain::DepotId(0)),
+                arrive: Minutes::ZERO,
+                depart: Minutes::ZERO,
+            },
+        ];
+        bundle.solution.unassigned = vec![StoreId(2)];
+
+        // Move Store 0 down past Store 1.
+        let msg = apply_dispatch_edit_to_bundle(
+            &mut bundle,
+            &SolutionViewAction::MoveStop {
+                route_idx: 0,
+                step_idx: 1,
+                delta: 1,
+            },
+        )
+        .unwrap();
+        assert!(msg.contains("Re-sequenced Route 1"));
+        assert_eq!(
+            bundle.solution.routes[0].steps[1].node,
+            domain::Node::Store(StoreId(1))
+        );
+        assert_eq!(
+            bundle.solution.routes[0].steps[2].node,
+            domain::Node::Store(StoreId(0))
+        );
+        assert!(bundle.solution.total_distance_km > 5.0);
+
+        // Assign unassigned Store 2 into Route 1 before return depot.
+        apply_dispatch_edit_to_bundle(
+            &mut bundle,
+            &SolutionViewAction::AssignStoreToRoute {
+                store_id: StoreId(2),
+                route_idx: 0,
+            },
+        )
+        .unwrap();
+        assert!(bundle.solution.unassigned.is_empty());
+        assert_eq!(bundle.solution.routes[0].steps.len(), 5);
+        assert_eq!(
+            bundle.solution.routes[0].steps[3].node,
+            domain::Node::Store(StoreId(2))
+        );
+
+        let html = format_driver_run_sheet_html(&bundle);
+        assert!(html.contains("TMS Driver Run Sheet &amp; Bill of Lading (BOL)"));
+        assert!(html.contains("Chain of Responsibility (CoR) Pre-Departure Verification"));
+        assert!(html.contains("CON-R01-001"));
+        assert!(html.contains("CON-R01-003"));
+        assert!(html.contains("Receiver Name / Signature / Time (ePOD)"));
     }
 
     #[test]

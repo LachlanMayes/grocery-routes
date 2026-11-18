@@ -335,3 +335,63 @@ async fn oversized_request_body_returns_payload_too_large() {
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn invalid_coordinates_speed_and_solve_profile_return_bad_request() {
+    let (base_url, handle, _db_path) = spawn_app().await;
+    let client = reqwest::Client::new();
+
+    // Out-of-bounds depot coordinates must be rejected at import time.
+    let mut bad_depot = test_problem();
+    bad_depot.depots[0].location = LatLon::new(95.0, 151.21);
+    let resp = import_problem(&client, &base_url, &bad_depot).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Out-of-bounds store coordinates must be rejected at import time.
+    let mut bad_store = test_problem();
+    bad_store.stores[0].location = LatLon::new(-33.90, 181.0);
+    let resp = import_problem(&client, &base_url, &bad_store).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Non-positive vehicle speed must be rejected at import time.
+    let mut bad_speed = test_problem();
+    bad_speed.vehicles[0].avg_speed_kmh = 0.0;
+    let resp = import_problem(&client, &base_url, &bad_speed).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Node ceiling (> MAX_SOLVE_NODES) must be rejected at import time.
+    let mut oversized = test_problem();
+    oversized.stores = (0..5_001)
+        .map(|idx| {
+            let mut s = test_problem().stores[0].clone();
+            s.id = StoreId(idx);
+            s.name = format!("Store {idx}");
+            s
+        })
+        .collect();
+    let resp = import_problem(&client, &base_url, &oversized).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Valid problem imports, then non-positive maxweight/maxheight on POST /solve fail with 400.
+    let import = import_problem(&client, &base_url, &test_problem()).await;
+    assert_eq!(import.status(), StatusCode::OK);
+    let problem_id = import.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for payload in [
+        json!({ "problem_id": problem_id, "maxweight": 0.0 }),
+        json!({ "problem_id": problem_id, "maxheight": -3.5 }),
+    ] {
+        let solve = client
+            .post(format!("{base_url}/solve"))
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(solve.status(), StatusCode::BAD_REQUEST);
+    }
+
+    handle.abort();
+}

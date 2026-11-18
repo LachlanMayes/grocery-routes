@@ -14,7 +14,7 @@ cargo run -p cli -- gen-sim --chain coles --city sydney --stores 40 \
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--chain` | enum | `general` | `general`, `coles`, `woolworths`, `aldi`, `iga` |
-| `--city` | enum | `sydney` | `sydney`, `melbourne` |
+| `--city` | enum | `sydney` | `sydney`, `melbourne`, `brisbane`, `perth`, `adelaide` |
 | `--stores` | usize | 40 | M0 solver accepts at most 5,000 nodes |
 | `--depots` | usize | 3 | |
 | `--vehicles` | usize | 12 | one driver generated per vehicle |
@@ -47,6 +47,7 @@ cargo run -p cli -- solve --problem data/demo/problem.json \
 | `--problem` | path | required | |
 | `--out` | path | required | |
 | `--ls` | bool | false | enable LNS/ALNS metaheuristic (M2) |
+| `--local-search` | bool | false | run iterative local search (2-opt, relocate, exchange; conflicts with `--ls`) |
 | `--repeat` | usize | 1 | requires `--ls`; runs N independent searches in parallel, keeps best |
 | `--osm` | path | — | OSM PBF extract; switches to real road travel times |
 | `--maxweight` | f64 | — | tonnes, truck constraint filter |
@@ -130,6 +131,8 @@ The depot is placed at the centroid of the geocoded stores.
 | `--addresses` | path | required | CSV with `name,address` header |
 | `--out` | path | required | problem JSON output |
 | `--vehicles` | usize | 4 | one driver per vehicle |
+
+## `constraints` — validate and export curated truck constraints
 
 ```
 cargo run -p cli -- constraints --file constraints/truck-constraints.json \

@@ -132,7 +132,7 @@ impl ContractionHierarchy {
         self.dense_nodes.len()
     }
 
-    /// Time-optimal shortest path, in the same shape [`Router`] returns.
+    /// Time-optimal shortest path, in the same shape [`crate::router::Router`] returns.
     ///
     /// Returns `None` when either node is unknown to the hierarchy or no
     /// path exists.
